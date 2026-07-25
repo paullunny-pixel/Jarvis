@@ -33,6 +33,7 @@ from app.documents.service import DocumentLibrary
 from app.documents.storage import make_object_store
 from app.heartbeat.calendar_ics import IcsCalendar
 from app.heartbeat.emailer import Emailer
+from app.heartbeat.gates import GateKeeper
 from app.heartbeat.jobs import HeartbeatJobs
 from app.heartbeat.scheduler import Heartbeat
 from app.heartbeat.streaks import Streaks
@@ -105,6 +106,9 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
         living=living,
     )
 
+    # The non-skippable gates (run + meds block the day until confirmed).
+    gates = GateKeeper(db, Streaks(db))
+
     # The heartbeat (Milestone 4).
     jobs = HeartbeatJobs(
         settings=settings,
@@ -117,6 +121,7 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
         emailer=Emailer(settings.gmail_address, settings.gmail_app_password),
         kiefer_email=settings.kiefer_email,
         private_track=private_track,
+        gates=gates,
     )
     heartbeat = Heartbeat(jobs)
 
@@ -130,6 +135,7 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
         heartbeat=jobs,
         on_timezone_change=heartbeat.reschedule,
         private_track=private_track,
+        gates=gates,
         telegram=telegram,
         claude=claude,
         deepgram=DeepgramClient(settings.deepgram_api_key, model=settings.deepgram_model),

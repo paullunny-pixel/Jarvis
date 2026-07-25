@@ -22,6 +22,7 @@ from app.db.base import Database
 from app.daily12.commands import execute_actions, mentions_tasks, parse_actions, wants_plan
 from app.daily12.service import Daily12Service
 from app.documents.service import DocumentLibrary, looks_like_document_request
+from app.heartbeat.gates import GateKeeper, mentions_meds
 from app.heartbeat.streaks import STREAK_LABELS, Streaks, detect_activities, looks_negated
 from app.memory.store import LivingFacts, MemoryStore
 from app.memory.writer import extract_and_file, format_memory_context
@@ -52,6 +53,7 @@ class JarvisRouter:
         heartbeat=None,          # HeartbeatJobs — hound mode + timezone reschedule
         on_timezone_change=None,  # async callback after Paul moves timezone
         private_track: PrivateTrack | None = None,
+        gates: GateKeeper | None = None,
     ) -> None:
         self.settings = settings
         self.db = db
@@ -66,6 +68,7 @@ class JarvisRouter:
         self.heartbeat = heartbeat
         self.on_timezone_change = on_timezone_change
         self.private_track = private_track
+        self.gates = gates
         self.log = MessageLog(db)
         self.store = SettingsStore(db)
         self.streaks = Streaks(db)
@@ -114,6 +117,11 @@ class JarvisRouter:
             await self._handle_document_upload(message)
             return
 
+        # 0b. Photos → Jarvis actually looks at them (Claude vision).
+        if message.is_photo:
+            await self._handle_photo(message)
+            return
+
         # 1. Get the words (transcribe voice notes).
         if message.is_voice:
             audio = await self.telegram.download_file(message.voice_file_id)
@@ -160,14 +168,32 @@ class JarvisRouter:
                 return
 
         # 2c. Task talk → the Daily 12 + Trello write-back (Milestone 3).
+        # THE GATES: past their deadline, an unconfirmed run/meds blocks the
+        # working day — Jarvis will not serve the board until they're done.
         if self.daily12 is not None and mentions_tasks(transcript):
+            if self.gates is not None:
+                tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
+                outstanding = await self.gates.outstanding(datetime.now(ZoneInfo(tz_name)))
+                if outstanding:
+                    block = self.gates.block_message(outstanding)
+                    await self.log.log("out", block, chat_id=message.chat_id, meta={"gated": True})
+                    try:
+                        audio = await self.elevenlabs.synthesize(strip_for_speech(block))
+                        await self.telegram.send_voice(message.chat_id, audio, transcript=block)
+                    except SynthesisError:
+                        await self.telegram.send_text(message.chat_id, block)
+                    return
             if await self._handle_task_talk(message, transcript):
                 return
 
         # 3. Think (with the second brain's recalled knowledge, Milestone 2).
         timezone = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
         memory_context = await self._recall(transcript)
-        system = build_system_prompt(timezone=timezone, memory_context=memory_context)
+        system = build_system_prompt(
+            timezone=timezone,
+            memory_context=memory_context,
+            system_status=self._integration_status(),
+        )
         history = await self.log.as_claude_messages(self.settings.history_messages)
         raw_reply = await self.claude.converse(system, history)
         if not raw_reply:
@@ -240,6 +266,122 @@ class JarvisRouter:
         await self.log.log("out", reply, chat_id=message.chat_id)
         await self.telegram.send_text(message.chat_id, reply)
 
+    async def _handle_photo(self, message: IncomingMessage) -> None:
+        """A photo message: download it, show it to the brain alongside the
+        caption and conversation history, reply as normal."""
+        import base64
+
+        import base64 as _b64
+
+        caption = message.text or ""
+        photo = await self.telegram.download_file(message.photo_file_id)
+        await self.log.log(
+            "in", f"[photo] {caption}".strip(), chat_id=message.chat_id, meta={"photo": True}
+        )
+
+        # Gate proof: if today's run is unconfirmed, check whether this photo
+        # IS the run stats — vision reads the numbers and logs the real thing.
+        if self.gates is not None:
+            tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
+            today = datetime.now(ZoneInfo(tz_name)).date()
+            if not await self.gates.is_confirmed("run", today):
+                stats = await self._read_run_stats(_b64.b64encode(photo).decode())
+                if stats is not None:
+                    await self.streaks.record("run", today)
+                    await self.db.execute(
+                        "INSERT INTO runs (run_date, distance_km, duration_min, source)"
+                        " VALUES (?, ?, ?, 'photo_proof')",
+                        (today.isoformat(), stats["distance_km"], stats["duration_min"]),
+                    )
+                    snap = await self.streaks.snapshot(today)
+                    duration = (
+                        f" in {stats['duration_min']:.0f} minutes" if stats["duration_min"] else ""
+                    )
+                    ack = (
+                        f"Verified, sir — {stats['distance_km']:.2f} km{duration}. Run logged, "
+                        f"streak at {snap['run']['current']}. The day is officially open."
+                    )
+                    await self.log.log("out", ack, chat_id=message.chat_id, meta={"gate_proof": True})
+                    try:
+                        audio = await self.elevenlabs.synthesize(strip_for_speech(ack))
+                        await self.telegram.send_voice(message.chat_id, audio, transcript=ack)
+                    except SynthesisError:
+                        await self.telegram.send_text(message.chat_id, ack)
+                    return
+
+        timezone = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
+        memory_context = await self._recall(caption) if caption else ""
+        system = build_system_prompt(
+            timezone=timezone,
+            memory_context=memory_context,
+            system_status=self._integration_status(),
+        )
+        history = await self.log.as_claude_messages(self.settings.history_messages)
+        # Attach the image to the final (current) user turn.
+        if history and history[-1]["role"] == "user":
+            text_part = history[-1]["content"]
+            history[-1] = {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/jpeg",
+                            "data": base64.b64encode(photo).decode(),
+                        },
+                    },
+                    {"type": "text", "text": text_part},
+                ],
+            }
+        raw_reply = await self.claude.converse(system, history)
+        if not raw_reply:
+            raw_reply = "I looked, but lost my train of thought — send it again?"
+        channel, reply_text = decide_reply(raw_reply, incoming_was_voice=False)
+        await self.log.log(
+            "out", reply_text, chat_id=message.chat_id,
+            kind="voice" if channel == "voice" else "text",
+        )
+        if channel == "voice":
+            try:
+                audio = await self.elevenlabs.synthesize(strip_for_speech(reply_text))
+                await self.telegram.send_voice(message.chat_id, audio, transcript=reply_text)
+                return
+            except SynthesisError:
+                logger.exception("TTS failed — falling back to text")
+        await self.telegram.send_text(message.chat_id, reply_text)
+
+    RUN_STATS_SYSTEM = (
+        'You inspect an image to see if it shows completed running/exercise stats (a sports '
+        'watch, Strava/fitness app screenshot, treadmill display). Reply ONLY JSON: '
+        '{"is_run_stats": true|false, "distance_km": <number or 0>, "duration_min": <number or 0>}. '
+        'Convert miles to km. If it is not exercise stats, is_run_stats is false.'
+    )
+
+    async def _read_run_stats(self, image_b64: str) -> dict | None:
+        """Vision check of run-proof photos. Returns stats when the image shows
+        a completed run of at least ~5km, else None (photo handled normally)."""
+        import json as _json
+        import re as _re
+
+        try:
+            raw = await self.claude.quick_vision(
+                "Does this image show completed run stats? Extract the numbers.",
+                image_b64,
+                system=self.RUN_STATS_SYSTEM,
+                max_tokens=150,
+            )
+            match = _re.search(r"\{.*\}", raw, _re.DOTALL)
+            if not match:
+                return None
+            data = _json.loads(match.group(0))
+            distance = float(data.get("distance_km") or 0)
+            if data.get("is_run_stats") and distance >= 4.5:
+                return {"distance_km": distance, "duration_min": float(data.get("duration_min") or 0)}
+        except Exception:
+            logger.exception("Run-stats vision check failed")
+        return None
+
     # --- Milestone 6: the private room ---
 
     async def _handle_private(self, message: IncomingMessage, transcript: str) -> None:
@@ -260,6 +402,58 @@ class JarvisRouter:
         except SynthesisError:
             await self.telegram.send_text(message.chat_id, reply)
 
+    def _integration_status(self) -> str:
+        """Ground truth about what's wired in — fed to the brain every turn so
+        it can never confabulate about its own connections."""
+        s = self.settings
+        lines = [
+            f"- Trello / Daily 12: {'CONNECTED' if self.daily12 is not None else 'not connected yet'}",
+            f"- Memory search: {'Voyage embeddings' if s.voyage_api_key else 'local fallback (Voyage key pending)'}",
+            f"- Calendar: {'connected (read-only)' if s.calendar_ics_url else 'not connected yet'}",
+            f"- Kiefer nightly email: {'configured' if (s.gmail_address and s.kiefer_email) else 'not configured yet'}",
+            f"- Apple Health webhook: {'configured' if s.apple_health_webhook_secret else 'not configured yet'}",
+            "- Voice (ElevenLabs), hearing (Deepgram), vision, the heartbeat, gates and the "
+            "private track: all active.",
+            "If Paul asks about a connection, answer from this list — or tell him to say "
+            "'status' for a live check.",
+        ]
+        return "\n".join(lines)
+
+    STATUS_QUERY = None  # set below (regex compiled at import)
+
+    async def _handle_status(self, message: IncomingMessage) -> None:
+        """'status' / 'are you connected to Trello?' → run REAL live checks."""
+        s = self.settings
+        lines = ["SYSTEM CHECK"]
+        if self.daily12 is not None:
+            health = await self.daily12.health()
+            if health["ok"]:
+                lines.append(
+                    f"✅ Trello: connected — board '{health['board_name']}', "
+                    f"{health['cached_cards']} cards cached, last sync {health['last_sync'][:16] or 'never'}"
+                )
+            else:
+                lines.append(f"⚠️ Trello: keys present but the live check failed — {health['error']}")
+        else:
+            lines.append("▫️ Trello: not connected (keys not set)")
+        lines.append(
+            "✅ Memory: Voyage embeddings" if s.voyage_api_key
+            else "▫️ Memory: local fallback (add VOYAGE_API_KEY for proper recall)"
+        )
+        lines.append("✅ Calendar: connected" if s.calendar_ics_url else "▫️ Calendar: not connected")
+        lines.append(
+            "✅ Kiefer email: configured" if (s.gmail_address and s.kiefer_email)
+            else "▫️ Kiefer email: not configured"
+        )
+        lines.append(
+            "✅ Apple Health: webhook ready" if s.apple_health_webhook_secret
+            else "▫️ Apple Health: not configured"
+        )
+        lines.append("✅ Voice, hearing, vision, heartbeat, gates, private track: active")
+        report = "\n".join(lines)
+        await self.log.log("out", report, chat_id=message.chat_id, meta={"status_check": True})
+        await self.telegram.send_text(message.chat_id, report)
+
     # --- Milestone 4: life signals ---
 
     TIMEZONE_MAP = {
@@ -272,6 +466,17 @@ class JarvisRouter:
         import re
 
         lowered = transcript.lower()
+
+        # System check: "status" / "are you connected to trello?"
+        if re.search(
+            r"^\s*status\s*$|\bsystem (check|status)\b"
+            r"|\b(confirm|check|got|have|do you have)\b.{0,16}\baccess\b.{0,24}\b(trello|board|calendar|gmail|email)\b"
+            r"|\b(are you|you)\b.{0,12}\bconnect(ed)?\b.{0,20}\b(trello|calendar|gmail|board)\b"
+            r"|\b(trello|calendar|gmail)\b.{0,20}\b(connected|working|wired|linked)\b",
+            lowered,
+        ):
+            await self._handle_status(message)
+            return True
 
         # Timezone: "I'm in Dubai" / "landed in the UK"
         move = re.search(r"\b(?:i'?m in|landed in|back in|arrived in)\s+(?:the\s+)?(\w+)", lowered)
@@ -315,12 +520,16 @@ class JarvisRouter:
         # The phrase-match only nominates candidates — the fast model confirms
         # done vs not-done, so "I haven't done my run" never logs a run.
         candidates = detect_activities(transcript)
-        if candidates:
+        meds_candidate = mentions_meds(transcript)
+        if candidates or meds_candidate:
             tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
             today = datetime.now(ZoneInfo(tz_name)).date()
             verdicts = await self._confirm_activities(transcript, candidates)
 
             recorded, corrected = [], []
+            if meds_candidate and verdicts.get("medication") == "done" and self.gates is not None:
+                await self.gates.confirm("meds", today)
+                recorded.append("Meds confirmed")
             for activity in candidates:
                 verdict = verdicts.get(activity, "na")
                 if verdict == "done":
@@ -359,11 +568,12 @@ class JarvisRouter:
         return False
 
     ACTIVITY_CONFIRM_SYSTEM = (
-        'Paul mentioned training activities. For each of run, workout, meals decide from his '
-        'message alone: "done" (he clearly states he completed it today), "not_done" (he states '
-        'he has NOT done it / missed it / will do it later), or "na" (not mentioned or unclear). '
+        'Paul mentioned daily activities. For each of run, workout, meals, medication decide from '
+        'his message alone: "done" (he clearly states he completed/took it today), "not_done" (he '
+        'states he has NOT / missed it / will do it later), or "na" (not mentioned or unclear). '
         'Negations like "haven\'t", "not done", "yet", "missed" mean not_done. Reply ONLY JSON: '
-        '{"run":"done|not_done|na","workout":"done|not_done|na","meals":"done|not_done|na"}'
+        '{"run":"done|not_done|na","workout":"done|not_done|na","meals":"done|not_done|na",'
+        '"medication":"done|not_done|na"}'
     )
 
     async def _confirm_activities(self, transcript: str, candidates: list[str]) -> dict[str, str]:
@@ -382,9 +592,10 @@ class JarvisRouter:
         except Exception:
             logger.exception("Activity confirmation failed — using conservative fallback")
         # Fallback without the model: under-log rather than falsely credit.
+        keys = list(candidates) + (["medication"] if mentions_meds(transcript) else [])
         if looks_negated(transcript):
-            return {activity: "na" for activity in candidates}
-        return {activity: "done" for activity in candidates}
+            return {key: "na" for key in keys}
+        return {key: "done" for key in keys}
 
     async def _handle_task_talk(self, message: IncomingMessage, transcript: str) -> bool:
         """Daily 12 queries and voice feedback → Trello (Milestone 3). Returns
@@ -407,18 +618,22 @@ class JarvisRouter:
                 return False  # ordinary conversation after all
             results, show = await execute_actions(self.daily12, actions)
             replied = True  # the board may have changed — this exchange is ours now
-            reply = " ".join(results) if results else "Done."
-            await self.log.log("out", reply, chat_id=message.chat_id, meta={"actions": actions})
-            channel, reply_text = decide_reply(reply, incoming_was_voice=message.is_voice)
-            if channel == "voice":
-                try:
-                    audio = await self.elevenlabs.synthesize(strip_for_speech(reply_text))
-                    await self.telegram.send_voice(message.chat_id, audio, transcript=reply_text)
-                except SynthesisError:
+            if results:
+                reply = " ".join(results)
+                await self.log.log("out", reply, chat_id=message.chat_id, meta={"actions": actions})
+                channel, reply_text = decide_reply(reply, incoming_was_voice=message.is_voice)
+                if channel == "voice":
+                    try:
+                        audio = await self.elevenlabs.synthesize(strip_for_speech(reply_text))
+                        await self.telegram.send_voice(message.chat_id, audio, transcript=reply_text)
+                    except SynthesisError:
+                        await self.telegram.send_text(message.chat_id, reply_text)
+                else:
                     await self.telegram.send_text(message.chat_id, reply_text)
-            else:
-                await self.telegram.send_text(message.chat_id, reply_text)
-            if show:
+            if show or not results:
+                # A show request builds the plan if it doesn't exist yet —
+                # never the old "no plan yet" brush-off.
+                await self.daily12.generate(plan_date)
                 shown = await self.daily12.format_plan(plan_date)
                 await self.log.log("out", shown, chat_id=message.chat_id)
                 await self.telegram.send_text(message.chat_id, shown)

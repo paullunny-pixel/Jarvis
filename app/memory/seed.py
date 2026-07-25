@@ -11,7 +11,7 @@ from app.memory.store import LivingFacts, MemoryStore
 
 logger = logging.getLogger(__name__)
 
-SEED_VERSION = "1"
+SEED_VERSION = "2"
 
 # (content, room, type, tags)
 STABLE_CHUNKS: list[tuple[str, str, str, list[str]]] = [
@@ -67,12 +67,18 @@ STABLE_CHUNKS: list[tuple[str, str, str, list[str]]] = [
     ("Paul co-owns a UK house with his ex, Frankie, which needs to be sold. A big ongoing project with next-actions.", "you", "STABLE", ["house-sale", "frankie"]),
 ]
 
+# Family lives in the PEOPLE room: Jarvis needs it to plan Paul's real life
+# (birthdays, custody rhythm, school holidays). It still never reaches outbound
+# reports — the Kiefer note composes from task/streak data only, by construction.
+FAMILY_CHUNKS: list[tuple[str, str, str, list[str]]] = [
+    ("Steph — Paul's girlfriend, Brazilian, lives in his Dubai apartment. Paul currently supports her financially. (Complicated — details to come.)", "people", "STABLE", ["steph", "family"]),
+    ("Eva — Paul's daughter, 8, birthday 28 September. Loves K-pop, baking, arts & crafts, dancing, reading.", "people", "STABLE", ["eva", "family"]),
+    ("Jack — Paul's son, 7, birthday 2 October. Loves Minecraft, Super Zings, Pokémon.", "people", "STABLE", ["jack", "family"]),
+    ("Jade — Paul's ex-wife, mother of Eva and Jack; receives £1,150/month child support.", "people", "STABLE", ["jade", "family"]),
+    ("Frankie — a different ex-partner; co-owns the UK house being sold; Harry's sister.", "people", "STABLE", ["frankie", "family"]),
+]
+
 PRIVATE_CHUNKS: list[tuple[str, str, str, list[str]]] = [
-    ("Steph — Paul's girlfriend, Brazilian, lives in his Dubai apartment. Paul currently supports her financially. (Complicated — details to come.)", "private", "PRIVATE", ["steph", "family"]),
-    ("Eva — Paul's daughter, 8, birthday 28 September. Loves K-pop, baking, arts & crafts, dancing, reading.", "private", "PRIVATE", ["eva", "family"]),
-    ("Jack — Paul's son, 7, birthday 2 October. Loves Minecraft, Super Zings, Pokémon.", "private", "PRIVATE", ["jack", "family"]),
-    ("Jade — Paul's ex-wife, mother of Eva and Jack; receives £1,150/month child support.", "private", "PRIVATE", ["jade", "family"]),
-    ("Frankie — a different ex-partner; co-owns the UK house being sold; Harry's sister.", "private", "PRIVATE", ["frankie", "family"]),
     ("Sobriety triggers and how Jarvis gets ahead of each: flying/travel days (check in before and after flights, pre-plan the journey, extra presence); work events especially trade shows (high-risk — prep beforehand, stay close during, decompress after); loneliness, a major trigger (watch for quiet evenings, time away from the kids/Steph, low engagement — reach out first, nudge a call to John, Kiefer or Steph); not feeling happy/fulfilled (reconnect to the deeper why and the day's wins); overwhelm around the kids, worst in school holidays (keep work light, offer decompression, normalise that it's hard — gentle, never guilt).", "private", "PRIVATE", ["sobriety", "triggers"]),
     ("Sobriety approach: proactive and pattern-aware — cross-reference sleep, mood, isolation and the travel/event calendar to anticipate hard days. SOS on demand. Celebrate milestones. Always 'I've got you', never a scoreboard. Optional additions when Paul's ready: a who-to-call shortlist and a preferred professional/helpline resource on file.", "private", "PRIVATE", ["sobriety", "approach"]),
 ]
@@ -97,14 +103,36 @@ LIVING_SEED: list[tuple[str, str, str]] = [
 ]
 
 
+FAMILY_NAMES = ("Steph —", "Eva —", "Jack —", "Jade —", "Frankie —")
+
+
+async def _migrate_v1_to_v2(memory: MemoryStore) -> int:
+    """v1 filed family under the private room; v2 moves it to people so the
+    planner brain can use it. Old private rows are marked superseded."""
+    moved = 0
+    for row in await memory.audit(room="private", include_private=True):
+        if row["source"] == "day-one-brain" and row["content"].startswith(FAMILY_NAMES):
+            entry = next((e for e in FAMILY_CHUNKS if row["content"] == e[0]), None)
+            content, room, type_, tags = entry if entry else (row["content"], "people", "STABLE", ["family"])
+            await memory.supersede(row["id"], content, room=room, type_=type_, tags=tags, source="day-one-brain")
+            moved += 1
+    logger.info("Seed migration v1→v2: %d family facts moved to the people room", moved)
+    return moved
+
+
 async def load_day_one_brain(
     memory: MemoryStore, living: LivingFacts, settings_store: SettingsStore
 ) -> int:
-    """Load the seed once. Returns number of chunks written (0 if already loaded)."""
-    if await settings_store.get("seed_version") == SEED_VERSION:
+    """Load the seed once (versioned). Returns number of chunks written/moved."""
+    current = await settings_store.get("seed_version")
+    if current == SEED_VERSION:
         return 0
+    if current == "1":
+        moved = await _migrate_v1_to_v2(memory)
+        await settings_store.set("seed_version", SEED_VERSION)
+        return moved
     count = 0
-    for content, room, type_, tags in STABLE_CHUNKS + PRIVATE_CHUNKS:
+    for content, room, type_, tags in STABLE_CHUNKS + FAMILY_CHUNKS + PRIVATE_CHUNKS:
         await memory.add_chunk(content, room=room, type_=type_, source="day-one-brain", tags=tags)
         count += 1
     for key, value, room in LIVING_SEED:

@@ -51,6 +51,25 @@ class Daily12Service:
         self._settings = SettingsStore(db)
         self._tz_default = timezone_default
 
+    async def health(self) -> dict:
+        """Live connection check — actually calls Trello and reports the truth."""
+        try:
+            boards = await self._trello.my_boards()
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)[:200]}
+        board_id = await self._settings.get(BOARD_KEY)
+        board_name = next((b["name"] for b in boards if b["id"] == board_id), "")
+        if not board_name and boards:
+            board_name = boards[0]["name"]
+        cached = await self._db.fetch_one("SELECT COUNT(*) AS n FROM tasks")
+        return {
+            "ok": True,
+            "boards": len(boards),
+            "board_name": board_name,
+            "cached_cards": int(cached["n"]) if cached else 0,
+            "last_sync": await self._settings.get("trello_last_sync", "never"),
+        }
+
     # ------------------------------------------------------------------ sync
 
     async def resolve_board(self) -> str:
@@ -367,7 +386,10 @@ class Daily12Service:
         )
         nudge = ""
         if row and int(row["defer_count"]) >= 3:
-            nudge = " You keep dodging this one — it'll keep coming back heavier."
+            nudge = (
+                " I'll note that's this one's third deferral, sir — it will keep rising up the "
+                "list until we deal with it. Shall we give it two minutes tomorrow, first thing?"
+            )
         return f"'{task['title']}' pushed to {human_when}.{nudge}"
 
     async def create(self, title: str, assignee: str = "", due_iso: str = "") -> str:

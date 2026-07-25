@@ -108,13 +108,13 @@ class TestRouterMemory(unittest.IsolatedAsyncioTestCase):
         await h.router.handle_update(text_update("feeling a bit off around sobriety today", OWNER))
         system = h.claude_requests[0]["system"]
         # Only the recalled-memory block matters (the persona itself may name
-        # the sobriety track — that's instruction, not leaked data).
+        # the sobriety track — that's instruction, not leaked data). Family
+        # facts now live in the people room BY DESIGN (planning needs them);
+        # the sobriety-track content is what must never surface here.
         recalled = system.split("Relevant knowledge")[-1]
         self.assertNotIn("trade shows", recalled)   # sobriety triggers (private room)
-        self.assertNotIn("K-pop", recalled)         # Eva's profile (private room)
-        self.assertNotIn("Brazilian", recalled)     # Steph's profile (private room)
+        self.assertNotIn("SOS", recalled)           # sobriety approach (private room)
         self.assertNotIn("sobriety.", recalled)     # no private living keys
-        # (commitments.steph in Finances is deliberate — Day-One Brain Room 4)
 
     async def test_document_upload_is_ingested_and_confirmed(self):
         h = self.harness()

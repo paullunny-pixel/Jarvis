@@ -38,6 +38,7 @@ class IncomingMessage:
     document_file_id: str = ""
     document_name: str = ""
     document_mime: str = ""
+    photo_file_id: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -48,6 +49,10 @@ class IncomingMessage:
     def is_document(self) -> bool:
         return bool(self.document_file_id)
 
+    @property
+    def is_photo(self) -> bool:
+        return bool(self.photo_file_id)
+
 
 def parse_update(update: dict[str, Any]) -> IncomingMessage | None:
     """Extract the message from a webhook update. Returns None for updates we
@@ -57,6 +62,7 @@ def parse_update(update: dict[str, Any]) -> IncomingMessage | None:
         return None
     voice = message.get("voice") or {}  # only true voice notes; audio files are not speech
     document = message.get("document") or {}
+    photos = message.get("photo") or []  # sizes ascending; last is the largest
     sender = message.get("from") or {}
     name = " ".join(filter(None, [sender.get("first_name"), sender.get("last_name")])) or "unknown"
     return IncomingMessage(
@@ -69,6 +75,7 @@ def parse_update(update: dict[str, Any]) -> IncomingMessage | None:
         document_file_id=document.get("file_id", ""),
         document_name=document.get("file_name", "upload"),
         document_mime=document.get("mime_type", ""),
+        photo_file_id=photos[-1].get("file_id", "") if photos else "",
         raw=update,
     )
 

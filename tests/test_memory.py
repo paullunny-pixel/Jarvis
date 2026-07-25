@@ -5,7 +5,13 @@ import unittest
 from app.core.store import SettingsStore
 from app.memory.crypto import PrivateBox
 from app.memory.embedder import HashEmbedder, cosine
-from app.memory.seed import LIVING_SEED, PRIVATE_CHUNKS, STABLE_CHUNKS, load_day_one_brain
+from app.memory.seed import (
+    FAMILY_CHUNKS,
+    LIVING_SEED,
+    PRIVATE_CHUNKS,
+    STABLE_CHUNKS,
+    load_day_one_brain,
+)
 from app.memory.store import LivingFacts, MemoryStore
 from app.db.sqlite import SqliteDatabase
 
@@ -124,7 +130,7 @@ class TestSeed(MemoryBase):
     async def test_seed_loads_once(self):
         store = SettingsStore(self.db)
         n1 = await load_day_one_brain(self.memory, self.living, store)
-        self.assertEqual(n1, len(STABLE_CHUNKS) + len(PRIVATE_CHUNKS))
+        self.assertEqual(n1, len(STABLE_CHUNKS) + len(FAMILY_CHUNKS) + len(PRIVATE_CHUNKS))
         n2 = await load_day_one_brain(self.memory, self.living, store)
         self.assertEqual(n2, 0)
         row = await self.db.fetch_one("SELECT COUNT(*) AS n FROM memory_chunks")
@@ -146,6 +152,28 @@ class TestSeed(MemoryBase):
             "sobriety triggers", include_private=True, rooms=["private"], k=5
         )
         self.assertTrue(any("trade shows" in h["content"] for h in private_hits))
+
+    async def test_family_knowledge_is_recallable_for_planning(self):
+        await load_day_one_brain(self.memory, self.living, SettingsStore(self.db))
+        hits = await self.memory.search("Eva birthday September K-pop", k=4)
+        self.assertTrue(any("28 September" in h["content"] for h in hits))
+        self.assertTrue(all(h["room"] == "people" or h["room"] != "private" for h in hits))
+
+    async def test_v1_to_v2_migration_moves_family_out_of_private(self):
+        store = SettingsStore(self.db)
+        # Simulate a v1 deployment: family seeded into the private room.
+        for content, _room, _type, tags in FAMILY_CHUNKS:
+            await self.memory.add_chunk(content, room="private", type_="PRIVATE",
+                                        source="day-one-brain", tags=tags)
+        await store.set("seed_version", "1")
+        moved = await load_day_one_brain(self.memory, self.living, store)
+        self.assertEqual(moved, len(FAMILY_CHUNKS))
+        self.assertEqual(await store.get("seed_version"), "2")
+        hits = await self.memory.search("Jack Minecraft birthday October", k=4)
+        self.assertTrue(any("2 October" in h["content"] for h in hits))
+        # old private copies are superseded, not current
+        private_rows = await self.memory.audit(room="private", include_private=True)
+        self.assertTrue(all(not r["content"].startswith("Jack —") for r in private_rows))
 
     async def test_seed_living_facts_present(self):
         await load_day_one_brain(self.memory, self.living, SettingsStore(self.db))

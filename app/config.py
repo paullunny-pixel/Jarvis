@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     deepgram_api_key: str = ""
     elevenlabs_api_key: str = ""
-    elevenlabs_voice_id: str = "onwK4e9ZLuTAKqWW03F9"  # "Daniel" — solid default British male; swap any time
+    elevenlabs_voice_id: str = "ocxtQ2JlkrCrim3Wvtji"  # Paul's chosen Jarvis voice; swap any time
     telegram_bot_token: str = ""
 
     # Only Paul may talk to Jarvis. Set after first contact (Jarvis tells you the id).

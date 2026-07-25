@@ -69,7 +69,7 @@ class ClaudeClient:
     async def converse(
         self,
         system: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],  # content may be text or vision blocks
         max_tokens: int = 1024,
     ) -> str:
         """Full-quality Jarvis reply (brain model)."""
@@ -82,6 +82,35 @@ class ClaudeClient:
             }
         )
         return self._text_of(data)
+
+    async def quick_vision(
+        self,
+        prompt: str,
+        image_b64: str,
+        media_type: str = "image/jpeg",
+        system: str = "",
+        max_tokens: int = 300,
+    ) -> str:
+        """Cheap/fast task over an image (fast model has vision)."""
+        payload: dict[str, Any] = {
+            "model": self.fast_model,
+            "max_tokens": max_tokens,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": media_type, "data": image_b64},
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ],
+        }
+        if system:
+            payload["system"] = system
+        return self._text_of(await self._call(payload))
 
     async def quick(self, prompt: str, system: str = "", max_tokens: int = 300) -> str:
         """Cheap/fast structured task (fast model): routing, parsing, classification."""

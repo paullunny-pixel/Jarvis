@@ -176,7 +176,7 @@ class TestService(unittest.IsolatedAsyncioTestCase):
         await self.service.generate(date(2026, 7, 25))
         for _ in range(3):
             result = await self.service.defer("website relaunch", "2026-07-31", "Friday")
-        self.assertIn("dodging", result)
+        self.assertIn("deferral", result)
 
     async def test_create_task_on_kiefer(self):
         result = await self.service.create("VAT return prep", assignee="Kiefer")

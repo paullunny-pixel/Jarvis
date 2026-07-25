@@ -1,0 +1,80 @@
+# Jarvis — Paul's voice-first AI chief-of-staff
+
+Read `docs/` before making design decisions — especially
+`Jarvis-Build-and-Launch-Plan.md` (§15 locked stack, §16 Daily 12 scoring),
+`Jarvis-System-Prompt.md` (persona) and `Jarvis-Data-Model.md`. Phase 1 is
+complete and LIVE in production; Paul (non-technical) talks to this bot daily.
+
+## What this is
+
+A Telegram bot (webhook mode) + FastAPI backend on Render with managed
+Postgres (pgvector). Voice notes → Deepgram STT → Claude Opus (Jarvis persona)
+→ ElevenLabs TTS replies. Second brain (rooms/types + living facts + document
+library), Trello-driven "Daily 12" task engine, APScheduler heartbeat
+(briefs/nudges/reviews/Kiefer email), web cockpit, private sobriety track,
+non-skippable gates (run + meds).
+
+## Commands
+
+- Tests: `python -m unittest discover -s tests` (194 tests; stdlib unittest,
+  NOT pytest — keep it that way, tests must run with no extra deps)
+- No local run needed for most work; local dev uses SQLite automatically
+  (`DATABASE_URL` empty) and `python -m scripts.run_polling` for a live bot.
+
+## Deploy flow
+
+Push to `main` on GitHub → Render auto-deploys (`render.yaml` blueprint:
+web service + Postgres). Secrets live ONLY in Render's Environment tab —
+never commit keys, tokens, or `.env`. Schema changes are additive and
+idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
+
+## Architecture map
+
+- `app/main.py` — FastAPI app, webhooks (Telegram, Apple Health), cockpit routes
+- `app/core/router.py` — the message pipeline. ORDER MATTERS: owner check →
+  documents → photos (vision + run-proof) → voice STT → PRIVATE ROOM (before
+  general logging!) → life signals (status/timezone/hound/streaks/meds) →
+  document requests → gated task-talk → brain conversation → memory writer
+- `app/clients/` — thin httpx clients (Anthropic, Deepgram, ElevenLabs,
+  Telegram). Deliberately no SDKs; keep them thin and MockTransport-testable
+- `app/db/` — dual-dialect layer: SQLite (dev/tests) + Postgres/asyncpg (prod).
+  SQL uses `?` placeholders (auto-translated to `$n`). Use
+  `insert_returning_id` for inserts whose id you need (race-free)
+- `app/memory/` — second brain: chunks (pgvector), living facts, seed +
+  versioned migrations, Fernet encryption for private content
+- `app/daily12/` — Trello sync, §16 scoring (pure functions in `scoring.py`),
+  voice-command parsing, board write-back
+- `app/heartbeat/` — scheduler jobs, streaks, gates, ICS calendar, SMTP email
+- `app/private/` — sobriety track (walled off)
+- `app/cockpit/` — dashboard (design source: `docs/prototype-progress-cockpit.html`)
+
+## Hard invariants — never break these
+
+1. **The private wall.** Private-room/PRIVATE-type content never enters
+   business context, the general message log (redacted `[private exchange]`
+   markers only), or any outbound report. The Kiefer note composes ONLY from
+   task/streak data and passes `assert_no_private_content` before sending.
+   Sobriety rows are encrypted with `PrivateBox` (PRIVATE_ROOM_KEY env).
+2. **Persona register** (`app/persona.py`): composed, courteous British AI
+   aide; dry affectionate wit; firm through candour; NEVER passive-aggressive.
+   Paul explicitly rejected a snarkier tone — keep it.
+3. **§16 scoring weights** (0.35/0.25/0.25/0.15) are spec-locked; tunable via
+   arguments, not by editing constants casually.
+4. **Negation-aware logging:** phrase matchers only nominate; Haiku confirms
+   done/not_done before any streak/gate/board mutation ("I have NOT done my
+   run" must never log a run — there's a regression suite, keep it green).
+5. **Every reply degrades gracefully** — TTS failure → text; Claude failure →
+   honest fallback line; Trello failure → local state + apology. The bot must
+   always answer.
+6. **Self-knowledge:** integration ground truth is injected into every brain
+   turn (`_integration_status`) and "status" runs live checks — the model must
+   never guess about its own wiring.
+
+## Working with Paul
+
+He speaks in feature ideas and screenshots, not specs. Small tweaks (tone,
+times, thresholds) are "Level 1" — often just prompt/config edits. New
+capabilities are "Level 2" — keep them modular bolt-ons per Plan §14. Pending
+upgrade list: timed medication reminders; whatever the Trello onboarding
+session surfaces. Phase 2 (per Plan §9): two-way Calendar & Gmail, Apple
+Health + MyFitnessPal, finance/villa tracker, live workout coaching.

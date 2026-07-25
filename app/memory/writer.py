@@ -25,7 +25,9 @@ chit-chat, questions, and one-off logistics. Reply with ONLY a JSON array \
  "living_key": "<dotted.key or empty — set ONLY for LIVING numeric/status facts, e.g. health.weight_kg, villa.paid_pct>"}
 
 Rules:
-- Sobriety, medication, family-relationship matters → room "private", type "PRIVATE".
+- Sobriety and medication → room "private", type "PRIVATE".
+- Family and relationships (kids, partner, exes) → room "people", type "STABLE" —
+  known to the assistant for planning, never shared onward.
 - Numbers that change over time (weight, balances, targets, deadlines) → type "LIVING" with a living_key.
 - Company/product/people facts → their rooms, usually STABLE.
 - At most 5 items. Quality over quantity.\

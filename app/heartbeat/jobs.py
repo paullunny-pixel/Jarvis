@@ -46,6 +46,7 @@ class HeartbeatJobs:
         emailer: Emailer | None = None,
         kiefer_email: str = "",
         private_track=None,   # PrivateTrack — trigger-aware support (Milestone 6)
+        gates=None,           # GateKeeper — the non-skippables
     ) -> None:
         self.settings = settings
         self.db = db
@@ -57,6 +58,7 @@ class HeartbeatJobs:
         self.emailer = emailer
         self.kiefer_email = kiefer_email
         self.private_track = private_track
+        self.gates = gates
         self.store = SettingsStore(db)
         self.streaks = Streaks(db)
         self.log = MessageLog(db)
@@ -103,8 +105,10 @@ class HeartbeatJobs:
             out = await self.claude.quick(
                 f"{instruction}\n\nData:\n{data}\n\nReply with the message only — no preamble.",
                 system=(
-                    "You are Jarvis, Paul's firm-coach British AI chief-of-staff. Direct, sharp, "
-                    "a little wit, never cruel. Concise — this is a Telegram message."
+                    "You are Jarvis, Paul's British AI chief-of-staff in the mould of the great "
+                    "fictional AI butlers: impeccably courteous, composed, precise, dry affectionate "
+                    "wit, occasionally 'sir'. Direct and candid but never passive-aggressive, never "
+                    "sarcastic, never guilt-tripping. Concise — this is a Telegram message."
                 ),
                 max_tokens=max_tokens,
             )
@@ -142,6 +146,14 @@ class HeartbeatJobs:
         snapshot = await self.streaks.snapshot(today)
 
         skeleton = compose_morning_skeleton(today, events, snapshot)
+        if self.gates is not None:
+            gate_lines = " · ".join(
+                f"{g['label']} by {g['by']}" for g in await self.gates.config()
+            )
+            skeleton += (
+                f"\n\nNON-NEGOTIABLES — {gate_lines}. Confirm each to me; "
+                "the board stays shut until they're done."
+            )
         opener = await self._flourish(
             "Write a 2–3 sentence opener for Paul's 7am brief. He's rough in his first hour — "
             "gentle, no heavy asks yet. Name the single most important thing today from the data, "
@@ -177,14 +189,21 @@ class HeartbeatJobs:
             logger.info("Hound mode auto-triggered (run_done=%s, done=%d/%d)", run_done, done, total)
 
         status = f"{done} of {total or 12} done" + ("" if run_done else ", run still not in")
+        if self.gates is not None:
+            tz = await self._tz()
+            for gate in await self.gates.outstanding(datetime.now(tz)):
+                if gate["id"] != "run":  # run already reported above
+                    status += f", {gate['label']} unconfirmed"
         if await self.hound_active():
             fallback = (
-                f"Paul, stop. {status}. Pick number one thing on the 12, two minutes, start it now "
-                f"and tell me when it's moving." + ("" if run_done else " And the run happens today — non-negotiable.")
+                f"Sir — {status}. May I suggest the top task on the twelve: two minutes to start it, "
+                f"now, and tell me when it's moving." + ("" if run_done else " The run still happens today — that one isn't negotiable.")
             )
             nudge = await self._flourish(
-                "Hound mode: Paul is avoiding. Come in hard — one single concrete next step, urgency, "
-                "two-minute start. Never cruel. If the run is missed, make it the first move. 2–4 sentences.",
+                "Hound mode: Paul is stuck and needs the push. Calm, composed urgency — one single "
+                "concrete next step, a two-minute start, total confidence in him. Firm through candour "
+                "and grace, never scolding, never passive-aggressive. If the run is missed, make it the "
+                "first move. 2–4 sentences.",
                 status,
                 fallback,
             )
@@ -210,9 +229,10 @@ class HeartbeatJobs:
         status = f"{done}/{total or 12}" + ("" if run_done else ", run missing")
         await self._send_voice(
             await self._flourish(
-                "Hound mode ping. Short, hard, kind underneath. One next action. Max 2 sentences.",
+                "Hound mode ping. Short, composed, quietly insistent — the perfectly courteous aide "
+                "who is not going anywhere. One next action. Max 2 sentences.",
                 status,
-                f"Still {status}. One task. Two minutes. Now — I'm not going anywhere.",
+                f"Still {status}, sir. One task, two minutes — I'll be right here when it's done.",
             )
         )
 

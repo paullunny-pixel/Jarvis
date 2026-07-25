@@ -45,9 +45,10 @@ class ElevenLabsClient:
                 "text": text,
                 "model_id": self.model,
                 "voice_settings": {
-                    "stability": 0.5,
+                    # Tuned for composed, even delivery (the unflappable-aide register)
+                    "stability": 0.62,
                     "similarity_boost": 0.75,
-                    "style": 0.25,
+                    "style": 0.15,
                     "use_speaker_boost": True,
                 },
             },
