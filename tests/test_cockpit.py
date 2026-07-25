@@ -1,0 +1,128 @@
+import os
+import re
+import tempfile
+import unittest
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
+
+from app.cockpit.page import render_page
+from app.cockpit.service import CockpitService
+from app.config import Settings
+from app.core.store import MessageLog, SettingsStore
+from app.heartbeat.streaks import Streaks
+from app.memory.store import LivingFacts
+from app.db.sqlite import SqliteDatabase
+
+
+class TestCockpit(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = SqliteDatabase(os.path.join(self._dir.name, "t.db"))
+        await self.db.init()
+        self.living = LivingFacts(self.db)
+        self.service = CockpitService(self.db, living=self.living)
+        self.today = datetime.now(ZoneInfo("Europe/London")).date()
+
+    async def asyncTearDown(self):
+        await self.db.close()
+        self._dir.cleanup()
+
+    async def _plant(self):
+        await MessageLog(self.db).log("in", "hello jarvis")
+        streaks = Streaks(self.db)
+        await streaks.record("run", self.today)
+        for i in range(3):
+            await self.db.execute(
+                "INSERT INTO tasks (trello_id, title, company_slug) VALUES (?, ?, 'prodermis')",
+                (f"T{i}", f"task {i}"),
+            )
+            await self.db.execute(
+                "INSERT INTO daily_12 (plan_date, position, task_id, company_slug, done)"
+                " VALUES (?, ?, ?, 'prodermis', ?)",
+                (self.today.isoformat(), i + 1, i + 1, 1 if i == 0 else 0),
+            )
+        await self.living.set("villa.paid", "~27% paid (~AED 3.10M)", room="finances")
+        await self.living.set("villa.price", "AED 11,638,800", room="finances")
+        await self.living.set("villa.next_demand", "~AED 1.2M due ~7 Jan 2027", room="finances")
+        await self.living.set("sobriety.days", "41", room="private")
+        await self.db.execute(
+            "INSERT INTO health_stats (stat_date, weight_kg) VALUES ('2026-07-01', 88.7)"
+        )
+        await self.db.execute(
+            "INSERT INTO health_stats (stat_date, weight_kg) VALUES ('2026-07-25', 87.1)"
+        )
+        await self.db.execute(
+            "INSERT INTO runs (run_date, distance_km, duration_min, source)"
+            " VALUES ('2026-07-25', 5.0, 27.5, 'apple_health')"
+        )
+
+    async def test_gather_full_shape(self):
+        await self._plant()
+        data = await self.service.gather()
+        self.assertEqual(data["streaks"]["run"]["current"], 1)
+        self.assertTrue(data["streaks"]["run"]["done_today"])
+        self.assertEqual(data["twelve"]["done"], 1)
+        self.assertEqual(data["twelve"]["total"], 3)
+        prodermis = next(c for c in data["twelve"]["by_company"] if c["slug"] == "prodermis")
+        self.assertEqual(len(prodermis["tasks"]), 3)
+        self.assertEqual(data["villa"]["pct"], 27)
+        self.assertEqual(data["body"]["weight"]["latest"], 87.1)
+        self.assertEqual(data["sobriety"]["days"], 41)
+        self.assertEqual(data["day_with_jarvis"], 1)
+        self.assertTrue(any(s["type"] == "run" and s["done"] for s in data["today"]))
+
+    async def test_kiefer_preview_carries_no_private_content(self):
+        await self._plant()
+        data = await self.service.gather()
+        preview = data["kiefer"]["preview"].lower()
+        self.assertNotIn("sober", preview)
+        self.assertNotIn("41 days strong", preview)
+        self.assertIn("daily 12", preview)
+
+    async def test_empty_day_still_renders(self):
+        data = await self.service.gather()
+        self.assertEqual(data["twelve"]["done"], 0)
+        self.assertEqual(data["twelve"]["total"], 0)
+        self.assertIsNone(data["sobriety"]["days"])
+        self.assertFalse(data["villa"]["available"])
+        self.assertIsNone(data["body"]["weight"])
+
+    async def test_bonus_appears_only_at_12_of_12(self):
+        await self._plant()
+        await self.db.execute("UPDATE daily_12 SET done = 1")
+        await self.db.execute(
+            "INSERT INTO tasks (trello_id, title, company_slug) VALUES ('TB', 'bonus task', 'derma_uk')"
+        )
+        await self.db.execute(
+            "INSERT INTO daily_12 (plan_date, position, task_id, company_slug)"
+            " VALUES (?, 0, 4, 'derma_uk')",
+            (self.today.isoformat(),),
+        )
+        data = await self.service.gather()
+        self.assertIsNotNone(data["twelve"]["bonus"])
+        self.assertEqual(data["twelve"]["bonus"]["title"], "bonus task")
+
+    async def test_sobriety_from_start_date(self):
+        await self.living.set("sobriety.start_date", "2026-07-01", room="private")
+        data = await self.service.gather()
+        self.assertEqual(data["sobriety"]["days"], (date.today() - date(2026, 7, 1)).days)
+
+
+class TestPage(unittest.TestCase):
+    def test_render_injects_data_url_and_design(self):
+        html = render_page("/cockpit/abc123/data")
+        self.assertIn("fetch('/cockpit/abc123/data')", html)
+        self.assertNotIn("DATA_URL", html)
+        self.assertIn("PROGRESS COCKPIT", html)
+        for section in ("Streaks", "Sobriety", "Kiefer", "hour-by-hour", "reactor"):
+            self.assertIn(section, html)
+        self.assertIn("🔒 private", html)
+
+    def test_cockpit_secret_stable_and_distinct(self):
+        s = Settings(telegram_bot_token="ABC", _env_file=None)
+        self.assertEqual(len(s.effective_cockpit_secret), 24)
+        self.assertNotEqual(s.effective_cockpit_secret, s.effective_webhook_secret[:24])
+
+
+if __name__ == "__main__":
+    unittest.main()

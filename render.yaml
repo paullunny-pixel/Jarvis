@@ -1,0 +1,50 @@
+# Render Blueprint — deploys the Jarvis backend + its Postgres in one click.
+# In Render: New + → Blueprint → point it at this repo.
+services:
+  - type: web
+    name: jarvis
+    runtime: python
+    plan: starter            # always-on (no cold sleeps) — required for the heartbeat
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: jarvis-db
+          property: connectionString
+      - key: PUBLIC_URL
+        sync: false          # set to the service URL after first deploy
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: DEEPGRAM_API_KEY
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: ELEVENLABS_VOICE_ID
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: VOYAGE_API_KEY
+        sync: false
+      - key: TRELLO_KEY
+        sync: false
+      - key: TRELLO_TOKEN
+        sync: false
+      - key: GMAIL_ADDRESS
+        sync: false
+      - key: GMAIL_APP_PASSWORD
+        sync: false
+      - key: KIEFER_EMAIL
+        sync: false
+      - key: CALENDAR_ICS_URL
+        sync: false
+      - key: APPLE_HEALTH_WEBHOOK_SECRET
+        generateValue: true
+      - key: PRIVATE_ROOM_KEY
+        generateValue: true   # encryption key for the private room — generated once, kept by Render
+
+databases:
+  - name: jarvis-db
+    plan: basic-256mb
+    postgresMajorVersion: "16"
