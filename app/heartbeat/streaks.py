@@ -29,6 +29,21 @@ MEALS_DONE = re.compile(
 )
 
 
+NEGATION = re.compile(
+    r"\bhaven'?t\b|\bhasn'?t\b|\bdidn'?t\b|\bnot (?:done|yet|managed|been)\b|\bno run\b"
+    r"|\byet to\b|\bstill (?:need|got|haven'?t|to do)\b|\bmissed\b|\bskipped\b|\bcouldn'?t\b"
+    r"|\bgoing to\b|\bgonna\b|\babout to\b|\bwill do\b|\blater\b",
+    re.IGNORECASE,
+)
+
+
+def looks_negated(text: str) -> bool:
+    """Cheap guard: the message contains not-done/future language. Used as the
+    fallback when the model confirmation is unavailable — prefer under-logging
+    (Jarvis nags) to falsely crediting an activity."""
+    return bool(NEGATION.search(text))
+
+
 def detect_activities(text: str) -> list[str]:
     found = []
     if RUN_DONE.search(text):
@@ -67,6 +82,24 @@ class Streaks:
                 (current, best, today_iso, streak_type),
             )
         return {"type": streak_type, "current": current, "best": best, "changed": True}
+
+    async def unrecord(self, streak_type: str, on_date: date) -> bool:
+        """Undo a same-day record (Paul corrects a wrong log). Returns whether
+        anything was undone."""
+        assert streak_type in STREAK_TYPES
+        row = await self._db.fetch_one("SELECT * FROM streaks WHERE type = ?", (streak_type,))
+        if row is None or row["last_date"] != on_date.isoformat():
+            return False
+        current = max(0, row["current_count"] - 1)
+        best = row["best_count"]
+        if best == row["current_count"]:
+            best = max(current, best - 1)
+        last = (on_date - timedelta(days=1)).isoformat() if current > 0 else ""
+        await self._db.execute(
+            "UPDATE streaks SET current_count = ?, best_count = ?, last_date = ? WHERE type = ?",
+            (current, best, last, streak_type),
+        )
+        return True
 
     async def snapshot(self, today: date) -> dict[str, dict[str, Any]]:
         """Current view of all four streaks; a streak whose last_date is older

@@ -22,7 +22,7 @@ from app.db.base import Database
 from app.daily12.commands import execute_actions, mentions_tasks, parse_actions, wants_plan
 from app.daily12.service import Daily12Service
 from app.documents.service import DocumentLibrary, looks_like_document_request
-from app.heartbeat.streaks import STREAK_LABELS, Streaks, detect_activities
+from app.heartbeat.streaks import STREAK_LABELS, Streaks, detect_activities, looks_negated
 from app.memory.store import LivingFacts, MemoryStore
 from app.memory.writer import extract_and_file, format_memory_context
 from app.persona import build_system_prompt
@@ -311,30 +311,80 @@ class JarvisRouter:
             await self.telegram.send_text(message.chat_id, reply)
             return True
 
-        # Activity reports: "run done", "smashed the workout", "meals on plan"
-        activities = detect_activities(transcript)
-        if activities:
+        # Activity reports: "run done", "smashed the workout", "meals on plan".
+        # The phrase-match only nominates candidates — the fast model confirms
+        # done vs not-done, so "I haven't done my run" never logs a run.
+        candidates = detect_activities(transcript)
+        if candidates:
             tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
             today = datetime.now(ZoneInfo(tz_name)).date()
-            parts = []
-            for activity in activities:
-                result = await self.streaks.record(activity, today)
-                parts.append(f"{STREAK_LABELS[activity]} streak: {result['current']}")
-                if activity == "run":
-                    await self.db.execute(
-                        "INSERT INTO runs (run_date, distance_km, duration_min, source)"
-                        " VALUES (?, 5.0, 0, 'told')",
-                        (today.isoformat(),),
-                    )
-            ack = "Logged. " + " · ".join(parts) + "."
-            if "run" in activities:
-                ack += " Keystone's in — the day's yours now."
-            await self.log.log("out", ack, chat_id=message.chat_id)
-            await self.telegram.send_text(message.chat_id, ack)
-            # An activity report can carry more ("run done — what's my 12?");
-            # only fall through when there's clearly a question/request left.
-            return not ("?" in transcript or wants_plan(transcript))
+            verdicts = await self._confirm_activities(transcript, candidates)
+
+            recorded, corrected = [], []
+            for activity in candidates:
+                verdict = verdicts.get(activity, "na")
+                if verdict == "done":
+                    result = await self.streaks.record(activity, today)
+                    recorded.append(f"{STREAK_LABELS[activity]} streak: {result['current']}")
+                    if activity == "run":
+                        await self.db.execute(
+                            "INSERT INTO runs (run_date, distance_km, duration_min, source)"
+                            " VALUES (?, 5.0, 0, 'told')",
+                            (today.isoformat(),),
+                        )
+                elif verdict == "not_done" and await self.streaks.done_today(activity, today):
+                    # He's correcting a wrong log — undo it.
+                    await self.streaks.unrecord(activity, today)
+                    if activity == "run":
+                        await self.db.execute(
+                            "DELETE FROM runs WHERE run_date = ? AND source = 'told'",
+                            (today.isoformat(),),
+                        )
+                    corrected.append(STREAK_LABELS[activity])
+
+            if recorded:
+                ack = "Logged. " + " · ".join(recorded) + "."
+                if any(part.startswith("Run") for part in recorded):
+                    ack += " Keystone's in — the day's yours now."
+                await self.log.log("out", ack, chat_id=message.chat_id)
+                await self.telegram.send_text(message.chat_id, ack)
+                return not ("?" in transcript or wants_plan(transcript))
+            if corrected:
+                ack = f"My mistake — {' and '.join(corrected)} unlogged, streak corrected."
+                await self.log.log("out", ack, chat_id=message.chat_id)
+                await self.telegram.send_text(message.chat_id, ack)
+                return False  # let Jarvis respond to the actual situation too
+            # Mentioned but not done → the coach handles it in conversation.
+            return False
         return False
+
+    ACTIVITY_CONFIRM_SYSTEM = (
+        'Paul mentioned training activities. For each of run, workout, meals decide from his '
+        'message alone: "done" (he clearly states he completed it today), "not_done" (he states '
+        'he has NOT done it / missed it / will do it later), or "na" (not mentioned or unclear). '
+        'Negations like "haven\'t", "not done", "yet", "missed" mean not_done. Reply ONLY JSON: '
+        '{"run":"done|not_done|na","workout":"done|not_done|na","meals":"done|not_done|na"}'
+    )
+
+    async def _confirm_activities(self, transcript: str, candidates: list[str]) -> dict[str, str]:
+        import json as _json
+        import re as _re
+
+        try:
+            raw = await self.claude.quick(
+                transcript, system=self.ACTIVITY_CONFIRM_SYSTEM, max_tokens=100
+            )
+            match = _re.search(r"\{.*\}", raw, _re.DOTALL)
+            if match:
+                verdicts = _json.loads(match.group(0))
+                allowed = {"done", "not_done", "na"}
+                return {k: v for k, v in verdicts.items() if v in allowed}
+        except Exception:
+            logger.exception("Activity confirmation failed — using conservative fallback")
+        # Fallback without the model: under-log rather than falsely credit.
+        if looks_negated(transcript):
+            return {activity: "na" for activity in candidates}
+        return {activity: "done" for activity in candidates}
 
     async def _handle_task_talk(self, message: IncomingMessage, transcript: str) -> bool:
         """Daily 12 queries and voice feedback → Trello (Milestone 3). Returns
