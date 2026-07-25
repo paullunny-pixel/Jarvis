@@ -9,9 +9,20 @@ from app.memory.embedder import HashEmbedder
 from app.memory.store import MemoryStore
 from app.db.sqlite import SqliteDatabase
 
+try:
+    import reportlab  # noqa: F401 — optional, only for building PDF fixtures
+
+    HAVE_REPORTLAB = True
+except ImportError:
+    HAVE_REPORTLAB = False
+
+requires_reportlab = unittest.skipUnless(
+    HAVE_REPORTLAB, "reportlab not installed (optional, test-only PDF fixture builder)"
+)
+
 
 def make_pdf(text: str) -> bytes:
-    """Build a tiny real PDF with reportlab (available in this environment and CI)."""
+    """Build a tiny real PDF with reportlab (optional test-only dependency)."""
     import io
 
     from reportlab.lib.pagesizes import A4
@@ -41,6 +52,7 @@ def make_docx(text: str) -> bytes:
 
 
 class TestExtraction(unittest.TestCase):
+    @requires_reportlab
     def test_pdf(self):
         data = make_pdf("BMI Manufacturing Agreement\nMinimum order quantities apply.")
         text = extract_text(data, "bmi-contract.pdf")
@@ -84,6 +96,7 @@ class TestLibrary(unittest.IsolatedAsyncioTestCase):
         await self.db.close()
         self._dir.cleanup()
 
+    @requires_reportlab
     async def test_ingest_find_fetch_roundtrip(self):
         pdf = make_pdf("BMI Manufacturing Agreement between Prodermis and BMI.\nDermal filler MOQ terms.")
         summary = await self.library.ingest(pdf, "bmi-contract.pdf", mime="application/pdf")

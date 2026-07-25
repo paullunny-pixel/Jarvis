@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# Secrets — real keys live only in Render's Environment tab
+.env
+
+# Local dev database (SQLite, created when DATABASE_URL is unset)
+jarvis.db*
