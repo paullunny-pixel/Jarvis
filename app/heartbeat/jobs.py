@@ -47,6 +47,7 @@ class HeartbeatJobs:
         kiefer_email: str = "",
         private_track=None,   # PrivateTrack — trigger-aware support (Milestone 6)
         gates=None,           # GateKeeper — the non-skippables
+        mail=None,            # MailService — inbox counts in the brief (Phase 2)
     ) -> None:
         self.settings = settings
         self.db = db
@@ -59,6 +60,7 @@ class HeartbeatJobs:
         self.kiefer_email = kiefer_email
         self.private_track = private_track
         self.gates = gates
+        self.mail = mail
         self.store = SettingsStore(db)
         self.streaks = Streaks(db)
         self.log = MessageLog(db)
@@ -146,6 +148,13 @@ class HeartbeatJobs:
         snapshot = await self.streaks.snapshot(today)
 
         skeleton = compose_morning_skeleton(today, events, snapshot)
+        if self.mail is not None:
+            try:
+                inbox_line = await self.mail.brief_line()
+                if inbox_line:
+                    skeleton += "\n" + inbox_line
+            except Exception:
+                logger.exception("Inbox counts failed for the brief — continuing without")
         if self.gates is not None:
             gate_lines = " · ".join(
                 f"{g['label']} by {g['by']}" for g in await self.gates.config()

@@ -54,7 +54,18 @@ class Settings(BaseSettings):
     gmail_address: str = ""            # sends the nightly Kiefer note (app password, no OAuth)
     gmail_app_password: str = ""
     kiefer_email: str = ""
-    calendar_ics_url: str = ""         # Google Calendar 'secret address in iCal format'
+    calendar_ics_url: str = ""         # Google Calendar 'secret address in iCal format';
+                                       # several calendars = several URLs, comma-separated
+
+    # --- Email inboxes (Phase 2) — IMAP/SMTP via Google app passwords ---
+    email1_address: str = ""
+    email1_app_password: str = ""
+    email2_address: str = ""
+    email2_app_password: str = ""
+    email3_address: str = ""
+    email3_app_password: str = ""
+    email4_address: str = ""
+    email4_app_password: str = ""
 
     # --- Phase 1 later milestones (requested when needed) ---
     trello_key: str = ""
@@ -67,6 +78,16 @@ class Settings(BaseSettings):
     r2_endpoint: str = ""
     apple_health_webhook_secret: str = ""
     private_room_key: str = ""   # encryption key for the sobriety room (Milestone 6)
+
+    def email_accounts(self) -> list[tuple[str, str]]:
+        """(address, app_password) for every configured inbox slot."""
+        slots = [
+            (self.email1_address, self.email1_app_password),
+            (self.email2_address, self.email2_app_password),
+            (self.email3_address, self.email3_app_password),
+            (self.email4_address, self.email4_app_password),
+        ]
+        return [(a.strip(), p.strip()) for a, p in slots if a.strip() and p.strip()]
 
     @property
     def effective_cockpit_secret(self) -> str:

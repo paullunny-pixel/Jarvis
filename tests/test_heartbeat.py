@@ -112,6 +112,53 @@ class TestCalendar(unittest.TestCase):
         self.assertEqual(flags, ["Flight EK18 MAN-DXB"])
 
 
+ICS_WORK = """BEGIN:VCALENDAR
+BEGIN:VEVENT
+DTSTART;TZID=Europe/London:20260725T113000
+SUMMARY:Prodermis distributor call
+END:VEVENT
+END:VCALENDAR
+"""
+
+
+class TestMultiCalendar(unittest.IsolatedAsyncioTestCase):
+    async def test_merges_events_from_all_calendar_urls(self):
+        from app.heartbeat.calendar_ics import IcsCalendar
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = ICS if "personal" in str(request.url) else ICS_WORK
+            return httpx.Response(200, text=body)
+
+        calendar = IcsCalendar(
+            "https://cal.example/personal.ics, https://cal.example/work.ics",
+            transport=httpx.MockTransport(handler),
+        )
+        self.assertEqual(calendar.calendar_count, 2)
+        events = await calendar.events_for(TODAY, ZoneInfo("Europe/London"))
+        titles = [e["title"] for e in events]
+        self.assertIn("Call with Kiefer", titles)          # personal calendar
+        self.assertIn("Prodermis distributor call", titles)  # work calendar
+        times = [e["time"] for e in events]
+        self.assertEqual(times, sorted(times, key=lambda t: "00:00" if t == "all day" else t))
+        await calendar.close()
+
+    async def test_one_dead_calendar_does_not_sink_the_rest(self):
+        from app.heartbeat.calendar_ics import IcsCalendar
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "dead" in str(request.url):
+                return httpx.Response(500, text="gone")
+            return httpx.Response(200, text=ICS_WORK)
+
+        calendar = IcsCalendar(
+            "https://cal.example/dead.ics https://cal.example/work.ics",
+            transport=httpx.MockTransport(handler),
+        )
+        events = await calendar.events_for(TODAY, ZoneInfo("Europe/London"))
+        self.assertEqual([e["title"] for e in events], ["Prodermis distributor call"])
+        await calendar.close()
+
+
 class JobsHarness:
     def __init__(self, db, flourish="Right then, Paul."):
         self.telegram_calls = []

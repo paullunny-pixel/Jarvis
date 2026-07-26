@@ -39,6 +39,18 @@ services:
         sync: false
       - key: CALENDAR_ICS_URL
         sync: false
+      - key: EMAIL1_ADDRESS
+        sync: false
+      - key: EMAIL1_APP_PASSWORD
+        sync: false
+      - key: EMAIL2_ADDRESS
+        sync: false
+      - key: EMAIL2_APP_PASSWORD
+        sync: false
+      - key: EMAIL3_ADDRESS
+        sync: false
+      - key: EMAIL3_APP_PASSWORD
+        sync: false
       - key: APPLE_HEALTH_WEBHOOK_SECRET
         generateValue: true
       - key: PRIVATE_ROOM_KEY

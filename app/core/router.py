@@ -24,6 +24,8 @@ from app.daily12.service import Daily12Service
 from app.documents.service import DocumentLibrary, looks_like_document_request
 from app.heartbeat.gates import GateKeeper, mentions_meds
 from app.heartbeat.streaks import STREAK_LABELS, Streaks, detect_activities, looks_negated
+from app.mail import commands as mail_commands
+from app.mail.service import MailService
 from app.memory.store import LivingFacts, MemoryStore
 from app.memory.writer import extract_and_file, format_memory_context
 from app.persona import build_system_prompt
@@ -54,6 +56,7 @@ class JarvisRouter:
         on_timezone_change=None,  # async callback after Paul moves timezone
         private_track: PrivateTrack | None = None,
         gates: GateKeeper | None = None,
+        mail: MailService | None = None,
     ) -> None:
         self.settings = settings
         self.db = db
@@ -69,6 +72,7 @@ class JarvisRouter:
         self.on_timezone_change = on_timezone_change
         self.private_track = private_track
         self.gates = gates
+        self.mail = mail
         self.log = MessageLog(db)
         self.store = SettingsStore(db)
         self.streaks = Streaks(db)
@@ -167,7 +171,12 @@ class JarvisRouter:
             if await self._handle_document_request(message.chat_id, transcript):
                 return
 
-        # 2c. Task talk → the Daily 12 + Trello write-back (Milestone 3).
+        # 2c. Email talk → inbox triage, drafts, and confirmed sends (Phase 2).
+        if self.mail is not None:
+            if await self._handle_email_talk(message, transcript):
+                return
+
+        # 2d. Task talk → the Daily 12 + Trello write-back (Milestone 3).
         # THE GATES: past their deadline, an unconfirmed run/meds blocks the
         # working day — Jarvis will not serve the board until they're done.
         if self.daily12 is not None and mentions_tasks(transcript):
@@ -410,6 +419,12 @@ class JarvisRouter:
             f"- Trello / Daily 12: {'CONNECTED' if self.daily12 is not None else 'not connected yet'}",
             f"- Memory search: {'Voyage embeddings' if s.voyage_api_key else 'local fallback (Voyage key pending)'}",
             f"- Calendar: {'connected (read-only)' if s.calendar_ics_url else 'not connected yet'}",
+            (
+                f"- Email inboxes: {', '.join(self.mail.labels)} connected — read & draft; "
+                "sends ONLY after Paul confirms a read-back draft"
+                if self.mail is not None
+                else "- Email inboxes: not connected yet"
+            ),
             f"- Kiefer nightly email: {'configured' if (s.gmail_address and s.kiefer_email) else 'not configured yet'}",
             f"- Apple Health webhook: {'configured' if s.apple_health_webhook_secret else 'not configured yet'}",
             "- Voice (ElevenLabs), hearing (Deepgram), vision, the heartbeat, gates and the "
@@ -442,6 +457,14 @@ class JarvisRouter:
             else "▫️ Memory: local fallback (add VOYAGE_API_KEY for proper recall)"
         )
         lines.append("✅ Calendar: connected" if s.calendar_ics_url else "▫️ Calendar: not connected")
+        if self.mail is not None:
+            for check in await self.mail.health():
+                if check["ok"]:
+                    lines.append(f"✅ Email · {check['label']}: connected")
+                else:
+                    lines.append(f"⚠️ Email · {check['label']}: check failed — {check['error']}")
+        else:
+            lines.append("▫️ Email inboxes: not connected")
         lines.append(
             "✅ Kiefer email: configured" if (s.gmail_address and s.kiefer_email)
             else "▫️ Kiefer email: not configured"
@@ -642,6 +665,51 @@ class JarvisRouter:
         except Exception:
             logger.exception("Task handling failed%s", " after replying" if replied else "")
             return replied  # only fall through to conversation if nothing happened yet
+
+    async def _handle_email_talk(self, message: IncomingMessage, transcript: str) -> bool:
+        """Inbox triage / drafting / the confirm-to-send flow. Returns True when
+        handled; False falls through to normal conversation. A send happens ONLY
+        when a pending draft exists and Paul explicitly confirms it."""
+        assert self.mail is not None
+        try:
+            pending = await self.mail.pending_draft()
+            if pending is not None and mail_commands.confirms_send(transcript):
+                reply = await self.mail.send_pending()
+                return await self._say(message, reply)
+            if pending is not None and mail_commands.cancels_send(transcript):
+                reply = await self.mail.cancel_draft()
+                return await self._say(message, reply)
+            if not mail_commands.mentions_email(transcript):
+                return False
+            actions = await mail_commands.parse_actions(
+                self.claude, transcript, self.mail.labels, await self.mail.last_listing()
+            )
+            if not actions:
+                return False  # ordinary conversation after all
+            results = await mail_commands.execute_actions(self.mail, actions)
+            if not results:
+                return False
+            reply = "\n\n".join(results)
+            await self.log.log("out", reply, chat_id=message.chat_id, meta={"email_actions": True})
+            await self.telegram.send_text(message.chat_id, reply)  # inboxes & drafts go as text
+            return True
+        except Exception:
+            logger.exception("Email handling failed")
+            return False
+
+    async def _say(self, message: IncomingMessage, reply: str) -> bool:
+        """Log + deliver a short reply with the usual voice/text mix."""
+        await self.log.log("out", reply, chat_id=message.chat_id)
+        channel, reply_text = decide_reply(reply, incoming_was_voice=message.is_voice)
+        if channel == "voice":
+            try:
+                audio = await self.elevenlabs.synthesize(strip_for_speech(reply_text))
+                await self.telegram.send_voice(message.chat_id, audio, transcript=reply_text)
+                return True
+            except SynthesisError:
+                logger.exception("TTS failed — falling back to text")
+        await self.telegram.send_text(message.chat_id, reply_text)
+        return True
 
     async def _handle_document_request(self, chat_id: int, transcript: str) -> bool:
         """Try to serve a 'show me the X' request from the library. Returns True

@@ -16,7 +16,7 @@ non-skippable gates (run + meds).
 
 ## Commands
 
-- Tests: `python -m unittest discover -s tests` (198 tests; stdlib unittest,
+- Tests: `python -m unittest discover -s tests` (217 tests; stdlib unittest,
   NOT pytest — keep it that way. Only `requirements.txt` is needed; two PDF
   tests also use `reportlab` and skip automatically when it isn't installed)
 - No local run needed for most work; local dev uses SQLite automatically
@@ -45,6 +45,9 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
   versioned migrations, Fernet encryption for private content
 - `app/daily12/` — Trello sync, §16 scoring (pure functions in `scoring.py`),
   voice-command parsing, board write-back
+- `app/mail/` — Paul's inboxes (IMAP/SMTP, Google app passwords, no OAuth):
+  triage/read across all accounts, drafts by voice; a send fires ONLY after
+  Paul confirms a read-back draft, and drafts go stale after 45 minutes
 - `app/heartbeat/` — scheduler jobs, streaks, gates, ICS calendar, SMTP email
 - `app/private/` — sobriety track (walled off)
 - `app/cockpit/` — dashboard (design source: `docs/prototype-progress-cockpit.html`)
@@ -77,5 +80,7 @@ He speaks in feature ideas and screenshots, not specs. Small tweaks (tone,
 times, thresholds) are "Level 1" — often just prompt/config edits. New
 capabilities are "Level 2" — keep them modular bolt-ons per Plan §14. Pending
 upgrade list: timed medication reminders; whatever the Trello onboarding
-session surfaces. Phase 2 (per Plan §9): two-way Calendar & Gmail, Apple
-Health + MyFitnessPal, finance/villa tracker, live workout coaching.
+session surfaces. Phase 2 (per Plan §9): email is live (read/draft/confirmed
+send); calendar reads multiple ICS feeds — write-back (event creation via
+OAuth) still pending; then Apple Health + MyFitnessPal, finance/villa
+tracker, live workout coaching.

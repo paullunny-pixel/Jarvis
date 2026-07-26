@@ -76,20 +76,29 @@ def travel_or_event_flags(events: list[dict]) -> list[str]:
 
 
 class IcsCalendar:
+    """One or several calendars: pass a single secret address, or several
+    separated by commas/whitespace (personal + each Workspace account) and
+    the day's events merge into one timeline."""
+
     def __init__(self, ics_url: str, transport: httpx.AsyncBaseTransport | None = None) -> None:
-        self._url = ics_url
+        self._urls = [u for u in re.split(r"[,\s]+", ics_url or "") if u]
         self._client = httpx.AsyncClient(transport=transport, timeout=30.0, follow_redirects=True)
 
     async def close(self) -> None:
         await self._client.aclose()
 
+    @property
+    def calendar_count(self) -> int:
+        return len(self._urls)
+
     async def events_for(self, day: date, tz: ZoneInfo) -> list[dict]:
-        if not self._url:
-            return []
-        try:
-            response = await self._client.get(self._url)
-            response.raise_for_status()
-            return parse_ics_events(response.text, day, tz)
-        except Exception:
-            logger.exception("Calendar fetch failed — continuing without")
-            return []
+        events: list[dict] = []
+        for url in self._urls:
+            try:
+                response = await self._client.get(url)
+                response.raise_for_status()
+                events.extend(parse_ics_events(response.text, day, tz))
+            except Exception:
+                logger.exception("Calendar fetch failed for one calendar — continuing without it")
+        events.sort(key=lambda e: "00:00" if e["time"] == "all day" else e["time"])
+        return events

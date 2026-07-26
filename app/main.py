@@ -37,6 +37,8 @@ from app.heartbeat.gates import GateKeeper
 from app.heartbeat.jobs import HeartbeatJobs
 from app.heartbeat.scheduler import Heartbeat
 from app.heartbeat.streaks import Streaks
+from app.mail.client import MailAccount, MailClient
+from app.mail.service import MailService
 from app.memory.crypto import PrivateBox
 from app.memory.embedder import HashEmbedder, VoyageEmbedder
 from app.memory.seed import load_day_one_brain
@@ -109,6 +111,17 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
     # The non-skippable gates (run + meds block the day until confirmed).
     gates = GateKeeper(db, Streaks(db))
 
+    # Email inboxes (Phase 2) — activate per configured account.
+    mail = None
+    accounts = get_settings().email_accounts()
+    if accounts:
+        mail = MailService(
+            [MailClient(MailAccount(address, password)) for address, password in accounts], db
+        )
+        logger.info("Email connected: %s", ", ".join(a for a, _ in accounts))
+    else:
+        logger.warning("No email accounts set — inbox triage dormant until they are")
+
     # The heartbeat (Milestone 4).
     jobs = HeartbeatJobs(
         settings=settings,
@@ -122,6 +135,7 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
         kiefer_email=settings.kiefer_email,
         private_track=private_track,
         gates=gates,
+        mail=mail,
     )
     heartbeat = Heartbeat(jobs)
 
@@ -136,6 +150,7 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
         on_timezone_change=heartbeat.reschedule,
         private_track=private_track,
         gates=gates,
+        mail=mail,
         telegram=telegram,
         claude=claude,
         deepgram=DeepgramClient(settings.deepgram_api_key, model=settings.deepgram_model),
