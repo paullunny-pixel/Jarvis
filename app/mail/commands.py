@@ -46,10 +46,14 @@ Reply ONLY a JSON array (empty if the message contains no email actions):
 - {{"action":"check","account":"<inbox words or 'all'>"}}   (how's my email / anything new)
 - {{"action":"read","account":"<inbox words or 'all'>","count":5}}  (read them to me)
 - {{"action":"draft","reply_index":<number from the list, or 0>,"to":"<address if he gave one, else empty>","account":"<sending inbox words or empty>","subject":"<subject, or empty>","body":"<the email text, written out properly>"}}
+- {{"action":"update","to":"","subject":"","body":"","account":""}}  (he's changing the draft he already has — fill ONLY what changes, leave the rest empty)
 - {{"action":"cancel"}}   (he wants to scrap the current draft)
 For drafts: write the body in Paul's professional voice, complete and ready to
 send, signed off 'Paul'. NEVER invent a recipient address — if he named a
-person from the shown list use reply_index; otherwise leave "to" empty.
+person from the shown list use reply_index; otherwise leave "to" empty. A
+draft with no recipient is fine: it's held until he gives the address ("leave
+it in draft" / "no address yet" = exactly that — use update with all fields
+empty if a draft already exists, never ask for the address).
 Only include actions he clearly asked for.\
 """
 
@@ -110,6 +114,15 @@ async def execute_actions(service: MailService, actions: list[dict[str, Any]]) -
                         subject=str(action.get("subject", "") or ""),
                         account_hint=str(action.get("account", "") or ""),
                         reply_index=int(action.get("reply_index") or 0),
+                    )
+                )
+            elif kind == "update":
+                results.append(
+                    await service.update_draft(
+                        to=str(action.get("to", "") or ""),
+                        subject=str(action.get("subject", "") or ""),
+                        body=str(action.get("body", "") or ""),
+                        account_hint=str(action.get("account", "") or ""),
                     )
                 )
             elif kind == "cancel":

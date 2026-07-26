@@ -16,7 +16,7 @@ non-skippable gates (run + meds).
 
 ## Commands
 
-- Tests: `python -m unittest discover -s tests` (223 tests; stdlib unittest,
+- Tests: `python -m unittest discover -s tests` (225 tests; stdlib unittest,
   NOT pytest — keep it that way. Only `requirements.txt` is needed; two PDF
   tests also use `reportlab` and skip automatically when it isn't installed)
 - No local run needed for most work; local dev uses SQLite automatically
@@ -47,7 +47,8 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
   voice-command parsing, board write-back
 - `app/mail/` — Paul's inboxes (IMAP/SMTP, Google app passwords, no OAuth):
   triage/read across all accounts, drafts by voice; a send fires ONLY after
-  Paul confirms a read-back draft, and drafts go stale after 45 minutes
+  Paul confirms a read-back draft; recipient-less drafts are held, and a
+  stale draft (45 min) needs one fresh read-back confirm before sending
 - `app/heartbeat/` — scheduler jobs, streaks, gates, ICS calendar, SMTP email
 - `app/private/` — sobriety track (walled off)
 - `app/cockpit/` — dashboard (design source: `docs/prototype-progress-cockpit.html`)

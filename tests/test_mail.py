@@ -168,10 +168,34 @@ class TestMailService(unittest.IsolatedAsyncioTestCase):
         # Draft is consumed — a second "send it" has nothing to fire.
         self.assertIn("no draft", (await self.service.send_pending()).lower())
 
-    async def test_draft_needs_a_recipient(self):
-        result = await self.service.draft("Hello there")
-        self.assertIn("Who's it going to", result)
-        self.assertIsNone(await self.service.pending_draft())
+    async def test_draft_without_recipient_is_held_not_refused(self):
+        # The BMI covering-email scenario: draft now, address comes later.
+        result = await self.service.draft("Covering note for the three surveys.\n\nPaul")
+        self.assertIn("no recipient yet", result)
+        self.assertIn("Held in draft", result)
+        self.assertIsNotNone(await self.service.pending_draft())
+        # "send it" is politely blocked, and nothing goes anywhere.
+        self.assertIn("no recipient", await self.service.send_pending())
+        self.assertEqual(self.sent, [])
+
+    async def test_recipient_added_later_then_send(self):
+        await self.service.draft("Covering note.\n\nPaul", account_hint="prodermis")
+        readback = await self.service.update_draft(to="quality@bmi.example")
+        self.assertIn("quality@bmi.example", readback)
+        self.assertIn("Covering note.", readback)  # the words survived
+        result = await self.service.send_pending()
+        self.assertIn("Sent", result)
+        self.assertEqual(self.sent[0]["from"], "info@prodermis.com")
+
+    async def test_amendment_never_clobbers_the_body(self):
+        # "leave it in draft without an email address" → a draft action with
+        # no body must merge into the held draft, not overwrite it.
+        await self.service.draft("The words Paul dictated.", to="", subject="Surveys")
+        result = await self.service.draft("", account_hint="derma")
+        self.assertIn("The words Paul dictated.", result)
+        draft = await self.service.pending_draft()
+        self.assertEqual(draft["from"], "info@dermadirect.co.uk")  # account moved
+        self.assertEqual(draft["body"], "The words Paul dictated.")
 
     async def test_cancel_scraps_without_sending(self):
         await self.service.draft("Test", to="x@example.com", subject="T")
@@ -179,15 +203,20 @@ class TestMailService(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await self.service.pending_draft())
         self.assertEqual(self.sent, [])
 
-    async def test_stale_draft_never_sends(self):
-        await self.service.draft("Old words", to="x@example.com", subject="Old")
+    async def test_stale_draft_needs_a_second_confirm_but_survives(self):
+        await self.service.draft("Evening words", to="x@example.com", subject="Tonight")
         # Age the draft past the TTL by rewriting its timestamp.
         raw = json.loads(await self.service._settings.get(DRAFT_KEY))
         raw["created"] = "2026-07-20T09:00:00+00:00"
         await self.service._settings.set(DRAFT_KEY, json.dumps(raw))
-        self.assertIsNone(await self.service.pending_draft())
-        self.assertIn("no draft", (await self.service.send_pending()).lower())
+        # First "send it": read back again, nothing sent — but NOT lost.
+        first = await self.service.send_pending()
+        self.assertIn("once more", first)
+        self.assertIn("Evening words", first)
         self.assertEqual(self.sent, [])
+        # Second "send it" (draft freshly re-confirmed): it goes.
+        self.assertIn("Sent", await self.service.send_pending())
+        self.assertEqual(len(self.sent), 1)
 
     async def test_smtp_failure_keeps_the_draft(self):
         service = build_service(self.db, self.sent)

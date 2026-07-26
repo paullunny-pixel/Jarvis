@@ -2,8 +2,10 @@
 
 The safety contract (Paul chose it): Jarvis reads and drafts freely, but
 NOTHING is sent until Paul confirms the read-back draft ("send it"). Exactly
-one draft is pending at a time and it goes stale after 45 minutes, so a
-throwaway "send it" hours later can never fire off a forgotten email.
+one draft is pending at a time; it may sit without a recipient until Paul
+supplies one, and once it's older than 45 minutes a "send it" gets the draft
+read back once more and needs a second confirm — a forgotten draft can never
+fire off a stray email, but it never silently disappears either.
 """
 from __future__ import annotations
 
@@ -113,7 +115,8 @@ class MailService:
         self, body: str, to: str = "", subject: str = "", account_hint: str = "",
         reply_index: int = 0,
     ) -> str:
-        """Store the one pending draft and read it back for confirmation."""
+        """Store the one pending draft and read it back. A missing recipient is
+        fine — the draft is held and the address can arrive later by voice."""
         account_label = ""
         if reply_index:
             listing = await self.last_listing()
@@ -123,8 +126,14 @@ class MailService:
             to = to or target["from_address"]
             subject = subject or f"Re: {target['subject']}"
             account_label = target["account"]
-        if not to:
-            return "Who's it going to? Give me the address (or which email to reply to) and I'll draft it."
+        if not body.strip() and await self.pending_draft() is not None:
+            # No new words = he's amending the held draft (address, account,
+            # subject), not dictating a fresh one — never clobber his words.
+            return await self.update_draft(
+                to=to, subject=subject, account_hint=account_hint or account_label
+            )
+        if not body.strip():
+            return "Nothing drafted yet — give me the words and I'll read them back."
         client = self.match(account_hint or account_label)[0]
         draft = {
             "from": client.account.address,
@@ -135,10 +144,40 @@ class MailService:
             "created": utc_now_iso(),
         }
         await self._settings.set(DRAFT_KEY, json.dumps(draft))
-        return (
-            f"Drafted from {draft['from_label']} ({draft['from']}) to {to}\n"
+        return self._readback(draft)
+
+    async def update_draft(
+        self, to: str = "", subject: str = "", body: str = "", account_hint: str = ""
+    ) -> str:
+        """Merge changes into the held draft; empty fields keep what's there."""
+        draft = await self.pending_draft()
+        if draft is None:
+            return "There's no draft on the go — dictate one and I'll hold it."
+        if to:
+            draft["to"] = to
+        if subject:
+            draft["subject"] = subject
+        if body.strip():
+            draft["body"] = body.strip()
+        if account_hint:
+            client = self.match(account_hint)[0]
+            draft["from"] = client.account.address
+            draft["from_label"] = client.account.label
+        draft["created"] = utc_now_iso()
+        await self._settings.set(DRAFT_KEY, json.dumps(draft))
+        return self._readback(draft)
+
+    def _readback(self, draft: dict) -> str:
+        recipient = draft["to"] or "(no recipient yet)"
+        text = (
+            f"Drafted from {draft['from_label']} ({draft['from']}) to {recipient}\n"
             f"Subject: {draft['subject']}\n\n{draft['body']}\n\n"
-            "Say 'send it' and it goes — or 'scrap it', or tell me what to change."
+        )
+        if draft["to"]:
+            return text + "Say 'send it' and it goes — or 'scrap it', or tell me what to change."
+        return text + (
+            "Held in draft, sir — give me the address whenever you're ready, "
+            "then 'send it'. 'Scrap it' bins it."
         )
 
     async def pending_draft(self) -> dict | None:
@@ -146,21 +185,34 @@ class MailService:
         if not raw:
             return None
         try:
-            draft = json.loads(raw)
+            return json.loads(raw)
         except Exception:
             return None
+
+    @staticmethod
+    def _is_stale(draft: dict) -> bool:
         created = datetime.fromisoformat(draft["created"])
         if created.tzinfo is None:
             created = created.replace(tzinfo=timezone.utc)
-        if datetime.now(timezone.utc) - created > timedelta(minutes=DRAFT_TTL_MINUTES):
-            await self._settings.set(DRAFT_KEY, "")
-            return None
-        return draft
+        return datetime.now(timezone.utc) - created > timedelta(minutes=DRAFT_TTL_MINUTES)
 
     async def send_pending(self) -> str:
         draft = await self.pending_draft()
         if draft is None:
             return "There's no draft waiting to send — dictate one and I'll read it back first."
+        if not draft["to"]:
+            return (
+                "It's drafted but has no recipient yet — give me the address "
+                "and then say 'send it'."
+            )
+        if self._is_stale(draft):
+            # It's been sitting a while: fresh eyes once more before it flies.
+            draft["created"] = utc_now_iso()
+            await self._settings.set(DRAFT_KEY, json.dumps(draft))
+            return (
+                "That draft's been sitting a while, so once more before it goes:\n\n"
+                + self._readback(draft)
+            )
         client = next(
             (c for c in self._clients if c.account.address == draft["from"]), self._clients[0]
         )
