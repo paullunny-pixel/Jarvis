@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     # --- Phase 1 later milestones (requested when needed) ---
     trello_key: str = ""
     trello_token: str = ""
+    # Which boards Jarvis works from: comma-separated names, or "all" for
+    # every open board. Paul's call (July 2026): Master Board only while the
+    # board gets knocked into shape.
+    trello_boards: str = "Master Board"
     google_oauth_client_id: str = ""
     google_oauth_client_secret: str = ""
     r2_access_key: str = ""

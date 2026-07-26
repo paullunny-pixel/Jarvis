@@ -214,7 +214,7 @@ class MultiBoardHarness:
     """Three boards: an empty Welcome Board that sorts first, the Master Board,
     and a second working board with its own Done list."""
 
-    def __init__(self, db):
+    def __init__(self, db, board_filter=""):
         self.trello_writes = []
         per_board = {"B0": ([], []), "B1": (LISTS, CARDS), "B2": (B2_LISTS, B2_CARDS)}
 
@@ -245,6 +245,7 @@ class MultiBoardHarness:
             db,
             TrelloClient("K", "T", transport=httpx.MockTransport(trello_handler)),
             ClaudeClient("K", transport=httpx.MockTransport(claude_handler)),
+            board_filter=board_filter,
         )
 
 
@@ -277,7 +278,8 @@ class TestMultiBoard(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(health["boards"], 3)
         self.assertIn("Master Board", health["board_name"])
         self.assertIn("Prodermis Board", health["board_name"])
-        self.assertEqual(health["cached_cards"], len(CARDS) + len(B2_CARDS))
+        # counts cards in play: Done (C9) and Blocked (C10) don't count
+        self.assertEqual(health["cached_cards"], len(CARDS) + len(B2_CARDS) - 2)
 
     async def test_mark_done_moves_card_on_its_own_board(self):
         await self.service.generate(await self.service.paul_today())
@@ -291,6 +293,67 @@ class TestMultiBoard(unittest.IsolatedAsyncioTestCase):
         await self.service.create("Test VAT card")
         creates = [w for w in self.h.trello_writes if w[1] == "/1/cards"]
         self.assertEqual(creates[0][2]["idList"], "L1")  # Master Board's To Do
+
+
+class TestBoardScope(unittest.IsolatedAsyncioTestCase):
+    """TRELLO_BOARDS scope: Jarvis works only from the named board(s)."""
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = SqliteDatabase(os.path.join(self._dir.name, "t.db"))
+        await self.db.init()
+
+    async def asyncTearDown(self):
+        await self.db.close()
+        self._dir.cleanup()
+
+    async def test_sync_reads_only_the_scoped_board(self):
+        h = MultiBoardHarness(self.db, board_filter="Master Board")
+        n = await h.service.sync()
+        self.assertEqual(n, len(CARDS))  # B2's card was never read
+        self.assertIsNone(await self.db.fetch_one("SELECT id FROM tasks WHERE trello_id = 'C21'"))
+
+    async def test_scope_is_case_insensitive(self):
+        h = MultiBoardHarness(self.db, board_filter="  master board ")
+        self.assertEqual(await h.service.sync(), len(CARDS))
+
+    async def test_out_of_scope_cache_retires_but_keeps_history(self):
+        # Yesterday: all boards synced. Today: scope narrows to Master Board.
+        await MultiBoardHarness(self.db).service.sync()
+        row = await self.db.fetch_one("SELECT actionable FROM tasks WHERE trello_id = 'C21'")
+        self.assertEqual(row["actionable"], 1)
+
+        await MultiBoardHarness(self.db, board_filter="Master Board").service.sync()
+        row = await self.db.fetch_one("SELECT actionable FROM tasks WHERE trello_id = 'C21'")
+        self.assertEqual(row["actionable"], 0)   # out of the working pool
+        on_board = await self.db.fetch_one("SELECT actionable FROM tasks WHERE trello_id = 'C1'")
+        self.assertEqual(on_board["actionable"], 1)
+
+        # Scope widens again → the card returns to play on the next sync.
+        await MultiBoardHarness(self.db, board_filter="all").service.sync()
+        row = await self.db.fetch_one("SELECT actionable FROM tasks WHERE trello_id = 'C21'")
+        self.assertEqual(row["actionable"], 1)
+
+    async def test_unmatched_scope_falls_back_to_all_boards(self):
+        # A renamed board must never put Jarvis back in the zero-cards trap.
+        h = MultiBoardHarness(self.db, board_filter="Bored Master")
+        self.assertEqual(await h.service.sync(), len(CARDS) + len(B2_CARDS))
+
+    async def test_creates_and_done_moves_stay_on_the_scoped_board(self):
+        h = MultiBoardHarness(self.db, board_filter="Master Board")
+        await h.service.sync()
+        await h.service.create("New scoped card")
+        creates = [w for w in h.trello_writes if w[1] == "/1/cards"]
+        self.assertEqual(creates[0][2]["idList"], "L1")  # Master Board's To Do
+
+    async def test_health_reports_the_scope(self):
+        h = MultiBoardHarness(self.db, board_filter="Master Board")
+        await h.service.sync()
+        health = await h.service.health()
+        self.assertTrue(health["scoped"])
+        self.assertEqual(health["boards"], 3)             # visible
+        self.assertEqual(health["board_name"], "Master Board")  # in play
+        self.assertEqual(health["cached_cards"], 8)       # actionable cards only
 
 
 class TestCommands(unittest.IsolatedAsyncioTestCase):

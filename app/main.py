@@ -88,6 +88,7 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
             TrelloClient(settings.trello_key, settings.trello_token),
             claude,
             timezone_default=settings.timezone_default,
+            board_filter=settings.trello_boards,
         )
     else:
         logger.warning("Trello keys not set — the Daily 12 is dormant until they are")

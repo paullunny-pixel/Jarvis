@@ -443,10 +443,17 @@ class JarvisRouter:
         if self.daily12 is not None:
             health = await self.daily12.health()
             if health["ok"]:
-                plural = "board" if health["boards"] == 1 else "boards"
+                if health.get("scoped"):
+                    where = (
+                        f"working from {health['board_name']} "
+                        f"({health['boards']} boards visible)"
+                    )
+                else:
+                    plural = "board" if health["boards"] == 1 else "boards"
+                    where = f"{health['boards']} {plural} ({health['board_name']})"
                 lines.append(
-                    f"✅ Trello: connected — {health['boards']} {plural} ({health['board_name']}), "
-                    f"{health['cached_cards']} cards cached, last sync {health['last_sync'][:16] or 'never'}"
+                    f"✅ Trello: connected — {where}, "
+                    f"{health['cached_cards']} cards in play, last sync {health['last_sync'][:16] or 'never'}"
                 )
             else:
                 lines.append(f"⚠️ Trello: keys present but the live check failed — {health['error']}")

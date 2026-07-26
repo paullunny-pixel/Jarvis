@@ -42,12 +42,19 @@ class Daily12Service:
         trello: TrelloClient,
         claude: ClaudeClient,
         timezone_default: str = "Europe/London",
+        board_filter: str = "",
     ) -> None:
         self._db = db
         self._trello = trello
         self._claude = claude
         self._settings = SettingsStore(db)
         self._tz_default = timezone_default
+        # Board scope: names to work from; empty / "all" = every open board.
+        self._board_filter = [
+            name.strip().lower()
+            for name in (board_filter or "").split(",")
+            if name.strip() and name.strip().lower() != "all"
+        ]
 
     async def health(self) -> dict:
         """Live connection check — actually calls Trello and reports the truth."""
@@ -55,38 +62,59 @@ class Daily12Service:
             boards = await self._trello.my_boards()
         except Exception as exc:
             return {"ok": False, "error": str(exc)[:200]}
-        cached = await self._db.fetch_one("SELECT COUNT(*) AS n FROM tasks")
+        scoped = self._apply_filter(boards)
+        cached = await self._db.fetch_one("SELECT COUNT(*) AS n FROM tasks WHERE actionable = 1")
         return {
             "ok": True,
             "boards": len(boards),
-            "board_name": ", ".join(b.get("name", "") for b in boards),
+            "board_name": ", ".join(b.get("name", "") for b in scoped),
+            "scoped": len(scoped) != len(boards),
             "cached_cards": int(cached["n"]) if cached else 0,
             "last_sync": await self._settings.get("trello_last_sync", "never"),
         }
 
     # ------------------------------------------------------------------ sync
 
+    def _apply_filter(self, boards: list[dict]) -> list[dict]:
+        if not self._board_filter:
+            return boards
+        scoped = [
+            b for b in boards if b.get("name", "").strip().lower() in self._board_filter
+        ]
+        if not scoped:
+            logger.warning(
+                "Board scope %s matched none of the visible boards — reading every board "
+                "rather than going dark", self._board_filter,
+            )
+            return boards
+        return scoped
+
+    async def _scoped_boards(self) -> list[dict]:
+        boards = await self._trello.my_boards()
+        if not boards:
+            raise RuntimeError("No Trello boards visible to this token")
+        return self._apply_filter(boards)
+
     async def resolve_board(self) -> str:
-        """Default board for writes (new cards, member lookup). Reads span ALL
-        boards — this only picks where fresh cards land: the busiest cached
-        board, i.e. where the real work lives."""
+        """Default board for writes (new cards, member lookup): the busiest
+        in-scope board — with a single-board scope, simply that board."""
+        boards = await self._scoped_boards()
+        ids = [b["id"] for b in boards]
+        placeholders = ", ".join("?" for _ in ids)
         row = await self._db.fetch_one(
-            "SELECT board_id, COUNT(*) AS n FROM tasks WHERE board_id != ''"
-            " GROUP BY board_id ORDER BY n DESC LIMIT 1"
+            f"SELECT board_id, COUNT(*) AS n FROM tasks WHERE board_id IN ({placeholders})"
+            " GROUP BY board_id ORDER BY n DESC LIMIT 1",
+            tuple(ids),
         )
         if row:
             return row["board_id"]
-        boards = await self._trello.my_boards()
-        if not boards:
-            raise RuntimeError("No Trello boards visible to this token")
         return boards[0]["id"]
 
     async def sync(self) -> int:
-        """Pull every card from every list on every open board into the tasks
-        cache; tag any untagged cards."""
-        boards = await self._trello.my_boards()
-        if not boards:
-            raise RuntimeError("No Trello boards visible to this token")
+        """Pull every card from every list on every in-scope board into the
+        tasks cache; retire cached cards that fall outside the scope; tag any
+        untagged cards."""
+        boards = await self._scoped_boards()
 
         total = 0
         for board in boards:
@@ -100,6 +128,15 @@ class Daily12Service:
                 )
                 await self._upsert_task(card, board, list_name, money, waiting)
                 total += 1
+
+        # Cards cached from boards now outside the scope leave the working
+        # pool (history stays; they come straight back if the scope widens).
+        ids = [b["id"] for b in boards]
+        placeholders = ", ".join("?" for _ in ids)
+        await self._db.execute(
+            f"UPDATE tasks SET actionable = 0 WHERE board_id NOT IN ({placeholders})",
+            tuple(ids),
+        )
 
         await self._tag_untagged()
         await self._refresh_project_activity()
@@ -144,7 +181,8 @@ class Daily12Service:
 
     async def _tag_untagged(self) -> None:
         rows = await self._db.fetch_all(
-            "SELECT id, title, description, list_name FROM tasks WHERE company_slug = '' LIMIT 40"
+            "SELECT id, title, description, list_name FROM tasks"
+            " WHERE company_slug = '' AND actionable = 1 LIMIT 40"
         )
         if not rows:
             return
