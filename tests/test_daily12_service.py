@@ -146,8 +146,11 @@ class TestService(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("BONUS", text)  # hidden until 12/12
 
     async def test_mark_done_updates_local_and_moves_card(self):
-        await self.service.generate(date(2026, 7, 25))
-        plan = await self.service.plan(date(2026, 7, 25))
+        # mark_done/defer/comment act on TODAY's plan — generate for the real
+        # today, not a fixed date, or these tests only pass on that date.
+        today = await self.service.paul_today()
+        await self.service.generate(today)
+        plan = await self.service.plan(today)
         target = next(r for r in plan if "BMI doctor" in r["title"])
         result = await self.service.mark_done(str(target["position"]))
         self.assertIn("done", result.lower())
@@ -159,12 +162,12 @@ class TestService(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["done"], 1)
 
     async def test_done_by_title_words(self):
-        await self.service.generate(date(2026, 7, 25))
+        await self.service.generate(await self.service.paul_today())
         result = await self.service.mark_done("the dutch notary one")
         self.assertIn("Dutch notary paperwork", result)
 
     async def test_defer_sets_due_and_counts_avoidance(self):
-        await self.service.generate(date(2026, 7, 25))
+        await self.service.generate(await self.service.paul_today())
         result = await self.service.defer("website relaunch", "2026-07-31", "Friday 31 July")
         self.assertIn("pushed to Friday", result)
         writes = [w for w in self.h.trello_writes if w[2].get("due")]
@@ -173,7 +176,7 @@ class TestService(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["defer_count"], 1)
 
     async def test_repeat_deferral_gets_called_out(self):
-        await self.service.generate(date(2026, 7, 25))
+        await self.service.generate(await self.service.paul_today())
         for _ in range(3):
             result = await self.service.defer("website relaunch", "2026-07-31", "Friday")
         self.assertIn("deferral", result)
@@ -187,11 +190,107 @@ class TestService(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(assigns[0][2]["value"], "M1")
 
     async def test_comment_writes_back(self):
-        await self.service.generate(date(2026, 7, 25))
+        await self.service.generate(await self.service.paul_today())
         result = await self.service.comment("boosters promo", "Karen confirmed the artwork")
         self.assertIn("Noted", result)
         comments = [w for w in self.h.trello_writes if "actions/comments" in w[1]]
         self.assertIn("Karen confirmed the artwork", comments[0][2]["text"])
+
+
+MULTI_BOARDS = [
+    {"id": "B0", "name": "Welcome Board"},   # empty and first — the production trap
+    {"id": "B1", "name": "Master Board"},
+    {"id": "B2", "name": "Prodermis Board"},
+]
+B2_LISTS = [
+    {"id": "L21", "name": "To Do"},
+    {"id": "L23", "name": "Done"},
+]
+B2_CARDS = [trello_card(21, "Pyway booster launch", list_id="L21", labels=["£££"])]
+MULTI_TAGS = TAGS + [{"company": "prodermis", "project": "Pyway launch"}]
+
+
+class MultiBoardHarness:
+    """Three boards: an empty Welcome Board that sorts first, the Master Board,
+    and a second working board with its own Done list."""
+
+    def __init__(self, db):
+        self.trello_writes = []
+        per_board = {"B0": ([], []), "B1": (LISTS, CARDS), "B2": (B2_LISTS, B2_CARDS)}
+
+        def trello_handler(request: httpx.Request) -> httpx.Response:
+            path = urlparse(str(request.url)).path
+            if request.method in ("PUT", "POST"):
+                self.trello_writes.append((request.method, path, dict(request.url.params)))
+                if path == "/1/cards":
+                    return httpx.Response(200, json={"id": "CNEW", "name": "created"})
+                return httpx.Response(200, json={})
+            if path.endswith("/members/me/boards"):
+                return httpx.Response(200, json=MULTI_BOARDS)
+            for board_id, (lists, cards) in per_board.items():
+                if path == f"/1/boards/{board_id}/lists":
+                    return httpx.Response(200, json=lists)
+                if path == f"/1/boards/{board_id}/cards":
+                    return httpx.Response(200, json=cards)
+            if path.endswith("/members"):
+                return httpx.Response(200, json=[])
+            return httpx.Response(404, text=path)
+
+        def claude_handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"content": [{"type": "text", "text": json.dumps(MULTI_TAGS)}]})
+
+        from app.daily12.trello import TrelloClient
+
+        self.service = Daily12Service(
+            db,
+            TrelloClient("K", "T", transport=httpx.MockTransport(trello_handler)),
+            ClaudeClient("K", transport=httpx.MockTransport(claude_handler)),
+        )
+
+
+class TestMultiBoard(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = SqliteDatabase(os.path.join(self._dir.name, "t.db"))
+        await self.db.init()
+        self.h = MultiBoardHarness(self.db)
+        self.service = self.h.service
+
+    async def asyncTearDown(self):
+        await self.db.close()
+        self._dir.cleanup()
+
+    async def test_sync_reads_every_board_even_when_first_is_empty(self):
+        n = await self.service.sync()
+        self.assertEqual(n, len(CARDS) + len(B2_CARDS))
+        master = await self.db.fetch_one("SELECT board_id, board_name FROM tasks WHERE trello_id = 'C1'")
+        self.assertEqual(master["board_id"], "B1")
+        self.assertEqual(master["board_name"], "Master Board")
+        other = await self.db.fetch_one("SELECT board_id, board_name FROM tasks WHERE trello_id = 'C21'")
+        self.assertEqual(other["board_id"], "B2")
+        self.assertEqual(other["board_name"], "Prodermis Board")
+
+    async def test_health_reports_all_boards(self):
+        await self.service.sync()
+        health = await self.service.health()
+        self.assertTrue(health["ok"])
+        self.assertEqual(health["boards"], 3)
+        self.assertIn("Master Board", health["board_name"])
+        self.assertIn("Prodermis Board", health["board_name"])
+        self.assertEqual(health["cached_cards"], len(CARDS) + len(B2_CARDS))
+
+    async def test_mark_done_moves_card_on_its_own_board(self):
+        await self.service.generate(await self.service.paul_today())
+        result = await self.service.mark_done("pyway booster launch")
+        self.assertIn("Pyway booster launch", result)
+        moves = [w for w in self.h.trello_writes if w[0] == "PUT" and "/cards/C21" in w[1]]
+        self.assertTrue(any(w[2].get("idList") == "L23" for w in moves))  # B2's Done, not B1's
+
+    async def test_new_cards_go_to_the_busiest_board(self):
+        await self.service.sync()
+        await self.service.create("Test VAT card")
+        creates = [w for w in self.h.trello_writes if w[1] == "/1/cards"]
+        self.assertEqual(creates[0][2]["idList"], "L1")  # Master Board's To Do
 
 
 class TestCommands(unittest.IsolatedAsyncioTestCase):

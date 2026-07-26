@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .schema import ddl_statements
+from .schema import ddl_statements, migration_statements
 
 
 def translate_placeholders(sql: str) -> str:
@@ -31,6 +31,8 @@ class PostgresDatabase:
         self._pool = await asyncpg.create_pool(self._url, min_size=1, max_size=5)
         async with self._pool.acquire() as conn:
             for stmt in ddl_statements("postgres"):
+                await conn.execute(stmt)
+            for stmt in migration_statements("postgres"):
                 await conn.execute(stmt)
 
     async def close(self) -> None:

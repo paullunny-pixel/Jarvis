@@ -39,7 +39,7 @@ class TrelloClient:
     # --- Reading ---
 
     async def my_boards(self) -> list[dict]:
-        return await self._call("GET", "/members/me/boards", fields="name,url")
+        return await self._call("GET", "/members/me/boards", fields="name,url", filter="open")
 
     async def board_lists(self, board_id: str) -> list[dict]:
         return await self._call("GET", f"/boards/{board_id}/lists", fields="name")

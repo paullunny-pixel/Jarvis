@@ -428,8 +428,9 @@ class JarvisRouter:
         if self.daily12 is not None:
             health = await self.daily12.health()
             if health["ok"]:
+                plural = "board" if health["boards"] == 1 else "boards"
                 lines.append(
-                    f"✅ Trello: connected — board '{health['board_name']}', "
+                    f"✅ Trello: connected — {health['boards']} {plural} ({health['board_name']}), "
                     f"{health['cached_cards']} cards cached, last sync {health['last_sync'][:16] or 'never'}"
                 )
             else:

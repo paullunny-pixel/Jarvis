@@ -6,7 +6,7 @@ import asyncio
 import sqlite3
 from typing import Any
 
-from .schema import ddl_statements
+from .schema import ddl_statements, migration_statements
 
 
 class SqliteDatabase:
@@ -24,6 +24,12 @@ class SqliteDatabase:
             conn.execute("PRAGMA journal_mode=WAL")
             for stmt in ddl_statements("sqlite"):
                 conn.execute(stmt)
+            for stmt in migration_statements("sqlite"):
+                try:
+                    conn.execute(stmt)
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column" not in str(exc).lower():
+                        raise
             conn.commit()
             return conn
 

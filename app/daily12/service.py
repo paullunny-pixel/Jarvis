@@ -22,8 +22,6 @@ from app.db.base import Database
 
 logger = logging.getLogger(__name__)
 
-BOARD_KEY = "trello_board_id"
-
 TAGGING_SYSTEM = """\
 You classify Trello cards for Paul's four companies. Companies (use these slugs):
 - derma_uk: Derma Direct UK — UK online wholesaler (fillers, boosters, gloves), Harry ops, website relaunch, retention marketing.
@@ -57,15 +55,11 @@ class Daily12Service:
             boards = await self._trello.my_boards()
         except Exception as exc:
             return {"ok": False, "error": str(exc)[:200]}
-        board_id = await self._settings.get(BOARD_KEY)
-        board_name = next((b["name"] for b in boards if b["id"] == board_id), "")
-        if not board_name and boards:
-            board_name = boards[0]["name"]
         cached = await self._db.fetch_one("SELECT COUNT(*) AS n FROM tasks")
         return {
             "ok": True,
             "boards": len(boards),
-            "board_name": board_name,
+            "board_name": ", ".join(b.get("name", "") for b in boards),
             "cached_cards": int(cached["n"]) if cached else 0,
             "last_sync": await self._settings.get("trello_last_sync", "never"),
         }
@@ -73,42 +67,54 @@ class Daily12Service:
     # ------------------------------------------------------------------ sync
 
     async def resolve_board(self) -> str:
-        board_id = await self._settings.get(BOARD_KEY)
-        if board_id:
-            return board_id
+        """Default board for writes (new cards, member lookup). Reads span ALL
+        boards — this only picks where fresh cards land: the busiest cached
+        board, i.e. where the real work lives."""
+        row = await self._db.fetch_one(
+            "SELECT board_id, COUNT(*) AS n FROM tasks WHERE board_id != ''"
+            " GROUP BY board_id ORDER BY n DESC LIMIT 1"
+        )
+        if row:
+            return row["board_id"]
         boards = await self._trello.my_boards()
         if not boards:
             raise RuntimeError("No Trello boards visible to this token")
-        board_id = boards[0]["id"]  # the Master Board; Paul can switch by command later
-        await self._settings.set(BOARD_KEY, board_id)
-        logger.info("Locked onto Trello board %s (%s)", boards[0].get("name"), board_id)
-        return board_id
+        return boards[0]["id"]
 
     async def sync(self) -> int:
-        """Pull the board into the tasks cache; tag any untagged cards."""
-        board_id = await self.resolve_board()
-        lists = {l["id"]: l["name"] for l in await self._trello.board_lists(board_id)}
-        cards = await self._trello.board_cards(board_id)
+        """Pull every card from every list on every open board into the tasks
+        cache; tag any untagged cards."""
+        boards = await self._trello.my_boards()
+        if not boards:
+            raise RuntimeError("No Trello boards visible to this token")
 
-        for card in cards:
-            list_name = lists.get(card.get("idList", ""), "")
-            labels = [l.get("name", "").lower() for l in card.get("labels", [])]
-            money = _money_from_labels(labels)
-            waiting = any("waiting" in l and "paul" in l for l in labels) or any(
-                l in ("waiting-on-paul", "team waiting") for l in labels
-            )
-            await self._upsert_task(card, list_name, money, waiting)
+        total = 0
+        for board in boards:
+            lists = {l["id"]: l["name"] for l in await self._trello.board_lists(board["id"])}
+            for card in await self._trello.board_cards(board["id"]):
+                list_name = lists.get(card.get("idList", ""), "")
+                labels = [l.get("name", "").lower() for l in card.get("labels", [])]
+                money = _money_from_labels(labels)
+                waiting = any("waiting" in l and "paul" in l for l in labels) or any(
+                    l in ("waiting-on-paul", "team waiting") for l in labels
+                )
+                await self._upsert_task(card, board, list_name, money, waiting)
+                total += 1
 
         await self._tag_untagged()
         await self._refresh_project_activity()
         await self._settings.set("trello_last_sync", utc_now_iso())
-        return len(cards)
+        return total
 
-    async def _upsert_task(self, card: dict, list_name: str, money: int, waiting: bool) -> None:
+    async def _upsert_task(
+        self, card: dict, board: dict, list_name: str, money: int, waiting: bool
+    ) -> None:
         existing = await self._db.fetch_one(
             "SELECT id FROM tasks WHERE trello_id = ?", (card["id"],)
         )
         common = (
+            board["id"],
+            board.get("name", ""),
             card.get("name", ""),
             card.get("desc", "")[:2000],
             card.get("shortUrl", ""),
@@ -122,16 +128,17 @@ class Daily12Service:
         )
         if existing:
             await self._db.execute(
-                "UPDATE tasks SET title=?, description=?, url=?, due_date=?, money=?,"
-                " waiting_on_paul=?, last_moved=?, list_name=?, actionable=?, synced_at=?"
+                "UPDATE tasks SET board_id=?, board_name=?, title=?, description=?, url=?,"
+                " due_date=?, money=?, waiting_on_paul=?, last_moved=?, list_name=?,"
+                " actionable=?, synced_at=?"
                 " WHERE trello_id=?",
                 (*common, card["id"]),
             )
         else:
             await self._db.execute(
-                "INSERT INTO tasks (title, description, url, due_date, money, waiting_on_paul,"
-                " last_moved, list_name, actionable, synced_at, trello_id)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO tasks (board_id, board_name, title, description, url, due_date,"
+                " money, waiting_on_paul, last_moved, list_name, actionable, synced_at, trello_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (*common, card["id"]),
             )
 
@@ -283,7 +290,7 @@ class Daily12Service:
     async def plan(self, plan_date: date) -> list[dict]:
         return await self._db.fetch_all(
             "SELECT d.position, d.done, d.company_slug, t.id AS task_id, t.title, t.trello_id,"
-            " t.due_date, t.url, t.score"
+            " t.board_id, t.due_date, t.url, t.score"
             " FROM daily_12 d JOIN tasks t ON t.id = d.task_id"
             " WHERE d.plan_date = ? ORDER BY CASE d.position WHEN 0 THEN 99 ELSE d.position END",
             (plan_date.isoformat(),),
@@ -331,8 +338,8 @@ class Daily12Service:
         scored.sort(key=lambda x: x[0], reverse=True)
         return scored[0][1] if scored and scored[0][0] > 0 else None
 
-    async def _done_list_id(self) -> str:
-        board_id = await self.resolve_board()
+    async def _done_list_id(self, board_id: str) -> str:
+        """The Done list on the given board — cards move within their own board."""
         for l in await self._trello.board_lists(board_id):
             if l["name"].strip().lower() in ("done", "complete", "completed"):
                 return l["id"]
@@ -356,7 +363,8 @@ class Daily12Service:
             (utc_now_iso(), plan_date, task["task_id"]),
         )
         try:
-            done_list = await self._done_list_id()
+            board_id = task["board_id"] or await self.resolve_board()
+            done_list = await self._done_list_id(board_id)
             if done_list:
                 await self._trello.move_card(task["trello_id"], done_list)
         except Exception:

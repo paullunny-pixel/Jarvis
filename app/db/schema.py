@@ -100,6 +100,8 @@ TABLES: list[str] = [
     CREATE TABLE IF NOT EXISTS tasks (
         id {pk},
         trello_id TEXT NOT NULL UNIQUE,
+        board_id TEXT NOT NULL DEFAULT '',
+        board_name TEXT NOT NULL DEFAULT '',
         title TEXT NOT NULL,
         description TEXT NOT NULL DEFAULT '',
         url TEXT NOT NULL DEFAULT '',
@@ -182,6 +184,20 @@ PK = {
     "sqlite": "INTEGER PRIMARY KEY AUTOINCREMENT",
     "postgres": "BIGSERIAL PRIMARY KEY",
 }
+
+# Additive column migrations for tables that already exist in production.
+# Postgres gets ADD COLUMN IF NOT EXISTS; SQLite (no IF NOT EXISTS for
+# columns) relies on the adapter swallowing the duplicate-column error.
+MIGRATIONS: list[str] = [
+    "ALTER TABLE tasks ADD COLUMN board_id TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE tasks ADD COLUMN board_name TEXT NOT NULL DEFAULT ''",
+]
+
+
+def migration_statements(dialect: str) -> list[str]:
+    if dialect == "postgres":
+        return [m.replace("ADD COLUMN", "ADD COLUMN IF NOT EXISTS") for m in MIGRATIONS]
+    return list(MIGRATIONS)
 
 def _embed_dim() -> int:
     """The pgvector column dimension follows the configured embedder."""
