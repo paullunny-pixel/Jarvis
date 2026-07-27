@@ -88,6 +88,14 @@ class Settings(BaseSettings):
     apple_health_webhook_secret: str = ""
     private_room_key: str = ""   # encryption key for the sobriety room (Milestone 6)
 
+    # --- Day rhythm (Master Update §§4-6) ---
+    water_target_ml: int = 2500
+    # Twilio voice-call wake channel — placeholders only, the seam exists but
+    # the channel is deliberately NOT built yet (Master Update §4).
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_from_number: str = ""
+
     def email_accounts(self) -> list[tuple[str, str]]:
         """(address, app_password) for every configured inbox slot."""
         slots = [

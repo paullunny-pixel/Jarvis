@@ -27,11 +27,35 @@ from app.db.base import Database
 from app.heartbeat.calendar_ics import IcsCalendar, travel_or_event_flags
 from app.heartbeat.emailer import Emailer
 from app.heartbeat.streaks import STREAK_LABELS, Streaks
+from app.heartbeat.wake_channels import TelegramWakeChannel
 
 logger = logging.getLogger(__name__)
 
 HOUND_KEY = "hound_date"
 MIDDAY_TARGET_KEY = "midday_target"  # tasks expected done by 13:30 (default 4)
+
+# --- Wake-up system (Master Update §4) — built but OFF until Paul says
+# "start the wake-ups". Follows the current timezone; "no wake-up tomorrow"
+# skips exactly one day; 'override' stops today's sequence.
+WAKE_ENABLED_KEY = "wake_enabled"          # "on" | "" (default off)
+WAKE_SKIP_KEY = "wake_skip_date"           # ISO date to sit out
+WAKE_WINDOW = (5, 9)                       # escalate from 05:00 until 09:00 local
+
+WAKE_LINES = [
+    "It's {time}, sir — 05:00 has been and gone. Mirror selfie when you're vertical.",
+    "{time}. The day is loitering by the door. Up you get — selfie to confirm.",
+    "Still nothing at {time}, sir. Alarmy's done its bit; I need the mirror selfie.",
+    "{time} and counting. Feet on floor, lights on, selfie over — then I'll stand down.",
+    "Sir. {time}. Every minute now is borrowed from tonight's you. Selfie, please.",
+    "I remain at my post — {time}. One photo in the mirror ends this politely.",
+]
+
+# --- Med & supplement schedule (Master Update §6), current timezone.
+MED_SCHEDULE = {
+    "adhd": {"label": "ADHD medication", "window": "09:30–10:00, after breakfast"},
+    "supplements": {"label": "supplements", "window": "14:00–15:00, after food"},
+    "trt": {"label": "TRT (weekly)", "window": "Saturday"},
+}
 
 
 class HeartbeatJobs:
@@ -65,6 +89,9 @@ class HeartbeatJobs:
         self.store = SettingsStore(db)
         self.streaks = Streaks(db)
         self.log = MessageLog(db)
+        self.wake_channel = TelegramWakeChannel(
+            telegram, elevenlabs, self._owner_chat, self.log
+        )
 
     # ------------------------------------------------------------ plumbing
 
@@ -367,6 +394,156 @@ class HeartbeatJobs:
             await self.store.set("last_kiefer_note", utc_now_iso())
             await self._stamp(f"kiefer:{today.isoformat()}")
         return sent
+
+    # ------------------------------------------------ §4 wake-up (OFF by default)
+
+    async def wake_enabled(self) -> bool:
+        return await self.store.get(WAKE_ENABLED_KEY) == "on"
+
+    async def set_wake_enabled(self, on: bool) -> None:
+        await self.store.set(WAKE_ENABLED_KEY, "on" if on else "")
+
+    async def skip_next_wake(self, tomorrow: date) -> None:
+        await self.store.set(WAKE_SKIP_KEY, tomorrow.isoformat())
+
+    async def woke_today(self, today: date) -> bool:
+        row = await self.db.fetch_one(
+            "SELECT id FROM wake_log WHERE day = ?", (today.isoformat(),)
+        )
+        return row is not None
+
+    async def record_wake(self, today: date, method: str, photo_ref: str = "") -> None:
+        if await self.woke_today(today):
+            return
+        await self.db.execute(
+            "INSERT INTO wake_log (day, wake_time, photo_ref, method) VALUES (?, ?, ?, ?)",
+            (today.isoformat(), utc_now_iso(), photo_ref, method),
+        )
+
+    async def wake_pending(self, now: datetime | None = None) -> bool:
+        """The sequence is live right now and unconfirmed (override consults this)."""
+        now = now or datetime.now(await self._tz())
+        today = now.date()
+        if not await self.wake_enabled():
+            return False
+        if not (WAKE_WINDOW[0] <= now.hour < WAKE_WINDOW[1]):
+            return False
+        if await self.store.get(WAKE_SKIP_KEY) == today.isoformat():
+            return False
+        return not await self.woke_today(today)
+
+    async def wake_tick(self, now: datetime | None = None) -> None:
+        """Every ~3 minutes from 05:00 local until the mirror selfie lands."""
+        now = now or datetime.now(await self._tz())
+        if not await self.wake_pending(now):
+            return
+        today = now.date()
+        if self.gates is not None and await self.gates.is_overridden("wake", today):
+            return
+        step = ((now.hour - WAKE_WINDOW[0]) * 60 + now.minute) // 3
+        text = WAKE_LINES[step % len(WAKE_LINES)].format(time=now.strftime("%H:%M"))
+        await self.wake_channel.escalate(step, text)
+
+    # ------------------------------------------ §5 hourly movement + water
+
+    async def water_total(self, today: date) -> int:
+        row = await self.db.fetch_one(
+            "SELECT ml FROM water_log WHERE day = ?", (today.isoformat(),)
+        )
+        return int(row["ml"]) if row else 0
+
+    async def movement_total(self, today: date) -> int:
+        row = await self.db.fetch_one(
+            "SELECT count FROM movement_log WHERE day = ?", (today.isoformat(),)
+        )
+        return int(row["count"]) if row else 0
+
+    async def log_water(self, today: date, ml: int) -> int:
+        total = await self.water_total(today) + max(0, ml)
+        if self.db.dialect == "postgres":
+            await self.db.execute(
+                "INSERT INTO water_log (day, ml) VALUES (?, ?)"
+                " ON CONFLICT (day) DO UPDATE SET ml = EXCLUDED.ml",
+                (today.isoformat(), total),
+            )
+        else:
+            await self.db.execute(
+                "INSERT OR REPLACE INTO water_log (day, ml) VALUES (?, ?)",
+                (today.isoformat(), total),
+            )
+        return total
+
+    async def log_movement(self, today: date) -> int:
+        total = await self.movement_total(today) + 1
+        if self.db.dialect == "postgres":
+            await self.db.execute(
+                "INSERT INTO movement_log (day, count) VALUES (?, ?)"
+                " ON CONFLICT (day) DO UPDATE SET count = EXCLUDED.count",
+                (today.isoformat(), total),
+            )
+        else:
+            await self.db.execute(
+                "INSERT OR REPLACE INTO movement_log (day, count) VALUES (?, ?)",
+                (today.isoformat(), total),
+            )
+        return total
+
+    async def move_water_nudge(self, now: datetime | None = None) -> None:
+        """One combined move + 300ml nudge per waking hour."""
+        if await self.store.get("hourly_nudges", "on") != "on":
+            return
+        now = now or datetime.now(await self._tz())
+        today = now.date()
+        if await self.wake_enabled() and not await self.woke_today(today) and now.hour < 12:
+            return  # still asleep — the wake system owns the morning
+        gone_to_bed = await self.db.fetch_one(
+            "SELECT id FROM sleep_log WHERE day = ?", (today.isoformat(),)
+        )
+        if gone_to_bed and now.hour >= 12:
+            return  # day already closed with "goodnight"
+        if not await self._once(f"movewater:{today.isoformat()}:{now.hour}", hours=0.9):
+            return
+        water = await self.water_total(today)
+        target = self.settings.water_target_ml
+        moves = await self.movement_total(today)
+        await self._send_text(
+            f"{now.strftime('%H:%M')}, sir — one minute on your feet and 300ml down. "
+            f"Water {water / 1000:.1f}L of {target / 1000:.1f}L · movements {moves}. "
+            f"Say 'moved' and '300ml' and I'll log them."
+        )
+
+    # --------------------------------------------------- §6 meds & supplements
+
+    async def med_taken(self, today: date, item: str) -> bool:
+        row = await self.db.fetch_one(
+            "SELECT id FROM med_adherence WHERE day = ? AND item = ?",
+            (today.isoformat(), item),
+        )
+        return row is not None
+
+    async def record_med(self, today: date, item: str) -> None:
+        if item in MED_SCHEDULE and not await self.med_taken(today, item):
+            await self.db.execute(
+                "INSERT INTO med_adherence (day, item, taken_at) VALUES (?, ?, ?)",
+                (today.isoformat(), item, utc_now_iso()),
+            )
+
+    async def med_reminder(self, item: str, now: datetime | None = None) -> None:
+        now = now or datetime.now(await self._tz())
+        today = now.date()
+        if item == "trt" and now.strftime("%a") != "Sat":
+            return
+        if await self.med_taken(today, item):
+            return
+        if self.gates is not None and await self.gates.is_overridden(item, today):
+            return
+        if not await self._once(f"med:{item}:{today.isoformat()}"):
+            return
+        med = MED_SCHEDULE[item]
+        await self._send_voice(
+            f"Reminder, sir — {med['label']} ({med['window']}). "
+            "Tell me when it's in and I'll log it."
+        )
 
     # ------------------------------------------------------------ shared
 

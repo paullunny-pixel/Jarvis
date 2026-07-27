@@ -30,6 +30,18 @@ def mentions_meds(text: str) -> bool:
     return bool(MEDS_DONE.search(text))
 
 
+MED_ITEM_WORDS = {
+    "trt": re.compile(r"\b(trt|testosterone)\b", re.IGNORECASE),
+    "supplements": re.compile(r"\b(supplements?|vitamins?|minerals?)\b", re.IGNORECASE),
+    "adhd": re.compile(r"\b(adhd|meds?|medications?)\b", re.IGNORECASE),
+}
+
+
+def med_items_mentioned(text: str) -> list[str]:
+    """Which schedule items a meds confirmation covers (adherence log §6)."""
+    return [item for item, rx in MED_ITEM_WORDS.items() if rx.search(text)]
+
+
 class GateKeeper:
     def __init__(self, db: Database, streaks: Streaks) -> None:
         self._db = db

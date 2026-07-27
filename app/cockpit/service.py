@@ -59,6 +59,32 @@ class CockpitService:
             "today": await self._timeline(today, tz),
             "kiefer": await self._kiefer_preview(today),
             "sobriety": await self._sobriety(),
+            "rhythm": await self._rhythm(today),
+        }
+
+    async def _rhythm(self, today: date) -> dict[str, Any]:
+        """Master Update §§4-6: wake time, water, movement, med adherence."""
+        from app.config import get_settings
+
+        day = today.isoformat()
+        water = await self._db.fetch_one("SELECT ml FROM water_log WHERE day = ?", (day,))
+        moves = await self._db.fetch_one("SELECT count FROM movement_log WHERE day = ?", (day,))
+        wake = await self._db.fetch_one(
+            "SELECT wake_time, method FROM wake_log WHERE day = ?", (day,)
+        )
+        meds = {
+            row["item"]: True
+            for row in await self._db.fetch_all(
+                "SELECT item FROM med_adherence WHERE day = ?", (day,)
+            )
+        }
+        return {
+            "water_ml": int(water["ml"]) if water else 0,
+            "water_target_ml": get_settings().water_target_ml,
+            "movements": int(moves["count"]) if moves else 0,
+            "woke_at": wake["wake_time"][11:16] if wake else "",
+            "wake_method": wake["method"] if wake else "",
+            "meds": {item: meds.get(item, False) for item in ("adhd", "supplements", "trt")},
         }
 
     async def _days_with_jarvis(self, today: date) -> int:

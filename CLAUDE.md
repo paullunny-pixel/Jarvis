@@ -16,7 +16,7 @@ non-skippable gates (run + meds).
 
 ## Commands
 
-- Tests: `python -m unittest discover -s tests` (238 tests; stdlib unittest,
+- Tests: `python -m unittest discover -s tests` (251 tests; stdlib unittest,
   NOT pytest — keep it that way. Only `requirements.txt` is needed; two PDF
   tests also use `reportlab` and skip automatically when it isn't installed)
 - No local run needed for most work; local dev uses SQLite automatically
@@ -49,7 +49,9 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
   triage/read across all accounts, drafts by voice; a send fires ONLY after
   Paul confirms a read-back draft; recipient-less drafts are held, and a
   stale draft (45 min) needs one fresh read-back confirm before sending
-- `app/heartbeat/` — scheduler jobs, streaks, gates, ICS calendar, SMTP email
+- `app/heartbeat/` — scheduler jobs, streaks, gates, ICS calendar, SMTP email,
+  day rhythm: wake sequence (OFF until Paul arms it; channel seam for Twilio
+  in `wake_channels.py`), hourly move+water, med reminders, nudge dedupe
 - `app/private/` — sobriety track (walled off)
 - `app/cockpit/` — dashboard (design source: `docs/prototype-progress-cockpit.html`)
 

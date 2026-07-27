@@ -7,7 +7,7 @@ per the smart-mix policy. Errors degrade gracefully — Jarvis always answers.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -22,7 +22,7 @@ from app.db.base import Database
 from app.daily12.commands import execute_actions, mentions_tasks, parse_actions, wants_plan
 from app.daily12.service import Daily12Service
 from app.documents.service import DocumentLibrary, looks_like_document_request
-from app.heartbeat.gates import GateKeeper, mentions_meds
+from app.heartbeat.gates import GateKeeper, med_items_mentioned, mentions_meds
 from app.heartbeat.streaks import STREAK_LABELS, Streaks, detect_activities, looks_negated
 from app.mail import commands as mail_commands
 from app.mail.service import MailService
@@ -297,6 +297,8 @@ class JarvisRouter:
                 stats = await self._read_run_stats(_b64.b64encode(photo).decode())
                 if stats is not None:
                     await self.streaks.record("run", today)
+                    if self.heartbeat is not None:  # a run also proves he's up
+                        await self.heartbeat.record_wake(today, "run_proof")
                     await self.db.execute(
                         "INSERT INTO runs (run_date, distance_km, duration_min, source)"
                         " VALUES (?, ?, ?, 'photo_proof')",
@@ -317,6 +319,33 @@ class JarvisRouter:
                     except SynthesisError:
                         await self.telegram.send_text(message.chat_id, ack)
                     return
+
+        # §4: the morning mirror selfie — ends the wake sequence.
+        if self.heartbeat is not None:
+            tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
+            now_local = datetime.now(ZoneInfo(tz_name))
+            try:
+                if (
+                    await self.heartbeat.wake_enabled()
+                    and now_local.hour < 12
+                    and not await self.heartbeat.woke_today(now_local.date())
+                ):
+                    await self.heartbeat.record_wake(
+                        now_local.date(), "selfie", photo_ref=message.photo_file_id
+                    )
+                    ack = (
+                        f"Verified and vertical at {now_local.strftime('%H:%M')} — good morning, "
+                        "sir. Sequence stands down; the day is yours."
+                    )
+                    await self.log.log("out", ack, chat_id=message.chat_id, meta={"wake": True})
+                    try:
+                        audio = await self.elevenlabs.synthesize(strip_for_speech(ack))
+                        await self.telegram.send_voice(message.chat_id, audio, transcript=ack)
+                    except SynthesisError:
+                        await self.telegram.send_text(message.chat_id, ack)
+                    return
+            except Exception:
+                logger.exception("Wake selfie handling failed — treating as a normal photo")
 
         timezone = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
         memory_context = await self._recall(caption) if caption else ""
@@ -427,6 +456,10 @@ class JarvisRouter:
             ),
             f"- Kiefer nightly email: {'configured' if (s.gmail_address and s.kiefer_email) else 'not configured yet'}",
             f"- Apple Health webhook: {'configured' if s.apple_health_webhook_secret else 'not configured yet'}",
+            "- Day rhythm: wake-up sequence built (05:00 local; Paul arms it with 'start the "
+            "wake-ups', skips one day with 'no wake-up tomorrow'); hourly move+water nudges; "
+            "med reminders (ADHD 09:30, supplements 14:00, TRT Saturdays); 'override' releases "
+            "any block.",
             "- Voice (ElevenLabs), hearing (Deepgram), vision, the heartbeat, gates and the "
             "private track: all active.",
             "If Paul asks about a connection, answer from this list — or tell him to say "
@@ -537,6 +570,14 @@ class JarvisRouter:
             tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
             now_local = datetime.now(ZoneInfo(tz_name))
             outstanding = await self.gates.outstanding(now_local)
+            if self.heartbeat is not None:
+                try:
+                    if await self.heartbeat.wake_pending(now_local):
+                        outstanding = outstanding + [
+                            {"id": "wake", "label": "the wake-up sequence", "by": ""}
+                        ]
+                except Exception:
+                    logger.exception("Wake-pending check failed during override")
             if outstanding:
                 await self.store.set(
                     "pending_override",
@@ -591,6 +632,93 @@ class JarvisRouter:
             await self.telegram.send_text(message.chat_id, reply)
             return True
 
+        # §4 wake-up controls + §10 goodnight (all in Paul's current timezone)
+        if self.heartbeat is not None:
+            tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
+            now_local = datetime.now(ZoneInfo(tz_name))
+            today_local = now_local.date()
+            if re.search(r"\b(start|switch on|turn on|arm)\b.{0,20}\bwake[- ]?ups?\b", lowered):
+                await self.heartbeat.set_wake_enabled(True)
+                reply = (
+                    "Wake sequence armed, sir — 05:00 local, wherever you are. Alarmy does the "
+                    "alarm; I keep going every few minutes until the mirror selfie lands. "
+                    "'No wake-up tomorrow' skips a travel night; 'override' stops any morning."
+                )
+                await self.log.log("out", reply, chat_id=message.chat_id)
+                await self.telegram.send_text(message.chat_id, reply)
+                return True
+            if re.search(r"\b(stop|switch off|turn off|disable)\b.{0,20}\bwake[- ]?ups?\b", lowered):
+                await self.heartbeat.set_wake_enabled(False)
+                reply = "Wake-ups off until you say the word."
+                await self.log.log("out", reply, chat_id=message.chat_id)
+                await self.telegram.send_text(message.chat_id, reply)
+                return True
+
+            skip_hit = re.search(
+                r"\b(no|skip|don'?t|not?)\b.{0,24}\bwake[- ]?up\b.{0,20}\btomorrow\b"
+                r"|\bdon'?t wake me\b.{0,16}\btomorrow\b",
+                lowered,
+            )
+            if skip_hit:
+                await self.heartbeat.skip_next_wake(today_local + timedelta(days=1))
+
+            if re.search(
+                r"\bgood\s?night\b|\bnight,? jarvis\b|\b(off|going) to (bed|sleep)\b", lowered
+            ):
+                await self.db.execute(
+                    "INSERT INTO sleep_log (day, goodnight_time, tz) VALUES (?, ?, ?)",
+                    (today_local.isoformat(), datetime.now(ZoneInfo("UTC")).isoformat(timespec="seconds"), tz_name),
+                )
+                if skip_hit or (
+                    await self.store.get("wake_skip_date")
+                    == (today_local + timedelta(days=1)).isoformat()
+                ):
+                    wake_note = "No wake-up tomorrow, as agreed — travel understood. Back on the day after."
+                elif await self.heartbeat.wake_enabled():
+                    wake_note = "Wake sequence set for 05:00."
+                else:
+                    wake_note = ""
+                reply = (
+                    f"Goodnight, sir. Day closed and logged. {wake_note} "
+                    "Phone down, lights low — tomorrow's already taken care of."
+                ).replace("  ", " ")
+                await self.log.log("out", reply, chat_id=message.chat_id)
+                await self.telegram.send_text(message.chat_id, reply)
+                return True
+
+            if skip_hit:
+                reply = (
+                    "Understood — no wake-up tomorrow. It re-arms automatically the day after; "
+                    "say so if travel runs longer."
+                )
+                await self.log.log("out", reply, chat_id=message.chat_id)
+                await self.telegram.send_text(message.chat_id, reply)
+                return True
+
+            # §5: water and movement logging by voice
+            water_match = re.search(r"\b(\d{2,4})\s?ml\b", lowered)
+            water_word = re.search(r"\bwater\b.{0,12}\b(done|down|in|drunk|had)\b|\bdrank\b", lowered)
+            moved = re.search(
+                r"^\s*moved[.!]?\s*$|\bmovement (done|in)\b|\bstretch(ed)? (done|it)\b"
+                r"|\bgot up and moved\b|\bmoved and\b|\band moved\b",
+                lowered,
+            )
+            if water_match or water_word or moved:
+                parts = []
+                if water_match or water_word:
+                    ml = int(water_match.group(1)) if water_match else 300
+                    total = await self.heartbeat.log_water(today_local, ml)
+                    parts.append(
+                        f"water {total / 1000:.1f}L of {self.settings.water_target_ml / 1000:.1f}L"
+                    )
+                if moved:
+                    count = await self.heartbeat.log_movement(today_local)
+                    parts.append(f"movement {count} today")
+                reply = "Logged — " + " · ".join(parts) + ". Keep it ticking."
+                await self.log.log("out", reply, chat_id=message.chat_id)
+                await self.telegram.send_text(message.chat_id, reply)
+                return True
+
         # Manual hound mode: "hound me"
         if re.search(r"\bhound me\b|\bhound mode\b", lowered) and self.heartbeat is not None:
             await self.heartbeat.set_hound(True)
@@ -615,6 +743,10 @@ class JarvisRouter:
             recorded, corrected = [], []
             if meds_candidate and verdicts.get("medication") == "done" and self.gates is not None:
                 await self.gates.confirm("meds", today)
+                # §6 adherence log — which items this confirmation covers.
+                if self.heartbeat is not None:
+                    for item in med_items_mentioned(transcript) or ["adhd"]:
+                        await self.heartbeat.record_med(today, item)
                 recorded.append("Meds confirmed")
             for activity in candidates:
                 verdict = verdicts.get(activity, "na")

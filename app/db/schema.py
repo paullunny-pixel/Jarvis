@@ -182,6 +182,44 @@ TABLES: list[str] = [
         last_sent_at TEXT NOT NULL
     )
     """,
+    # --- Master Update: wake-up, sleep, hourly rhythm, med adherence ---
+    """
+    CREATE TABLE IF NOT EXISTS wake_log (
+        id {pk},
+        day TEXT NOT NULL,
+        wake_time TEXT NOT NULL,
+        photo_ref TEXT NOT NULL DEFAULT '',
+        method TEXT NOT NULL DEFAULT 'selfie'   -- selfie | run_proof | told | override
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS sleep_log (
+        id {pk},
+        day TEXT NOT NULL,
+        goodnight_time TEXT NOT NULL,
+        tz TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS water_log (
+        day TEXT PRIMARY KEY,
+        ml INTEGER NOT NULL DEFAULT 0
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS movement_log (
+        day TEXT PRIMARY KEY,
+        count INTEGER NOT NULL DEFAULT 0
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS med_adherence (
+        id {pk},
+        day TEXT NOT NULL,
+        item TEXT NOT NULL,                     -- adhd | supplements | trt
+        taken_at TEXT NOT NULL
+    )
+    """,
     # --- Milestone 6: the private sobriety track (content encrypted at rest) ---
     """
     CREATE TABLE IF NOT EXISTS sobriety (

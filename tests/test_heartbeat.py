@@ -227,6 +227,183 @@ class TestNudgeIdempotency(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.h.sent_texts()), first)
 
 
+LONDON = ZoneInfo("Europe/London")
+
+
+def at_local(hhmm: str, day: int = 25) -> "datetime":
+    from datetime import datetime as _dt
+
+    hour, minute = map(int, hhmm.split(":"))
+    return _dt(2026, 7, day, hour, minute, tzinfo=LONDON)
+
+
+class TestDayRhythm(unittest.IsolatedAsyncioTestCase):
+    """Master Update §4 (wake, built but OFF), §5 (move+water), §6 (meds)."""
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = SqliteDatabase(os.path.join(self._dir.name, "t.db"))
+        await self.db.init()
+        self.h = JobsHarness(self.db)
+        self.jobs = self.h.jobs
+
+    async def asyncTearDown(self):
+        await self.db.close()
+        self._dir.cleanup()
+
+    def sent(self):
+        return [b for m, b in self.h.telegram_calls if m in ("sendMessage", "sendVoice")]
+
+    async def test_wake_is_off_by_default(self):
+        await self.jobs.wake_tick(at_local("05:30"))
+        self.assertEqual(self.sent(), [])
+
+    async def test_armed_wake_escalates_until_selfie(self):
+        await self.jobs.set_wake_enabled(True)
+        await self.jobs.wake_tick(at_local("05:06"))
+        await self.jobs.wake_tick(at_local("05:09"))
+        self.assertEqual(len(self.sent()), 2)   # the loop repeats — no dedupe here
+        await self.jobs.record_wake(at_local("05:10").date(), "selfie", photo_ref="F1")
+        await self.jobs.wake_tick(at_local("05:12"))
+        self.assertEqual(len(self.sent()), 2)   # confirmed → silence
+        row = await self.db.fetch_one("SELECT method, photo_ref FROM wake_log")
+        self.assertEqual((row["method"], row["photo_ref"]), ("selfie", "F1"))
+
+    async def test_wake_respects_window(self):
+        await self.jobs.set_wake_enabled(True)
+        await self.jobs.wake_tick(at_local("04:57"))
+        await self.jobs.wake_tick(at_local("09:03"))
+        self.assertEqual(self.sent(), [])
+
+    async def test_travel_skip_sits_out_exactly_one_day(self):
+        await self.jobs.set_wake_enabled(True)
+        await self.jobs.skip_next_wake(at_local("05:00", day=26).date())
+        await self.jobs.wake_tick(at_local("05:06", day=26))
+        self.assertEqual(self.sent(), [])       # skipped — overnight flight
+        await self.jobs.wake_tick(at_local("05:06", day=27))
+        self.assertEqual(len(self.sent()), 1)   # back on automatically
+
+    async def test_override_stops_the_morning(self):
+        from app.heartbeat.gates import GateKeeper
+        from app.heartbeat.streaks import Streaks
+
+        self.jobs.gates = GateKeeper(self.db, Streaks(self.db))
+        await self.jobs.set_wake_enabled(True)
+        await self.jobs.gates.override(["wake"], "red-eye landed at 3am", at_local("05:00").date())
+        await self.jobs.wake_tick(at_local("05:06"))
+        self.assertEqual(self.sent(), [])
+
+    async def test_hourly_nudge_once_per_hour_with_totals(self):
+        day = at_local("10:05").date()
+        await self.jobs.log_water(day, 600)
+        await self.jobs.log_movement(day)
+        await self.jobs.move_water_nudge(at_local("10:05"))
+        self.assertEqual(len(self.h.sent_texts()), 1)
+        self.assertIn("0.6L", self.h.sent_texts()[0])
+        await self.jobs.move_water_nudge(at_local("10:07"))
+        self.assertEqual(len(self.h.sent_texts()), 1)   # same hour → once
+        await self.jobs.move_water_nudge(at_local("11:05"))
+        self.assertEqual(len(self.h.sent_texts()), 2)   # next hour → again
+
+    async def test_no_nudges_after_goodnight(self):
+        day = at_local("15:05").date()
+        await self.db.execute(
+            "INSERT INTO sleep_log (day, goodnight_time, tz) VALUES (?, ?, ?)",
+            (day.isoformat(), "2026-07-25T21:30:00+00:00", "Europe/London"),
+        )
+        await self.jobs.move_water_nudge(at_local("22:05"))
+        self.assertEqual(self.h.sent_texts(), [])
+
+    async def test_med_reminder_until_taken(self):
+        await self.jobs.med_reminder("adhd", at_local("09:30"))
+        self.assertEqual(len(self.sent()), 1)
+        self.assertIn("ADHD", self.sent()[0])
+        await self.jobs.record_med(at_local("09:30").date(), "adhd")
+        self.h.telegram_calls.clear()
+        # Simulate the real 24h gap: age out the identical-message dedupe stamp.
+        await self.db.execute("DELETE FROM nudge_state WHERE nudge_key LIKE 'msg:%'")
+        await self.jobs.med_reminder("adhd", at_local("09:30", day=26))
+        self.assertEqual(len(self.sent()), 1)   # next day reminds again
+
+    async def test_trt_only_on_saturdays(self):
+        await self.jobs.med_reminder("trt", at_local("10:00", day=26))  # Sunday
+        self.assertEqual(self.sent(), [])
+        await self.jobs.med_reminder("trt", at_local("10:00", day=25))  # Saturday
+        self.assertEqual(len(self.sent()), 1)
+
+
+class TestDayRhythmRouter(unittest.IsolatedAsyncioTestCase):
+    """Voice controls: goodnight, wake arming, travel skip, water logging."""
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = SqliteDatabase(os.path.join(self._dir.name, "t.db"))
+        await self.db.init()
+        from tests.test_router import RouterHarness
+
+        self.h = RouterHarness(self.db)
+        self.jobs = JobsHarness(self.db).jobs
+        self.h.router.heartbeat = self.jobs
+
+    async def asyncTearDown(self):
+        await self.db.close()
+        self._dir.cleanup()
+
+    def texts(self):
+        from urllib.parse import parse_qs
+
+        return [
+            parse_qs(body.decode())["text"][0]
+            for method, body in self.h.telegram_calls
+            if method == "sendMessage"
+        ]
+
+    async def test_goodnight_closes_the_day(self):
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        await self.h.router.handle_update(text_update("Goodnight Jarvis", OWNER))
+        row = await self.db.fetch_one("SELECT day, tz FROM sleep_log")
+        self.assertIsNotNone(row)
+        self.assertEqual(row["tz"], "Europe/London")
+        self.assertIn("Goodnight", " ".join(self.texts()))
+
+    async def test_start_and_stop_the_wake_ups(self):
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        await self.h.router.handle_update(text_update("start the wake-ups", OWNER))
+        self.assertTrue(await self.jobs.wake_enabled())
+        self.assertIn("05:00", " ".join(self.texts()))
+        await self.h.router.handle_update(text_update("stop the wake ups", OWNER))
+        self.assertFalse(await self.jobs.wake_enabled())
+
+    async def test_no_wake_up_tomorrow_sets_the_skip(self):
+        from datetime import timedelta as td
+
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        await self.h.router.handle_update(
+            text_update("no wake-up tomorrow, I'm flying overnight", OWNER)
+        )
+        tomorrow = (await self.jobs._today()) + td(days=1)
+        self.assertEqual(
+            await self.jobs.store.get("wake_skip_date"), tomorrow.isoformat()
+        )
+        self.assertIn("re-arms automatically", " ".join(self.texts()))
+
+    async def test_water_and_movement_logged_by_voice(self):
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        await self.h.router.handle_update(text_update("500ml down", OWNER))
+        today = await self.jobs._today()
+        self.assertEqual(await self.jobs.water_total(today), 500)
+        await self.h.router.handle_update(text_update("moved", OWNER))
+        self.assertEqual(await self.jobs.movement_total(today), 1)
+
+
 class TestJobs(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self._dir = tempfile.TemporaryDirectory()

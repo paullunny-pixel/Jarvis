@@ -36,6 +36,8 @@ class Heartbeat:
         logger.info("Heartbeat started")
 
     async def _register_all(self) -> None:
+        from functools import partial
+
         from apscheduler.triggers.cron import CronTrigger
 
         timezone = await self.jobs.store.get(
@@ -58,6 +60,21 @@ class Heartbeat:
                 id=job_id,
                 replace_existing=True,
                 misfire_grace_time=1800,
+            )
+        # Master Update day-rhythm jobs — all in Paul's CURRENT timezone.
+        extras = [
+            # §4: escalating wake loop, ~every 3 min from 05:00 (no-op until enabled)
+            ("wake_tick", self.jobs.wake_tick, CronTrigger(hour="5-8", minute="*/3", timezone=timezone), 120),
+            # §5: hourly move + water through the waking day
+            ("move_water", self.jobs.move_water_nudge, CronTrigger(hour="8-20", minute=5, timezone=timezone), 900),
+            # §6: meds/supplements/TRT (TRT job self-checks for Saturday)
+            ("med_adhd", partial(self.jobs.med_reminder, "adhd"), CronTrigger(hour=9, minute=30, timezone=timezone), 1800),
+            ("med_supplements", partial(self.jobs.med_reminder, "supplements"), CronTrigger(hour=14, minute=0, timezone=timezone), 1800),
+            ("med_trt", partial(self.jobs.med_reminder, "trt"), CronTrigger(day_of_week="sat", hour=10, minute=0, timezone=timezone), 1800),
+        ]
+        for job_id, func, trigger, grace in extras:
+            self._scheduler.add_job(
+                func, trigger, id=job_id, replace_existing=True, misfire_grace_time=grace
             )
         logger.info("Heartbeat jobs registered in %s", timezone)
 
