@@ -38,7 +38,7 @@ You convert Paul's message into Trello task actions. Today's Focus list is:
 Reply ONLY a JSON array of actions (empty if the message contains none):
 - {{"action":"done","target":"<position number or title words>"}}
 - {{"action":"defer","target":"...","when":"friday|tomorrow|next week|YYYY-MM-DD"}}
-- {{"action":"create","title":"...","assignee":"<name or empty>","when":"<optional>"}}
+- {{"action":"create","title":"...","assignee":"<name or empty>","when":"<optional>","list":"<the exact column/list name he said (e.g. 'Paul Today', 'This Week', 'Brain Dump'), or empty if he didn't name one>"}}
 - {{"action":"comment","target":"...","text":"..."}}
 - {{"action":"queue","target":"<number from the This Week listing, or title words>"}}   (move a card into Paul Today for tomorrow)
 - {{"action":"promote","target":"..."}}   (Sunday grooming: Brain Dump → This Week)
@@ -94,6 +94,7 @@ async def execute_actions(
                         str(action.get("title", "New task")),
                         assignee=str(action.get("assignee", "") or ""),
                         due_iso=due_iso,
+                        list_name=str(action.get("list", "") or ""),
                     )
                 )
             elif kind == "comment":

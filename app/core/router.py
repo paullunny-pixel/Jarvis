@@ -1100,15 +1100,15 @@ class JarvisRouter:
             if pending is not None and mail_commands.cancels_send(transcript):
                 reply = await self.mail.cancel_draft()
                 return await self._say(message, reply)
-            if not mail_commands.mentions_email(transcript):
-                return False
-            # "learn my email style" — study the Sent folders, keep the voice.
+            # "learn my style" — study Paul's own voice notes & messages.
             if re.search(
-                r"\b(learn|study|copy)\b.{0,20}\b(email |writing )?(style|voice)\b",
+                r"\b(learn|study|copy|refresh)\b.{0,20}\b(email |writing )?(style|voice)\b",
                 transcript, re.IGNORECASE,
             ):
                 reply = await self.mail.learn_style(self.claude)
                 return await self._say(message, reply)
+            if not mail_commands.mentions_email(transcript):
+                return False
             actions = await mail_commands.parse_actions(
                 self.claude, transcript, self.mail.labels, await self.mail.last_listing(),
                 style=await self.mail.style_profile(),

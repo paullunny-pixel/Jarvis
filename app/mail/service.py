@@ -29,6 +29,7 @@ DRAFT_TTL_MINUTES = 45
 class MailService:
     def __init__(self, clients: list[MailClient], db: Database) -> None:
         self._clients = clients
+        self._db = db
         self._settings = SettingsStore(db)
 
     @property
@@ -246,31 +247,49 @@ class MailService:
         return await self._settings.get(STYLE_KEY, "")
 
     async def learn_style(self, claude) -> str:
-        """Sample every Sent folder, distill Paul's voice, store the guide."""
+        """Distill Paul's REAL voice: his Telegram voice-note transcripts and
+        typed messages, plus WhatsApp messages he wrote himself. Emails are
+        deliberately not used — many were AI-drafted and don't sound like him."""
         from app.mail.style import STYLE_KEY, build_style_profile
 
-        results = await asyncio.gather(
-            *(c.sent_samples(limit=15) for c in self._clients), return_exceptions=True
+        samples: dict[str, list[str]] = {}
+        rows = await self._db.fetch_all(
+            "SELECT transcript, kind FROM messages WHERE direction = 'in'"
+            " AND transcript NOT LIKE '[%' ORDER BY id DESC LIMIT 400"
         )
-        samples = {
-            c.account.label: r
-            for c, r in zip(self._clients, results)
-            if not isinstance(r, Exception) and r
-        }
+        spoken = [
+            r["transcript"] for r in rows
+            if r["kind"] == "voice" and len(r["transcript"]) > 40
+        ][:60]
+        typed = [
+            r["transcript"] for r in rows
+            if r["kind"] != "voice" and len(r["transcript"]) > 40
+        ][:40]
+        if spoken:
+            samples["voice notes (Paul speaking, transcribed)"] = spoken
+        if typed:
+            samples["typed Telegram messages"] = typed
+        wa_rows = await self._db.fetch_all(
+            "SELECT message FROM whatsapp_ingest WHERE LOWER(sender) LIKE 'paul%'"
+            " AND LENGTH(message) > 30 ORDER BY id DESC LIMIT 60"
+        )
+        if wa_rows:
+            samples["WhatsApp messages Paul wrote"] = [r["message"] for r in wa_rows]
         if not samples:
             return (
-                "I couldn't read any sent mail to learn from — the Sent folders "
-                "came back empty. Send a few emails and try 'learn my email style' again."
+                "I've not got enough of your own words yet to learn from — a few days "
+                "of voice notes will do it, then say 'learn my style' again."
             )
         profile = await build_style_profile(claude, samples)
         if not profile:
-            return "The style study didn't take — try 'learn my email style' again shortly."
+            return "The style study didn't take — try 'learn my style' again shortly."
         await self._settings.set(STYLE_KEY, profile)
         count = sum(len(v) for v in samples.values())
+        sources = ", ".join(samples.keys())
         return (
-            f"Studied {count} of your sent emails across {len(samples)} account(s) — "
-            "I've got your voice now, sir. Every draft from here on is written as you. "
-            "Run 'learn my email style' again any time to refresh it."
+            f"Studied {count} of your own messages ({sources}) — that's the real you, "
+            "not the AI-polished email version. Every draft from here on is written in "
+            "your voice. Say 'learn my style' again any time to refresh it."
         )
 
     async def brief_line(self) -> str:

@@ -21,15 +21,19 @@ QUOTE_MARKERS = re.compile(
 )
 
 ANALYSIS_SYSTEM = """\
-You are analysing emails PAUL himself wrote, to capture his authentic
-writing voice. Produce a compact style guide (max ~250 words) another writer
-can follow to draft emails indistinguishable from Paul's own:
-- greetings and sign-offs he actually uses (quote them exactly)
-- sentence length, rhythm, punctuation habits (dashes? exclamation marks?)
-- formality level and how it shifts between business and personal
-- characteristic phrases, warmth level, how direct he is, quirks
-Do NOT include any confidential facts, names of deals, figures or content
-from the emails — style ONLY. Reply with just the guide.\
+You are analysing how PAUL genuinely communicates — transcripts of his own
+voice notes, his typed chat messages, and WhatsApp messages he wrote himself.
+(His emails are deliberately NOT the source: many were AI-drafted and don't
+sound like him. This material is the real Paul.)
+Produce a compact style guide (max ~250 words) another writer can follow to
+draft emails and messages that sound EXACTLY like Paul writing them:
+- his characteristic words, phrases and openers (quote them exactly)
+- sentence length, rhythm, punctuation habits, how blunt or warm he is
+- humour, energy, how he greets and signs off with different people
+- how to adapt his spoken voice into written form WITHOUT flattening it
+  into generic business English — keep it unmistakably him
+Do NOT include any confidential facts, names of deals, figures or content —
+style ONLY. Reply with just the guide.\
 """
 
 

@@ -542,13 +542,37 @@ class Daily12Service:
             logger.exception("Park failed")
             return f"Couldn't reach Trello to park '{title}' — jot it back to me shortly."
 
-    async def _inbox_list_id(self) -> str:
+    async def _fuzzy_list_id(self, board_id: str, name: str) -> tuple[str, str]:
+        """Match a spoken column name to a real board list — exact first,
+        then contains, then word overlap. Returns (id, actual name)."""
+        name_l = name.strip().lower()
+        lists = await self._trello.board_lists(board_id)
+        for l in lists:
+            if l["name"].strip().lower() == name_l:
+                return l["id"], l["name"]
+        for l in lists:
+            ln = l["name"].strip().lower()
+            if name_l and (name_l in ln or ln in name_l):
+                return l["id"], l["name"]
+        words = set(name_l.split())
+        best, overlap = None, 0
+        for l in lists:
+            hit = len(words & set(l["name"].lower().split()))
+            if hit > overlap:
+                best, overlap = l, hit
+        if best is not None:
+            return best["id"], best["name"]
+        return "", ""
+
+    async def _inbox_list_id(self) -> tuple[str, str]:
+        """Default landing list for a new card when Paul names no column:
+        classic inboxes first, then Brain Dump (the conveyor's intake)."""
         board_id = await self.resolve_board()
         lists = await self._trello.board_lists(board_id)
         for l in lists:
-            if l["name"].strip().lower() in ("inbox", "to do", "todo", "backlog"):
-                return l["id"]
-        return lists[0]["id"] if lists else ""
+            if l["name"].strip().lower() in ("inbox", "to do", "todo", "backlog", "brain dump"):
+                return l["id"], l["name"]
+        return (lists[0]["id"], lists[0]["name"]) if lists else ("", "")
 
     async def mark_done(self, reference: str) -> str:
         task = await self.find_plan_task(reference)
@@ -599,9 +623,19 @@ class Daily12Service:
             )
         return f"'{task['title']}' pushed to {human_when}.{nudge}"
 
-    async def create(self, title: str, assignee: str = "", due_iso: str = "") -> str:
+    async def create(
+        self, title: str, assignee: str = "", due_iso: str = "", list_name: str = ""
+    ) -> str:
+        """New card — in the column Paul NAMED when he named one (the old
+        behaviour silently dumped everything in the first list)."""
         try:
-            list_id = await self._inbox_list_id()
+            list_label = ""
+            list_id = ""
+            if list_name:
+                board_id = await self.resolve_board()
+                list_id, list_label = await self._fuzzy_list_id(board_id, list_name)
+            if not list_id:
+                list_id, list_label = await self._inbox_list_id()
             card = await self._trello.create_card(list_id, title, due_iso=due_iso)
             if assignee:
                 member_id = await self._member_id(assignee)
@@ -610,7 +644,8 @@ class Daily12Service:
                 else:
                     await self._trello.comment(card["id"], f"For {assignee} (from Paul, via Jarvis)")
             who = f" on {assignee.title()}" if assignee else ""
-            return f"Created '{title}'{who}."
+            where = f" in {list_label}" if list_label else ""
+            return f"Created '{title}'{who}{where}."
         except Exception:
             logger.exception("Trello create failed")
             return f"Couldn't reach Trello to create '{title}' — I'll keep it noted; try again shortly."

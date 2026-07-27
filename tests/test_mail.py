@@ -303,16 +303,48 @@ class TestWritingStyle(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Thursday", cleaned)
         self.assertNotIn("Original stuff", cleaned)
 
-    async def test_learn_style_studies_sent_mail_and_stores_the_guide(self):
+    async def test_learn_style_studies_voice_notes_not_emails(self):
+        captured = {}
+
         def claude_handler(request: httpx.Request) -> httpx.Response:
+            captured.update(json.loads(request.content))
             return httpx.Response(200, json={"content": [{"type": "text", "text":
                 "Greets by first name, short punchy sentences, signs off 'Paul'."}]})
 
+        # His real voice: transcribed voice notes + typed messages + his own
+        # WhatsApp lines. Private exchanges (redacted markers) stay excluded.
+        for i in range(3):
+            await self.db.execute(
+                "INSERT INTO messages (ts, direction, chat_id, kind, transcript, meta)"
+                " VALUES (?, 'in', 1, 'voice', ?, '{}')",
+                (f"2026-07-27T10:0{i}:00+00:00",
+                 f"Right mate here's the plan number {i}, we smash the surveys then coffee, sound good?"),
+            )
+        await self.db.execute(
+            "INSERT INTO messages (ts, direction, chat_id, kind, transcript, meta)"
+            " VALUES ('2026-07-27T11:00:00+00:00', 'in', 1, 'text', '[private exchange]', '{}')"
+        )
+        await self.db.execute(
+            "INSERT INTO whatsapp_ingest (ts, group_id, group_name, company_tag, sender, message)"
+            " VALUES ('2026-07-27T09:00:00+00:00', 'g1', 'Derma UK', 'derma_uk', 'Paul Lunny',"
+            " 'Lads the new labels look class, get them ordered today please')"
+        )
         claude = ClaudeClient("K", transport=httpx.MockTransport(claude_handler))
         result = await self.service.learn_style(claude)
-        self.assertIn("I've got your voice", result)
-        profile = await self.service.style_profile()
-        self.assertIn("punchy", profile)
+        self.assertIn("your voice", result)
+        self.assertIn("punchy", await self.service.style_profile())
+        corpus = captured["messages"][0]["content"]
+        self.assertIn("smash the surveys", corpus)        # voice notes in
+        self.assertIn("labels look class", corpus)        # his WhatsApp lines in
+        self.assertNotIn("[private exchange]", corpus)    # the wall holds
+
+    async def test_learn_style_honest_with_no_material(self):
+        def claude_handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"content": [{"type": "text", "text": "guide"}]})
+
+        claude = ClaudeClient("K", transport=httpx.MockTransport(claude_handler))
+        result = await self.service.learn_style(claude)
+        self.assertIn("not got enough", result)
 
     async def test_draft_prompt_carries_the_learned_style(self):
         captured = {}

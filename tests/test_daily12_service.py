@@ -263,9 +263,19 @@ class TestService(unittest.IsolatedAsyncioTestCase):
         result = await self.service.create("VAT return prep", assignee="Kiefer")
         self.assertIn("Created 'VAT return prep' on Kiefer", result)
         creates = [w for w in self.h.trello_writes if w[1] == "/1/cards"]
-        self.assertEqual(creates[0][2]["idList"], "L1")  # To Do list
+        self.assertEqual(creates[0][2]["idList"], "L8")  # Brain Dump — the intake
         assigns = [w for w in self.h.trello_writes if "idMembers" in w[1]]
         self.assertEqual(assigns[0][2]["value"], "M1")
+
+    async def test_create_lands_in_the_column_paul_named(self):
+        # The bug: a named column was ignored and everything fell to one list.
+        result = await self.service.create("Chase BMI invoices", list_name="paul today")
+        self.assertIn("in Paul Today", result)
+        creates = [w for w in self.h.trello_writes if w[1] == "/1/cards"]
+        self.assertEqual(creates[-1][2]["idList"], "L1")   # Paul Today
+        await self.service.create("Renew insurance", list_name="the this week column")
+        creates = [w for w in self.h.trello_writes if w[1] == "/1/cards"]
+        self.assertEqual(creates[-1][2]["idList"], "L7")   # fuzzy → This Week
 
     async def test_comment_writes_back(self):
         await self.service.generate(await self.service.paul_today())
@@ -370,7 +380,7 @@ class TestMultiBoard(unittest.IsolatedAsyncioTestCase):
         await self.service.sync()
         await self.service.create("Test VAT card")
         creates = [w for w in self.h.trello_writes if w[1] == "/1/cards"]
-        self.assertEqual(creates[0][2]["idList"], "L1")  # Master Board's To Do
+        self.assertEqual(creates[0][2]["idList"], "L8")  # Master Board's Brain Dump
 
 
 class TestBoardScope(unittest.IsolatedAsyncioTestCase):
@@ -422,7 +432,7 @@ class TestBoardScope(unittest.IsolatedAsyncioTestCase):
         await h.service.sync()
         await h.service.create("New scoped card")
         creates = [w for w in h.trello_writes if w[1] == "/1/cards"]
-        self.assertEqual(creates[0][2]["idList"], "L1")  # Master Board's To Do
+        self.assertEqual(creates[0][2]["idList"], "L8")  # Master Board's Brain Dump
 
     async def test_health_reports_the_scope(self):
         h = MultiBoardHarness(self.db, board_filter="Master Board")
