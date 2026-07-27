@@ -411,6 +411,23 @@ class TestDayRhythmRouter(unittest.IsolatedAsyncioTestCase):
         row = await self.db.fetch_one("SELECT day FROM sleep_log")
         self.assertIsNotNone(row)   # the goodnight itself was logged too
 
+    async def test_monthly_counts_include_runs_from_before_activity_log(self):
+        # The production bug: yesterday's run predates activity_log, so the
+        # recovery-day reply claimed '0 runs this month' despite a live streak.
+        from app.heartbeat.streaks import Streaks
+
+        today = await self.jobs._today()
+        yesterday = (today.replace(day=max(1, today.day - 1))).isoformat()
+        await self.db.execute(
+            "INSERT INTO runs (run_date, distance_km, duration_min, source) VALUES (?, 5.2, 31, 'told')",
+            (yesterday,),
+        )
+        counts = await Streaks(self.db).monthly_activity(today)
+        self.assertEqual(counts["runs"], 1)
+        # And it never double-counts on repeat calls.
+        counts = await Streaks(self.db).monthly_activity(today)
+        self.assertEqual(counts["runs"], 1)
+
     async def test_recovery_day_logged_supportively(self):
         from tests.test_router import OWNER
         from tests.test_telegram_client import text_update

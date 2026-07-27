@@ -121,7 +121,17 @@ class Streaks:
         """An explicit rest day — valid training, never a broken anything."""
         await self._log_activity("recovery", on_date)
 
+    async def _backfill_runs(self) -> None:
+        """Runs recorded before activity_log existed (the `runs` table is the
+        long-lived record) flow into the monthly counts. Idempotent, cheap."""
+        await self._db.execute(
+            "INSERT INTO activity_log (day, kind)"
+            " SELECT DISTINCT run_date, 'run' FROM runs"
+            " WHERE run_date NOT IN (SELECT day FROM activity_log WHERE kind = 'run')"
+        )
+
     async def monthly_activity(self, today: date) -> dict[str, int]:
+        await self._backfill_runs()
         month = today.isoformat()[:7]
         result = {}
         for kind in ("run", "workout", "recovery"):
