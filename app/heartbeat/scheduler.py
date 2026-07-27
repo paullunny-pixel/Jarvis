@@ -71,6 +71,8 @@ class Heartbeat:
             ("med_adhd", partial(self.jobs.med_reminder, "adhd"), CronTrigger(hour=9, minute=30, timezone=timezone), 1800),
             ("med_supplements", partial(self.jobs.med_reminder, "supplements"), CronTrigger(hour=14, minute=0, timezone=timezone), 1800),
             ("med_trt", partial(self.jobs.med_reminder, "trt"), CronTrigger(day_of_week="sat", hour=10, minute=0, timezone=timezone), 1800),
+            # §10: wind-down check-in after the 21:00 review
+            ("bedtime_nudge", self.jobs.bedtime_nudge, CronTrigger(hour=21, minute=45, timezone=timezone), 1800),
         ]
         for job_id, func, trigger, grace in extras:
             self._scheduler.add_job(

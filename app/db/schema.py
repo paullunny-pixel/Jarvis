@@ -213,6 +213,24 @@ TABLES: list[str] = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS focus_sprints (
+        id {pk},
+        started_at TEXT NOT NULL,
+        length_min INTEGER NOT NULL DEFAULT 25,
+        task TEXT NOT NULL DEFAULT '',
+        completed INTEGER NOT NULL DEFAULT 0
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS activity_log (
+        id {pk},
+        day TEXT NOT NULL,
+        kind TEXT NOT NULL,                     -- run | workout | recovery
+        note TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_activity_day ON activity_log (kind, day)",
+    """
     CREATE TABLE IF NOT EXISTS med_adherence (
         id {pk},
         day TEXT NOT NULL,

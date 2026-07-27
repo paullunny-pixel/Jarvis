@@ -8,9 +8,19 @@ from typing import Any
 
 from app.db.base import Database
 
-STREAK_TYPES = ("run", "workout", "twelve", "meals")
+STREAK_TYPES = ("run", "workout", "twelve", "meals", "portuguese")
 # "twelve" keeps its DB key for continuity; the habit is now "Today's Focus".
-STREAK_LABELS = {"run": "Run", "workout": "Workout", "twelve": "Today's Focus", "meals": "Meals on-plan"}
+# Run/workout still track internally (they power the gates), but they're
+# REPORTED as recovery-aware monthly counts (§11), never as broken streaks.
+STREAK_LABELS = {
+    "run": "Run",
+    "workout": "Workout",
+    "twelve": "Today's Focus",
+    "meals": "Meals on-plan",
+    "portuguese": "Portuguese",
+}
+# The daily-doable habits shown as streaks (§11); physical training is monthly.
+DAILY_STREAKS = ("twelve", "meals", "portuguese")
 
 RUN_DONE = re.compile(
     r"\b(run|5k|5 ?km)\b.{0,20}\b(done|smashed|in the bag|finished|complete)\b"
@@ -26,6 +36,12 @@ WORKOUT_DONE = re.compile(
 MEALS_DONE = re.compile(
     r"\bmeals?\b.{0,26}\b(on plan|on-plan|done|all in|logged|prepped and eaten|hit)\b"
     r"|\b(ate|hit)\b.{0,16}\b(clean|my macros|on plan)\b",
+    re.IGNORECASE,
+)
+PORTUGUESE_DONE = re.compile(
+    r"\bportuguese\b.{0,26}\b(done|practi[cs]ed|finished|in|lesson done)\b"
+    r"|\b(did|finished|practi[cs]ed)\b.{0,20}\bportuguese\b"
+    r"|\bduolingo\b.{0,20}\b(done|kept|finished)\b",
     re.IGNORECASE,
 )
 
@@ -53,6 +69,8 @@ def detect_activities(text: str) -> list[str]:
         found.append("workout")
     if MEALS_DONE.search(text):
         found.append("meals")
+    if PORTUGUESE_DONE.search(text):
+        found.append("portuguese")
     return found
 
 
@@ -82,7 +100,39 @@ class Streaks:
                 "UPDATE streaks SET current_count = ?, best_count = ?, last_date = ? WHERE type = ?",
                 (current, best, today_iso, streak_type),
             )
+        if streak_type in ("run", "workout"):
+            await self._log_activity(streak_type, on_date)
         return {"type": streak_type, "current": current, "best": best, "changed": True}
+
+    # --- Recovery-aware physical activity (§11): dated events → monthly counts.
+
+    async def _log_activity(self, kind: str, on_date: date) -> None:
+        exists = await self._db.fetch_one(
+            "SELECT id FROM activity_log WHERE kind = ? AND day = ?",
+            (kind, on_date.isoformat()),
+        )
+        if not exists:
+            await self._db.execute(
+                "INSERT INTO activity_log (day, kind) VALUES (?, ?)",
+                (on_date.isoformat(), kind),
+            )
+
+    async def record_recovery(self, on_date: date) -> None:
+        """An explicit rest day — valid training, never a broken anything."""
+        await self._log_activity("recovery", on_date)
+
+    async def monthly_activity(self, today: date) -> dict[str, int]:
+        month = today.isoformat()[:7]
+        result = {}
+        for kind in ("run", "workout", "recovery"):
+            row = await self._db.fetch_one(
+                "SELECT COUNT(DISTINCT day) AS n FROM activity_log WHERE kind = ? AND day LIKE ?",
+                (kind, f"{month}%"),
+            )
+            result[kind + "s" if kind != "recovery" else "recovery_days"] = (
+                int(row["n"]) if row else 0
+            )
+        return result
 
     async def unrecord(self, streak_type: str, on_date: date) -> bool:
         """Undo a same-day record (Paul corrects a wrong log). Returns whether
@@ -100,6 +150,11 @@ class Streaks:
             "UPDATE streaks SET current_count = ?, best_count = ?, last_date = ? WHERE type = ?",
             (current, best, last, streak_type),
         )
+        if streak_type in ("run", "workout"):
+            await self._db.execute(
+                "DELETE FROM activity_log WHERE kind = ? AND day = ?",
+                (streak_type, on_date.isoformat()),
+            )
         return True
 
     async def snapshot(self, today: date) -> dict[str, dict[str, Any]]:

@@ -16,7 +16,7 @@ non-skippable gates (run + meds).
 
 ## Commands
 
-- Tests: `python -m unittest discover -s tests` (251 tests; stdlib unittest,
+- Tests: `python -m unittest discover -s tests` (262 tests; stdlib unittest,
   NOT pytest — keep it that way. Only `requirements.txt` is needed; two PDF
   tests also use `reportlab` and skip automatically when it isn't installed)
 - No local run needed for most work; local dev uses SQLite automatically
@@ -82,8 +82,8 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
 He speaks in feature ideas and screenshots, not specs. Small tweaks (tone,
 times, thresholds) are "Level 1" — often just prompt/config edits. New
 capabilities are "Level 2" — keep them modular bolt-ons per Plan §14. Pending
-upgrade list: timed medication reminders; whatever the Trello onboarding
-session surfaces. Phase 2 (per Plan §9): email is live (read/draft/confirmed
+upgrade list: WhatsApp work-group ingestion (§13, dedicated number pending);
+calendar event alerts (deferred by Paul); Twilio wake-call channel. Phase 2 (per Plan §9): email is live (read/draft/confirmed
 send); calendar reads multiple ICS feeds — write-back (event creation via
 OAuth) still pending; then Apple Health + MyFitnessPal, finance/villa
 tracker, live workout coaching.

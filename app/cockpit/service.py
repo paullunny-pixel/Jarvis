@@ -60,6 +60,9 @@ class CockpitService:
             "kiefer": await self._kiefer_preview(today),
             "sobriety": await self._sobriety(),
             "rhythm": await self._rhythm(today),
+            # §11: physical training is recovery-aware and monthly, never a
+            # broken streak; a rest day is a valid entry.
+            "activity": await self._streaks.monthly_activity(today),
         }
 
     async def _rhythm(self, today: date) -> dict[str, Any]:
@@ -156,6 +159,11 @@ class CockpitService:
             }
         if self._living is not None:
             body["weight_note"] = await self._living.get("health.weight") or ""
+            # §11: fuller body stats when the living facts hold them.
+            body["weight_target"] = await self._living.get("health.weight_target") or ""
+            body["body_fat"] = await self._living.get("health.body_fat") or ""
+            body["lean_muscle"] = await self._living.get("health.lean_muscle") or ""
+            body["strength"] = await self._living.get("health.strength") or ""
         return body
 
     async def _villa(self) -> dict[str, Any]:

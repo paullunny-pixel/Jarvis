@@ -157,7 +157,7 @@ COCKPIT_HTML = """<!DOCTYPE html>
                   stroke-linecap="round" stroke-dasharray="97.4" stroke-dashoffset="97.4" transform="rotate(-90 18 18)"/>
           <text id="ring-text" x="18" y="22.5" text-anchor="middle">–/12</text>
         </svg>
-        <div class="l"><b id="ring-label">Loading…</b><div id="ring-sub">Clear all → unlock a bonus</div></div>
+        <div class="l"><b id="ring-label">Loading…</b><div id="ring-sub">Any size of day counts</div></div>
       </div>
     </div>
     <div class="card">
@@ -198,15 +198,26 @@ function render(d){
   document.getElementById('pill-day').textContent = 'Day ' + d.day_with_jarvis + ' with Jarvis';
   document.getElementById('gen').textContent = d.generated_at;
 
-  const meta = {run:['🏃 Daily 5km run', true], workout:['🏋️ Workout (PPL)', false],
-                twelve:['✅ Today's Focus cleared', false], meals:['🥗 Meals on-plan', false]};
-  document.getElementById('streaks').innerHTML = Object.entries(meta).map(([k,[label,key]]) => {
-    const s = d.streaks[k];
+  // Daily-doable habits stay streaks; physical training is monthly and
+  // recovery-aware — a rest day is never a broken anything (§11).
+  const meta = {twelve:['✅ Today’s Focus cleared', true],
+                portuguese:['🇧🇷 Portuguese', false], meals:['🥗 Meals on-plan', false]};
+  const chips = Object.entries(meta).map(([k,[label,key]]) => {
+    const s = d.streaks[k] || {current:0, best:0, done_today:false};
     const today = s.done_today ? '✓ done today' : 'not logged today';
     return `<div class="sk${key?' key':''}">${key?'<span class="keytag">KEYSTONE</span>':''}
       <div class="lab">${label}</div><div class="big">${s.current} <small>days</small></div>
       <div class="sub">${today} · best: ${s.best}</div></div>`;
-  }).join('');
+  });
+  const a = d.activity || {runs:0, workouts:0, recovery_days:0};
+  chips.push(`<div class="sk"><div class="lab">🏃 🏋️ This month</div>
+    <div class="big">${a.runs}<small> runs</small> · ${a.workouts}<small> workouts</small></div>
+    <div class="sub">${a.recovery_days} recovery day${a.recovery_days===1?'':'s'} — rest is training</div></div>`);
+  const rh = d.rhythm || {};
+  if (rh.water_target_ml) chips.push(`<div class="sk"><div class="lab">💧 Water · 🚶 Moves</div>
+    <div class="big">${((rh.water_ml||0)/1000).toFixed(1)}<small>L / ${(rh.water_target_ml/1000).toFixed(1)}L</small> · ${rh.movements||0}<small> moves</small></div>
+    <div class="sub">${rh.woke_at ? 'up at ' + rh.woke_at : 'wake not logged'}</div></div>`);
+  document.getElementById('streaks').innerHTML = chips.join('');
 
   const t = d.twelve;
   document.getElementById('twelve-sec').textContent =
@@ -221,13 +232,17 @@ function render(d){
   document.getElementById('ring-text').textContent = `${t.done}/${total}`;
   document.getElementById('ring-fill').setAttribute('stroke-dashoffset', (97.4*(1-(total?t.done/total:0))).toFixed(1));
   document.getElementById('ring-label').textContent = `${t.done} of ${total} done`;
-  document.getElementById('ring-sub').textContent = (t.done>=total && total) ? 'All done — bonus unlocked! 🎉' : 'Clear all → unlock a bonus';
+  document.getElementById('ring-sub').textContent = (t.done>=total && total) ? 'List cleared — outstanding! 🎉' : 'Any size of day counts';
 
   const b = d.body; const tiles = [];
   if(b.weight) tiles.push(`<div class="pt"><div class="lab">Weight</div><div class="val">${b.weight.latest.toFixed(1)} kg</div>
     ${spark(b.weight.series,'#2dd4bf')}<div class="from">from ${b.weight.first.toFixed(1)} kg · Apple Health</div></div>`);
   if(b.run_pace) tiles.push(`<div class="pt"><div class="lab">5km time</div><div class="val">${b.run_pace.latest_min.toFixed(1)} min</div>
     ${spark(b.run_pace.series,'#38bdf8')}<div class="from">best ${b.run_pace.best_min.toFixed(1)} · first ${b.run_pace.first_min.toFixed(1)}</div></div>`);
+  if(b.weight_target) tiles.push(`<div class="pt"><div class="lab">Target</div><div class="val">${esc(b.weight_target)}</div><div class="from">weight goal</div></div>`);
+  if(b.body_fat) tiles.push(`<div class="pt"><div class="lab">Body fat</div><div class="val">${esc(b.body_fat)}</div><div class="from">latest scan</div></div>`);
+  if(b.lean_muscle) tiles.push(`<div class="pt"><div class="lab">Lean muscle</div><div class="val">${esc(b.lean_muscle)}</div><div class="from">latest scan</div></div>`);
+  if(b.strength) tiles.push(`<div class="pt"><div class="lab">Strength</div><div class="val">${esc(b.strength)}</div><div class="from">gym benchmarks</div></div>`);
   if(!tiles.length) tiles.push(`<div class="pt"><div class="lab">Baselines pending</div>
     <div class="val">—</div><div class="from">${esc(b.weight_note || 'Body scan + 5km benchmark to come — data lands here automatically.')}</div></div>`);
   document.getElementById('body').innerHTML = tiles.join('');

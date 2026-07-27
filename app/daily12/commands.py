@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 TASK_HINT = re.compile(
     r"\b(daily )?(12|twelve)\b|\b(today'?s )?focus\b|\btask|\btrello|\bcard\b|\bdone\b"
-    r"|\bfinished\b|\btick\b"
+    r"|\bfinished\b|\btick\b|\bqueue\b|\bpromote\b|\bthis week\b|\bbrain dump\b"
     r"|\bpush (it|that|the|number)|\bput .{0,30}on (kiefer|harry|adriana|adrianna|alicia|kenny|ella)"
     r"|\bassign\b|\bmy (list|plan|tasks)\b",
     re.IGNORECASE,
@@ -40,6 +40,8 @@ Reply ONLY a JSON array of actions (empty if the message contains none):
 - {{"action":"defer","target":"...","when":"friday|tomorrow|next week|YYYY-MM-DD"}}
 - {{"action":"create","title":"...","assignee":"<name or empty>","when":"<optional>"}}
 - {{"action":"comment","target":"...","text":"..."}}
+- {{"action":"queue","target":"<number from the This Week listing, or title words>"}}   (move a card into Paul Today for tomorrow)
+- {{"action":"promote","target":"..."}}   (Sunday grooming: Brain Dump → This Week)
 - {{"action":"show"}}   (he wants to see/hear the list)
 Only include actions he clearly asked for. "Put X on <person>" = create + assignee.\
 """
@@ -98,6 +100,10 @@ async def execute_actions(
                 results.append(
                     await service.comment(str(action.get("target", "")), str(action.get("text", "")))
                 )
+            elif kind == "queue":
+                results.append(await service.queue_for_today(str(action.get("target", ""))))
+            elif kind == "promote":
+                results.append(await service.promote_to_week(str(action.get("target", ""))))
             elif kind == "show":
                 show = True
         except Exception:

@@ -426,6 +426,122 @@ class Daily12Service:
                 return l["id"]
         return ""
 
+    # -------------------------------- §3 planning rituals + §7 park-it
+
+    WEEK_LIST = "this week"
+    DUMP_LIST = "brain dump"
+    WEEK_LISTING_KEY = "week_listing"
+
+    async def cards_in_list(self, list_name: str, limit: int = 12) -> list[dict]:
+        return await self._db.fetch_all(
+            "SELECT id, title, due_date FROM tasks WHERE actionable = 1"
+            " AND LOWER(list_name) = ? ORDER BY score DESC, id LIMIT ?",
+            (list_name.strip().lower(), limit),
+        )
+
+    async def week_preview(self, sunday: bool = False) -> str:
+        """Numbered 'This Week' (and, on Sundays, 'Brain Dump') listing for the
+        evening ritual; the numbering is remembered so 'queue 2 and 5' works."""
+        week = await self.cards_in_list(self.WEEK_LIST)
+        listing = [int(r["id"]) for r in week]
+        lines = []
+        if week:
+            lines.append("THIS WEEK — pick tomorrow's cards ('queue 2 and 5', or by name):")
+            for i, r in enumerate(week, 1):
+                due = f" (due {r['due_date'][:10]})" if r["due_date"] else ""
+                lines.append(f"{i}. {r['title']}{due}")
+        if sunday:
+            dump = await self.cards_in_list(self.DUMP_LIST)
+            if dump:
+                lines.append("")
+                lines.append("BRAIN DUMP — Sunday grooming ('promote <name>' moves it to This Week):")
+                offset = len(listing)
+                for i, r in enumerate(dump, offset + 1):
+                    lines.append(f"{i}. {r['title']}")
+                listing += [int(r["id"]) for r in dump]
+        await self._settings.set(self.WEEK_LISTING_KEY, json.dumps(listing))
+        return "\n".join(lines)
+
+    async def _find_card(self, reference: str, list_name: str) -> dict | None:
+        reference = reference.strip().lower()
+        if reference.isdigit():
+            try:
+                listing = json.loads(await self._settings.get(self.WEEK_LISTING_KEY, "[]"))
+                task_id = listing[int(reference) - 1]
+            except (IndexError, ValueError):
+                return None
+            return await self._db.fetch_one("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        rows = await self._db.fetch_all(
+            "SELECT * FROM tasks WHERE actionable = 1 AND LOWER(list_name) = ?",
+            (list_name,),
+        )
+        scored = [
+            (sum(1 for w in reference.split() if w in r["title"].lower()), r) for r in rows
+        ]
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return scored[0][1] if scored and scored[0][0] > 0 else None
+
+    async def _target_list_id(self, board_id: str, list_name: str) -> str:
+        for l in await self._trello.board_lists(board_id):
+            if l["name"].strip().lower() == list_name.strip().lower():
+                return l["id"]
+        return ""
+
+    async def _move_to_list(self, task: dict, target_list: str) -> bool:
+        board_id = task["board_id"] or await self.resolve_board()
+        list_id = await self._target_list_id(board_id, target_list)
+        if not list_id:
+            return False
+        await self._trello.move_card(task["trello_id"], list_id)
+        await self._db.execute(
+            "UPDATE tasks SET list_name = ? WHERE id = ?", (target_list, task["id"])
+        )
+        return True
+
+    async def queue_for_today(self, reference: str) -> str:
+        """Evening ritual: move a chosen card into 'Paul Today' for tomorrow."""
+        task = await self._find_card(reference, self.WEEK_LIST)
+        if task is None:
+            task = await self._find_card(reference, self.DUMP_LIST)
+        if task is None:
+            return f"Couldn't place '{reference}' in This Week or Brain Dump."
+        try:
+            if await self._move_to_list(task, self._today_list.title()):
+                return f"'{task['title']}' queued for tomorrow."
+            return f"No '{self._today_list.title()}' list on that board yet, sir."
+        except Exception:
+            logger.exception("Queue move failed")
+            return f"Trello wouldn't take the move for '{task['title']}' — noted locally; try again shortly."
+
+    async def promote_to_week(self, reference: str) -> str:
+        """Sunday grooming: Brain Dump → This Week."""
+        task = await self._find_card(reference, self.DUMP_LIST)
+        if task is None:
+            return f"Couldn't find '{reference}' in Brain Dump."
+        try:
+            if await self._move_to_list(task, "This Week"):
+                return f"'{task['title']}' promoted to This Week."
+            return "No 'This Week' list on that board yet, sir."
+        except Exception:
+            logger.exception("Promote move failed")
+            return f"Trello wouldn't take the move for '{task['title']}' — try again shortly."
+
+    async def park(self, title: str) -> str:
+        """§7 park-it: a distracting thought goes straight to Brain Dump."""
+        title = title.strip().rstrip(".")
+        if not title:
+            return "Park what, sir? Give me the thought."
+        try:
+            board_id = await self.resolve_board()
+            list_id = await self._target_list_id(board_id, self.DUMP_LIST)
+            if not list_id:
+                return "There's no 'Brain Dump' list on the board yet — create it and I'll park things there."
+            await self._trello.create_card(list_id, title)
+            return f"Parked: '{title}'. Back to what you were doing."
+        except Exception:
+            logger.exception("Park failed")
+            return f"Couldn't reach Trello to park '{title}' — jot it back to me shortly."
+
     async def _inbox_list_id(self) -> str:
         board_id = await self.resolve_board()
         lists = await self._trello.board_lists(board_id)

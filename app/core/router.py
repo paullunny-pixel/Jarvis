@@ -76,6 +76,7 @@ class JarvisRouter:
         self.log = MessageLog(db)
         self.store = SettingsStore(db)
         self.streaks = Streaks(db)
+        self._sprint_tasks: set = set()  # strong refs to running buzzer timers
 
     # --- Authorisation: Jarvis talks to Paul and no one else ---
 
@@ -662,6 +663,14 @@ class JarvisRouter:
             if skip_hit:
                 await self.heartbeat.skip_next_wake(today_local + timedelta(days=1))
 
+            # Nightly one-shot arm: "wake me (up) tomorrow / as normal / at 5".
+            arm_hit = not skip_hit and re.search(
+                r"\bwake me( up)?\b.{0,24}\b(tomorrow|as normal|as usual|per usual|at 5|usual time)\b",
+                lowered,
+            )
+            if arm_hit:
+                await self.heartbeat.arm_wake_for(today_local + timedelta(days=1))
+
             if re.search(
                 r"\bgood\s?night\b|\bnight,? jarvis\b|\b(off|going) to (bed|sleep)\b", lowered
             ):
@@ -674,8 +683,8 @@ class JarvisRouter:
                     == (today_local + timedelta(days=1)).isoformat()
                 ):
                     wake_note = "No wake-up tomorrow, as agreed — travel understood. Back on the day after."
-                elif await self.heartbeat.wake_enabled():
-                    wake_note = "Wake sequence set for 05:00."
+                elif arm_hit or await self.heartbeat.wake_enabled():
+                    wake_note = "Wake sequence armed — 05:00, mirror selfie ends it."
                 else:
                     wake_note = ""
                 reply = (
@@ -690,6 +699,24 @@ class JarvisRouter:
                 reply = (
                     "Understood — no wake-up tomorrow. It re-arms automatically the day after; "
                     "say so if travel runs longer."
+                )
+                await self.log.log("out", reply, chat_id=message.chat_id)
+                await self.telegram.send_text(message.chat_id, reply)
+                return True
+
+            if arm_hit:
+                reply = "Armed — 05:00 tomorrow, mirror selfie ends it. I'll nudge you towards bed around nine."
+                await self.log.log("out", reply, chat_id=message.chat_id)
+                await self.telegram.send_text(message.chat_id, reply)
+                return True
+
+            # §11: an explicit rest day is valid training, never a failure.
+            if re.search(r"\b(rest|recovery) day\b", lowered) and not looks_negated(transcript):
+                await self.streaks.record_recovery(today_local)
+                monthly = await self.streaks.monthly_activity(today_local)
+                reply = (
+                    f"Recovery day logged — that's training too. {monthly['runs']} runs and "
+                    f"{monthly['workouts']} workouts this month already; the body builds on rest."
                 )
                 await self.log.log("out", reply, chat_id=message.chat_id)
                 await self.telegram.send_text(message.chat_id, reply)
@@ -718,6 +745,70 @@ class JarvisRouter:
                 await self.log.log("out", reply, chat_id=message.chat_id)
                 await self.telegram.send_text(message.chat_id, reply)
                 return True
+
+        # §7 park-it: a distracting thought → Brain Dump, no context switch.
+        park = re.match(
+            r"\s*park(?:\s+(?:that|this|it))?(?:\s+thought)?\s*[:,\-]?\s+(.+)$",
+            transcript,
+            re.IGNORECASE,
+        )
+        if park and self.daily12 is not None:
+            reply = await self.daily12.park(park.group(1))
+            await self.log.log("out", reply, chat_id=message.chat_id)
+            await self.telegram.send_text(message.chat_id, reply)
+            return True
+
+        # §7 focus sprints (body-doubling) + "just start".
+        if re.search(r"\bsprint\b.{0,20}\b(done|complete|finished|smashed|went (well|fine|great))\b", lowered):
+            row = await self.db.fetch_one(
+                "SELECT id FROM focus_sprints WHERE completed = 0 ORDER BY id DESC LIMIT 1"
+            )
+            if row:
+                await self.db.execute(
+                    "UPDATE focus_sprints SET completed = 1 WHERE id = ?", (row["id"],)
+                )
+                reply = "Logged. That's how mountains get moved — one clean sprint at a time."
+            else:
+                reply = "Nothing on the clock, but I'll take the win — say 'start a sprint' next time and I'll time it."
+            await self.log.log("out", reply, chat_id=message.chat_id)
+            await self.telegram.send_text(message.chat_id, reply)
+            return True
+
+        sprint_start = re.search(
+            r"\b(?:start|give me|let'?s do|run)\b.{0,20}\bsprint\b|\bfocus sprint\b"
+            r"|\b\d{1,2}\s?min(?:ute)?s? sprint\b",
+            lowered,
+        )
+        just_start = re.search(
+            r"\bjust start\b|\bhelp me start\b|\bi'?m dreading\b|\bcan'?t (?:face|seem to start)\b"
+            r"|\bstruggling to start\b",
+            lowered,
+        )
+        if sprint_start or just_start:
+            length_match = re.search(r"\b(\d{1,2})\s?min", lowered)
+            minutes = int(length_match.group(1)) if length_match else (5 if just_start else 25)
+            title_match = re.search(r"(?:sprint|start)\s+(?:on|for|with)\s+(.+)$", transcript, re.IGNORECASE)
+            title = title_match.group(1).strip().rstrip(".?!") if title_match else ""
+            sprint_id = await self.db.insert_returning_id(
+                "INSERT INTO focus_sprints (started_at, length_min, task, completed)"
+                " VALUES (?, ?, ?, 0)",
+                (datetime.now(ZoneInfo("UTC")).isoformat(timespec="seconds"), minutes, title[:200]),
+            )
+            self._schedule_sprint_buzzer(message.chat_id, sprint_id, minutes, title)
+            if just_start:
+                reply = (
+                    "Smallest possible first step — open the thing, nothing more. "
+                    f"{minutes} minutes on the clock, starting now. Anything counts; I'll buzz you."
+                )
+            else:
+                on = f" on '{title}'" if title else ""
+                reply = (
+                    f"{minutes} minutes{on}. Phone face-down, one thing only — I'm here, quiet, "
+                    "until the buzzer. Three, two, one — go."
+                )
+            await self.log.log("out", reply, chat_id=message.chat_id)
+            await self.telegram.send_text(message.chat_id, reply)
+            return True
 
         # Manual hound mode: "hound me"
         if re.search(r"\bhound me\b|\bhound mode\b", lowered) and self.heartbeat is not None:
@@ -786,13 +877,43 @@ class JarvisRouter:
         return False
 
     ACTIVITY_CONFIRM_SYSTEM = (
-        'Paul mentioned daily activities. For each of run, workout, meals, medication decide from '
-        'his message alone: "done" (he clearly states he completed/took it today), "not_done" (he '
-        'states he has NOT / missed it / will do it later), or "na" (not mentioned or unclear). '
-        'Negations like "haven\'t", "not done", "yet", "missed" mean not_done. Reply ONLY JSON: '
+        'Paul mentioned daily activities. For each of run, workout, meals, medication, portuguese '
+        'decide from his message alone: "done" (he clearly states he completed/took/practised it '
+        'today), "not_done" (he states he has NOT / missed it / will do it later), or "na" (not '
+        'mentioned or unclear). Negations like "haven\'t", "not done", "yet", "missed" mean '
+        'not_done. Reply ONLY JSON: '
         '{"run":"done|not_done|na","workout":"done|not_done|na","meals":"done|not_done|na",'
-        '"medication":"done|not_done|na"}'
+        '"medication":"done|not_done|na","portuguese":"done|not_done|na"}'
     )
+
+    SPRINT_MINUTE_SECONDS = 60.0  # tests shrink this to fire buzzers instantly
+
+    def _schedule_sprint_buzzer(self, chat_id: int, sprint_id: int, minutes: int, title: str) -> None:
+        import asyncio
+
+        task = asyncio.create_task(self._sprint_buzzer(chat_id, sprint_id, minutes, title))
+        self._sprint_tasks.add(task)
+        task.add_done_callback(self._sprint_tasks.discard)
+
+    async def _sprint_buzzer(self, chat_id: int, sprint_id: int, minutes: int, title: str) -> None:
+        import asyncio
+
+        try:
+            await asyncio.sleep(minutes * self.SPRINT_MINUTE_SECONDS)
+            row = await self.db.fetch_one(
+                "SELECT completed FROM focus_sprints WHERE id = ?", (sprint_id,)
+            )
+            if row and row["completed"]:
+                return  # he called it done before the buzzer — no need to interrupt
+            on = f" on '{title}'" if title else ""
+            text = (
+                f"Buzzer, sir — {minutes} minutes{on} done. How did it land? "
+                "'Sprint done' logs it, or we go straight into another."
+            )
+            await self.log.log("out", text, chat_id=chat_id, meta={"sprint": sprint_id})
+            await self.telegram.send_text(chat_id, text)
+        except Exception:
+            logger.exception("Sprint buzzer failed")
 
     async def _confirm_activities(self, transcript: str, candidates: list[str]) -> dict[str, str]:
         import json as _json

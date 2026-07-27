@@ -342,7 +342,8 @@ class TestDayRhythmRouter(unittest.IsolatedAsyncioTestCase):
         from tests.test_router import RouterHarness
 
         self.h = RouterHarness(self.db)
-        self.jobs = JobsHarness(self.db).jobs
+        self.jobs_harness = JobsHarness(self.db)
+        self.jobs = self.jobs_harness.jobs
         self.h.router.heartbeat = self.jobs
 
     async def asyncTearDown(self):
@@ -392,6 +393,102 @@ class TestDayRhythmRouter(unittest.IsolatedAsyncioTestCase):
             await self.jobs.store.get("wake_skip_date"), tomorrow.isoformat()
         )
         self.assertIn("re-arms automatically", " ".join(self.texts()))
+
+    async def test_goodnight_wake_me_as_normal_arms_tomorrow_only(self):
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        await self.h.router.handle_update(
+            text_update("goodnight, wake me up tomorrow as normal", OWNER)
+        )
+        self.assertFalse(await self.jobs.wake_enabled())   # no standing commitment
+        from datetime import datetime as dt, timedelta as td
+
+        real_tomorrow = dt.now(LONDON) + td(days=1)
+        armed = real_tomorrow.replace(hour=5, minute=6)
+        self.assertTrue(await self.jobs.wake_pending(armed))
+        self.assertIn("armed", " ".join(self.texts()).lower())
+        row = await self.db.fetch_one("SELECT day FROM sleep_log")
+        self.assertIsNotNone(row)   # the goodnight itself was logged too
+
+    async def test_recovery_day_logged_supportively(self):
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        await self.h.router.handle_update(text_update("taking a rest day today", OWNER))
+        row = await self.db.fetch_one("SELECT kind FROM activity_log WHERE kind = 'recovery'")
+        self.assertIsNotNone(row)
+        self.assertIn("Recovery day logged", " ".join(self.texts()))
+
+    async def test_focus_sprint_starts_buzzes_and_completes(self):
+        import asyncio
+
+        from app.core.router import JarvisRouter
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        old = JarvisRouter.SPRINT_MINUTE_SECONDS
+        JarvisRouter.SPRINT_MINUTE_SECONDS = 0.002
+        try:
+            await self.h.router.handle_update(
+                text_update("start a 25 minute sprint on the BMI email", OWNER)
+            )
+            row = await self.db.fetch_one("SELECT length_min, task FROM focus_sprints")
+            self.assertEqual(row["length_min"], 25)
+            self.assertIn("BMI email", row["task"])
+            self.assertIn("25 minutes", " ".join(self.texts()))
+            await asyncio.sleep(0.2)   # let the buzzer fire
+            self.assertIn("Buzzer", " ".join(self.texts()))
+            await self.h.router.handle_update(text_update("sprint done, went well", OWNER))
+            row = await self.db.fetch_one("SELECT completed FROM focus_sprints")
+            self.assertEqual(row["completed"], 1)
+        finally:
+            JarvisRouter.SPRINT_MINUTE_SECONDS = old
+
+    async def test_just_start_gets_a_five_minute_timer(self):
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        await self.h.router.handle_update(
+            text_update("I'm dreading the VAT return, help me start", OWNER)
+        )
+        row = await self.db.fetch_one("SELECT length_min FROM focus_sprints")
+        self.assertEqual(row["length_min"], 5)
+        self.assertIn("Smallest possible first step", " ".join(self.texts()))
+
+    async def test_portuguese_practice_extends_streak(self):
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        await self.h.router.handle_update(text_update("practised my portuguese", OWNER))
+        today = await self.jobs._today()
+        self.assertTrue(await self.h.router.streaks.done_today("portuguese", today))
+        self.assertIn("Portuguese streak: 1", " ".join(self.texts()))
+
+    async def test_bedtime_nudge_once_and_respects_goodnight(self):
+        await self.jobs.bedtime_nudge()
+        self.assertEqual(len(self.h_jobs_texts()), 1)
+        self.assertIn("Wind-down", self.h_jobs_texts()[0])
+        await self.jobs.bedtime_nudge()
+        self.assertEqual(len(self.h_jobs_texts()), 1)   # once per night
+
+    def h_jobs_texts(self):
+        # heartbeat jobs go through the JobsHarness telegram, not the router's
+        from urllib.parse import unquote_plus
+
+        return [
+            unquote_plus(b)
+            for m, b in self.jobs_harness.telegram_calls
+            if m in ("sendMessage", "sendVoice")
+        ]
+
+    async def test_evening_review_leads_with_wins(self):
+        today = await self.jobs._today()
+        await self.jobs.log_water(today, 1200)
+        await self.jobs.evening_review()
+        combined = " ".join(self.h_jobs_texts())
+        self.assertIn("TODAY'S WINS", combined)
+        self.assertIn("1.2L water", combined)
 
     async def test_water_and_movement_logged_by_voice(self):
         from tests.test_router import OWNER
@@ -500,21 +597,29 @@ class TestKieferGuard(unittest.TestCase):
     def test_kiefer_data_contains_only_business(self):
         snapshot = {
             t: {"current": 3, "best": 5, "done_today": True}
-            for t in ("run", "workout", "twelve", "meals")
+            for t in ("run", "workout", "twelve", "meals", "portuguese")
         }
-        data = compose_kiefer_data(TODAY, 12, 12, snapshot)
+        data = compose_kiefer_data(
+            TODAY, 12, 12, snapshot, {"runs": 9, "workouts": 7, "recovery_days": 3}
+        )
         assert_no_private_content(data)
         self.assertIn("12/12", data)
+        self.assertIn("9 runs", data)   # recovery-aware monthly framing
 
     def test_morning_skeleton_composition(self):
         snapshot = {
             t: {"current": 2, "best": 4, "done_today": False}
-            for t in ("run", "workout", "twelve", "meals")
+            for t in ("run", "workout", "twelve", "meals", "portuguese")
         }
-        text = compose_morning_skeleton(TODAY, [{"time": "15:00", "title": "Call"}], snapshot)
+        text = compose_morning_skeleton(
+            TODAY, [{"time": "15:00", "title": "Call"}], snapshot,
+            {"runs": 4, "workouts": 3, "recovery_days": 1},
+        )
         self.assertIn("5km run", text)
         self.assertIn("15:00", text)
-        self.assertIn("Run 2", text)
+        self.assertIn("Today's Focus 2", text)      # daily streaks
+        self.assertIn("4 runs · 3 workouts", text)  # monthly counts
+        self.assertIn("rest counts", text)
 
 
 class TestEmailer(unittest.IsolatedAsyncioTestCase):

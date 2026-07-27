@@ -21,6 +21,8 @@ LISTS = [
     {"id": "L3", "name": "Done"},
     {"id": "L4", "name": "Blocked/Waiting"},
     {"id": "L5", "name": "Paul Personal"},
+    {"id": "L7", "name": "This Week"},
+    {"id": "L8", "name": "Brain Dump"},
 ]
 
 
@@ -51,9 +53,11 @@ CARDS = [
     trello_card(10, "Stuck on supplier", list_id="L4"),
     trello_card(11, "Book the dentist", list_id="L5"),
     trello_card(12, "Renew passport", list_id="L5", due="2026-08-05T12:00:00.000Z"),
+    trello_card(13, "Kiefer cashflow review", list_id="L7"),
+    trello_card(14, "Someday: villa office idea", list_id="L8"),
 ]
 
-# Order matches the untagged ACTIONABLE rows the tagger sees: C1-C8, C11, C12.
+# Order matches the untagged ACTIONABLE rows the tagger sees: C1-C8, C11-C14.
 TAGS = [
     {"company": "prodermis", "project": "BMI relationship"},
     {"company": "derma_uk", "project": "Website relaunch"},
@@ -65,6 +69,8 @@ TAGS = [
     {"company": "aesthetics_supply", "project": "Promotions"},
     {"company": "", "project": ""},   # dentist — personal
     {"company": "", "project": ""},   # passport — personal
+    {"company": "derma_uk", "project": "Finance rhythm"},   # This Week card
+    {"company": "", "project": ""},   # Brain Dump card
 ]
 
 
@@ -172,6 +178,43 @@ class TestService(unittest.IsolatedAsyncioTestCase):
     async def test_empty_day_is_a_clear_day(self):
         text = await self.service.format_plan(date(2026, 7, 20))
         self.assertIn("clear", text.lower())
+
+    # ------- §3 planning rituals + §7 park-it (Trello writes) -------
+
+    async def test_week_preview_lists_and_remembers_numbering(self):
+        await self.service.sync()
+        text = await self.service.week_preview()
+        self.assertIn("THIS WEEK", text)
+        self.assertIn("1. Kiefer cashflow review", text)
+        self.assertNotIn("BRAIN DUMP", text)          # not Sunday mode
+        sunday = await self.service.week_preview(sunday=True)
+        self.assertIn("BRAIN DUMP", sunday)
+        self.assertIn("villa office idea", sunday)
+
+    async def test_queue_by_number_moves_card_into_paul_today(self):
+        await self.service.sync()
+        await self.service.week_preview()
+        result = await self.service.queue_for_today("1")
+        self.assertIn("queued for tomorrow", result)
+        moves = [w for w in self.h.trello_writes if w[0] == "PUT" and "/cards/C13" in w[1]]
+        self.assertTrue(any(w[2].get("idList") == "L1" for w in moves))  # → Paul Today
+        row = await self.db.fetch_one("SELECT list_name FROM tasks WHERE trello_id = 'C13'")
+        self.assertEqual(row["list_name"].lower(), "paul today")
+
+    async def test_sunday_grooming_promotes_brain_dump(self):
+        await self.service.sync()
+        result = await self.service.promote_to_week("villa office")
+        self.assertIn("promoted to This Week", result)
+        moves = [w for w in self.h.trello_writes if w[0] == "PUT" and "/cards/C14" in w[1]]
+        self.assertTrue(any(w[2].get("idList") == "L7" for w in moves))
+
+    async def test_park_drops_thought_into_brain_dump(self):
+        await self.service.sync()
+        result = await self.service.park("order new shipping labels")
+        self.assertIn("Parked", result)
+        creates = [w for w in self.h.trello_writes if w[1] == "/1/cards"]
+        self.assertEqual(creates[-1][2]["idList"], "L8")
+        self.assertIn("order new shipping labels", creates[-1][2]["name"])
 
     async def test_urgent_bmi_survey_ranks_top_of_prodermis(self):
         await self.service.generate(date(2026, 7, 25))

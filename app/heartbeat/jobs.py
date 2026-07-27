@@ -227,8 +227,9 @@ class HeartbeatJobs:
                 logger.exception("Daily 12 generation failed for the brief")
         events = await self.calendar.events_for(today, tz) if self.calendar else []
         snapshot = await self.streaks.snapshot(today)
+        monthly = await self.streaks.monthly_activity(today)
 
-        skeleton = compose_morning_skeleton(today, events, snapshot)
+        skeleton = compose_morning_skeleton(today, events, snapshot, monthly)
         if self.mail is not None:
             try:
                 inbox_line = await self.mail.brief_line()
@@ -352,16 +353,33 @@ class HeartbeatJobs:
             return
         done, total = await self._focus_progress(today)
         snapshot = await self.streaks.snapshot(today)
+
+        # §9 daily wins — what actually happened, framed positively.
+        wins = await self._wins_recap(today, done, total, snapshot)
         summary = compose_evening_summary(today, done, total, snapshot)
+
+        # §3 the evening ritual: walk This Week, choose tomorrow's cards.
+        week_block = ""
+        if self.daily12 is not None:
+            try:
+                is_sunday = datetime.now(await self._tz()).strftime("%a") == "Sun"
+                week_block = await self.daily12.week_preview(sunday=is_sunday)
+            except Exception:
+                logger.exception("Week preview failed — review goes out without it")
+
         review = await self._flourish(
-            "Evening review. Reflect the day honestly (wins first), then ask Paul to co-plan "
-            "tomorrow hour-by-hour with you — invite him to voice-note his shape of tomorrow. "
-            "He does his best work in the evening, so this can have substance. 3–5 sentences.",
-            summary,
-            "Day's summary below. Voice me the shape of tomorrow — meetings, where you're training, "
-            "what must move — and I'll build the hour-by-hour.",
+            "Evening review. Lead with the WINS (below) — celebrate what he actually did, "
+            "specifically. Unfinished Paul Today cards roll to tomorrow automatically. Then ask "
+            "him to pick tomorrow's cards from the This Week list and to co-plan the evening "
+            "wind-down. 3–5 sentences.",
+            f"{wins}\n\n{summary}",
+            "Day's summary below. Pick tomorrow's cards from This Week — 'queue 2 and 5' does it — "
+            "and voice me the shape of tomorrow.",
         )
-        await self._send_text(review + "\n\n" + summary)
+        message = review + "\n\n" + wins + "\n\n" + summary
+        if week_block:
+            message += "\n\n" + week_block
+        await self._send_text(message)
         # The private check-in rides separately, a few minutes of space apart in
         # tone: warm, brief, no business. (Milestone 6 deepens this flow.)
         await self._send_voice(
@@ -376,7 +394,9 @@ class HeartbeatJobs:
             return False
         done, total = await self._focus_progress(today)
         snapshot = await self.streaks.snapshot(today)
-        body_data = compose_kiefer_data(today, done, total, snapshot)
+        body_data = compose_kiefer_data(
+            today, done, total, snapshot, await self.streaks.monthly_activity(today)
+        )
         note = await self._flourish(
             "Write the nightly note to Kiefer (Paul's CFO and right-hand man) about Paul's day. "
             "Friendly and warm, never shaming, like a mate's update. Mention the Daily 12 progress "
@@ -406,6 +426,11 @@ class HeartbeatJobs:
     async def skip_next_wake(self, tomorrow: date) -> None:
         await self.store.set(WAKE_SKIP_KEY, tomorrow.isoformat())
 
+    async def arm_wake_for(self, day: date) -> None:
+        """One-shot arm: 'goodnight, wake me as normal' arms just tomorrow —
+        Paul's nightly ritual, no standing commitment needed."""
+        await self.store.set("wake_armed_date", day.isoformat())
+
     async def woke_today(self, today: date) -> bool:
         row = await self.db.fetch_one(
             "SELECT id FROM wake_log WHERE day = ?", (today.isoformat(),)
@@ -424,7 +449,8 @@ class HeartbeatJobs:
         """The sequence is live right now and unconfirmed (override consults this)."""
         now = now or datetime.now(await self._tz())
         today = now.date()
-        if not await self.wake_enabled():
+        armed_tonight = await self.store.get("wake_armed_date") == today.isoformat()
+        if not (await self.wake_enabled() or armed_tonight):
             return False
         if not (WAKE_WINDOW[0] <= now.hour < WAKE_WINDOW[1]):
             return False
@@ -545,6 +571,58 @@ class HeartbeatJobs:
             "Tell me when it's in and I'll log it."
         )
 
+    async def _wins_recap(self, today: date, done: int, total: int, snapshot: dict) -> str:
+        """§9: the day's actual wins, no shame anywhere."""
+        lines = ["TODAY'S WINS"]
+        done_rows = await self.db.fetch_all(
+            "SELECT t.title FROM daily_12 d JOIN tasks t ON t.id = d.task_id"
+            " WHERE d.plan_date = ? AND d.done = 1 AND d.position != 0",
+            (today.isoformat(),),
+        )
+        for row in done_rows[:8]:
+            lines.append(f"✅ {row['title']}")
+        monthly = await self.streaks.monthly_activity(today)
+        physical = []
+        if snapshot["run"]["done_today"]:
+            physical.append("run in")
+        if snapshot["workout"]["done_today"]:
+            physical.append("workout in")
+        physical.append(f"{monthly['runs']} runs and {monthly['workouts']} workouts this month")
+        lines.append("🏃 " + " · ".join(physical))
+        water = await self.water_total(today)
+        moves = await self.movement_total(today)
+        if water or moves:
+            lines.append(f"💧 {water / 1000:.1f}L water · {moves} movement breaks")
+        if snapshot.get("portuguese", {}).get("done_today"):
+            lines.append("🇧🇷 Portuguese practised — Steph will approve")
+        if len(lines) == 1 and not done and not total:
+            lines.append("A quiet board today — and that's allowed.")
+        return "\n".join(lines)
+
+    # -------------------------------------------- §10 bedtime nudge (~21:45)
+
+    async def bedtime_nudge(self) -> None:
+        """The 9-o'clock-ish check-in Paul asked for: wind down towards a
+        05:00-friendly bedtime and arm tomorrow's wake with the goodnight."""
+        today = await self._today()
+        gone = await self.db.fetch_one(
+            "SELECT id FROM sleep_log WHERE day = ?", (today.isoformat(),)
+        )
+        if gone:
+            return
+        if not await self._once(f"bedtime:{today.isoformat()}"):
+            return
+        armed = await self.wake_enabled()
+        arm_line = (
+            "Wake sequence already armed for 05:00."
+            if armed
+            else "Say 'goodnight — wake me as normal' and I'll run the 05:00 sequence."
+        )
+        await self._send_voice(
+            f"Wind-down time, sir. Screens dimming, tomorrow's cards are set — a 05:00 start "
+            f"wants lights out by ten. {arm_line}"
+        )
+
     # ------------------------------------------------------------ shared
 
     async def _focus_progress(self, today: date) -> tuple[int, int]:
@@ -560,7 +638,9 @@ class HeartbeatJobs:
 
 # ---------------------------------------------------------------- composers
 
-def compose_morning_skeleton(today: date, events: list[dict], snapshot: dict) -> str:
+def compose_morning_skeleton(
+    today: date, events: list[dict], snapshot: dict, monthly: dict | None = None
+) -> str:
     lines = [f"YOUR DAY — {today.strftime('%A %d %B')}"]
     lines.append("06:30  5km run (the keystone — everything else follows it)")
     lines.append("07:00  Coffee, meals 1–2, ease in — no heavy lifting yet")
@@ -569,9 +649,17 @@ def compose_morning_skeleton(today: date, events: list[dict], snapshot: dict) ->
         lines.append("CALENDAR")
         lines.extend(f"{e['time']:>5}  {e['title']}" for e in events)
     lines.append("")
+    # Daily-doable streaks only; training reads as monthly counts (§11).
     lines.append("STREAKS  " + " · ".join(
-        f"{STREAK_LABELS[t]} {snapshot[t]['current']}" for t in ("run", "workout", "twelve", "meals")
+        f"{STREAK_LABELS[t]} {snapshot[t]['current']}"
+        for t in ("twelve", "meals", "portuguese")
+        if t in snapshot
     ))
+    if monthly is not None:
+        lines.append(
+            f"MONTH  {monthly['runs']} runs · {monthly['workouts']} workouts"
+            f" · {monthly['recovery_days']} recovery days (rest counts)"
+        )
     return "\n".join(lines)
 
 
@@ -580,20 +668,35 @@ def compose_evening_summary(today: date, done: int, total: int, snapshot: dict) 
     lines.append(
         f"Today's Focus: {done}/{total} done" if total else "Today's Focus: clear day (nothing queued)"
     )
-    for t in ("run", "workout", "meals"):
-        s = snapshot[t]
+    for t in ("run", "workout"):
+        state = "✅ done" if snapshot[t]["done_today"] else "▫️ not logged (rest is allowed)"
+        lines.append(f"{STREAK_LABELS[t]}: {state}")
+    for t in ("meals", "portuguese"):
+        s = snapshot.get(t)
+        if s is None:
+            continue
         state = "✅ done" if s["done_today"] else "▫️ not logged"
         lines.append(f"{STREAK_LABELS[t]}: {state} (streak {s['current']}, best {s['best']})")
     return "\n".join(lines)
 
 
-def compose_kiefer_data(today: date, done: int, total: int, snapshot: dict) -> str:
+def compose_kiefer_data(
+    today: date, done: int, total: int, snapshot: dict, monthly: dict | None = None
+) -> str:
     parts = [
         f"Today's Focus: {done}/{total} cleared." if total else "A clear-list day."
     ]
-    for t in ("run", "workout", "twelve", "meals"):
-        s = snapshot[t]
-        if s["current"]:
+    if snapshot["run"]["done_today"]:
+        parts.append("Run in today.")
+    if snapshot["workout"]["done_today"]:
+        parts.append("Workout in today.")
+    if monthly:
+        parts.append(
+            f"This month: {monthly['runs']} runs, {monthly['workouts']} workouts."
+        )
+    for t in ("twelve", "meals", "portuguese"):
+        s = snapshot.get(t)
+        if s and s["current"]:
             parts.append(f"{STREAK_LABELS[t]} streak: {s['current']} days (best {s['best']}).")
     if total and done >= total:
         parts.append("Full list cleared — big day.")
