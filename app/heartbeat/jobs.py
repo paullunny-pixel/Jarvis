@@ -675,6 +675,34 @@ class HeartbeatJobs:
             "Lights out — I'll take the goodnight as you fade."
         )
 
+    # ---------------------------------------- WhatsApp SIM keep-alive nag
+
+    SIM_KEY = "sim_keepalive_last"
+
+    async def sim_keepalive(self, now: datetime | None = None) -> None:
+        """UK PAYG SIMs die after ~90 idle days — from day 60, one daily nag
+        until Paul sends a text from the drawer phone and says 'SIM done'.
+        Losing the number = someone else can inherit the WhatsApp account."""
+        now = now or datetime.now(await self._tz())
+        today = now.date()
+        last = await self.store.get(self.SIM_KEY, "")
+        if not last:
+            await self.store.set(self.SIM_KEY, today.isoformat())
+            return
+        idle_days = (today - date.fromisoformat(last)).days
+        if idle_days < self.settings.sim_keepalive_days:
+            return
+        if not await self._once(f"simkeepalive:{today.isoformat()}"):
+            return
+        await self._send_text(
+            f"Housekeeping, sir — the WhatsApp SIM has sat quiet for {idle_days} days; "
+            f"UK networks reclaim it at ~90. One text or 10-second call from the drawer "
+            f"phone keeps the number (and the bridge) alive. Tell me 'SIM done' after."
+        )
+
+    async def sim_keepalive_confirmed(self, today: date) -> None:
+        await self.store.set(self.SIM_KEY, today.isoformat())
+
     # ------------------------------------------------------------ shared
 
     async def _focus_progress(self, today: date) -> tuple[int, int]:

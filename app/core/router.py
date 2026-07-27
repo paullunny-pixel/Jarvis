@@ -647,6 +647,18 @@ class JarvisRouter:
             await self.telegram.send_text(message.chat_id, reply)
             return True
 
+        # WhatsApp SIM keep-alive confirmation: "SIM done" resets the clock.
+        if re.search(r"\bsim\b.{0,24}\b(done|sent|sorted|topped up|kept alive)\b", lowered):
+            if self.heartbeat is not None:
+                tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
+                await self.heartbeat.sim_keepalive_confirmed(
+                    datetime.now(ZoneInfo(tz_name)).date()
+                )
+            reply = "SIM logged as alive — clock reset, I'll nudge you again around day 60."
+            await self.log.log("out", reply, chat_id=message.chat_id)
+            await self.telegram.send_text(message.chat_id, reply)
+            return True
+
         # WhatsApp bridge setup: Jarvis hands over the exact webhook URL.
         if re.search(r"\bwhatsapp\b.{0,16}\b(setup|set ?up|link|url|webhook)\b", lowered):
             if self.settings.public_url:

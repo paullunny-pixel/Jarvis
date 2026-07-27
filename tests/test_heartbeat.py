@@ -518,6 +518,33 @@ class TestDayRhythmRouter(unittest.IsolatedAsyncioTestCase):
         await self.jobs.lights_out_chaser()
         self.assertEqual(self.h_jobs_texts(), [])
 
+    async def test_sim_keepalive_nags_from_day_60_until_confirmed(self):
+        # First run just starts the clock.
+        await self.jobs.sim_keepalive(at_local("10:15"))
+        self.assertEqual(self.h_jobs_texts(), [])
+        # 59 idle days: silence. 61: one nag per day.
+        await self.jobs.store.set(self.jobs.SIM_KEY, "2026-05-26")
+        await self.jobs.sim_keepalive(at_local("10:15"))  # 60 days later
+        self.assertEqual(len(self.h_jobs_texts()), 1)
+        self.assertIn("WhatsApp SIM", self.h_jobs_texts()[0])
+        await self.jobs.sim_keepalive(at_local("11:15"))
+        self.assertEqual(len(self.h_jobs_texts()), 1)     # once per day
+        # 'SIM done' resets the clock — silence resumes.
+        await self.jobs.sim_keepalive_confirmed(at_local("12:00").date())
+        await self.db.execute("DELETE FROM nudge_state")
+        await self.jobs.sim_keepalive(at_local("13:15"))
+        self.assertEqual(len(self.h_jobs_texts()), 1)
+
+    async def test_sim_done_by_voice_resets_the_clock(self):
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        await self.jobs.store.set(self.jobs.SIM_KEY, "2026-01-01")
+        await self.h.router.handle_update(text_update("SIM done, text sent", OWNER))
+        self.assertIn("clock reset", " ".join(self.texts()))
+        last = await self.jobs.store.get(self.jobs.SIM_KEY)
+        self.assertNotEqual(last, "2026-01-01")
+
     async def test_evening_review_leads_with_wins(self):
         today = await self.jobs._today()
         await self.jobs.log_water(today, 1200)

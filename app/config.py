@@ -94,6 +94,10 @@ class Settings(BaseSettings):
     elevenlabs_phone_number_id: str = ""
     paul_phone_number: str = ""
 
+    # Keep-alive for the dedicated WhatsApp SIM: UK PAYG numbers are
+    # reclaimed after ~90 inactive days — Jarvis nags in good time.
+    sim_keepalive_days: int = 60
+
     # --- Day rhythm (Master Update §§4-6) ---
     water_target_ml: int = 2500
     # Twilio voice-call wake channel — placeholders only, the seam exists but
