@@ -121,6 +121,13 @@ class Streaks:
         """An explicit rest day — valid training, never a broken anything."""
         await self._log_activity("recovery", on_date)
 
+    async def recovery_today(self, on_date: date) -> bool:
+        row = await self._db.fetch_one(
+            "SELECT id FROM activity_log WHERE kind = 'recovery' AND day = ?",
+            (on_date.isoformat(),),
+        )
+        return row is not None
+
     async def _backfill_runs(self) -> None:
         """Runs recorded before activity_log existed (the `runs` table is the
         long-lived record) flow into the monthly counts. Idempotent, cheap."""

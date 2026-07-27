@@ -294,7 +294,9 @@ class HeartbeatJobs:
         if not await self._once(f"midday:{today.isoformat()}"):
             return
         done, total = await self._focus_progress(today)
-        run_done = await self.streaks.done_today("run", today)
+        run_done = await self.streaks.done_today("run", today) or (
+            await self.streaks.recovery_today(today)  # declared rest day = handled
+        )
         target = int(await self.store.get(MIDDAY_TARGET_KEY, "4") or 4)
 
         behind = total > 0 and done < min(target, total)
@@ -341,7 +343,9 @@ class HeartbeatJobs:
             await self.store.set(HOUND_KEY, "")
             await self._send_voice("Focus list clear. Hound's back in the kennel — enormous day. ")
             return
-        run_done = await self.streaks.done_today("run", today)
+        run_done = await self.streaks.done_today("run", today) or (
+            await self.streaks.recovery_today(today)
+        )
         status = f"{done}/{total}" + ("" if run_done else ", run missing")
         await self._send_voice(
             await self._flourish(

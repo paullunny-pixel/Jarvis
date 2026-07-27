@@ -75,6 +75,13 @@ class TestGateKeeper(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("photo", message.lower())
 
+    async def test_declared_rest_day_opens_the_run_gate(self):
+        # The production bug: Paul logged a rest day at 08:35 and the board
+        # still demanded the 5km at 11:41. Recovery is valid training (§11).
+        await self.streaks.record_recovery(TODAY)
+        outstanding = await self.gates.outstanding(at("11:41"))
+        self.assertEqual([g["id"] for g in outstanding], ["meds"])  # run gate open
+
     async def test_overridden_gate_stays_open_all_day(self):
         await self.gates.override(["run"], "physio said rest today", TODAY)
         outstanding = await self.gates.outstanding(at("10:00"))

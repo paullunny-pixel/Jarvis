@@ -65,8 +65,11 @@ class GateKeeper:
     async def is_confirmed(self, gate_id: str, today: date) -> bool:
         if gate_id == "run":
             # The run gate follows the streak — a told run, an Apple Health
-            # push, or photo proof all open it.
-            return await self._streaks.done_today("run", today)
+            # push, or photo proof all open it. An EXPLICIT recovery day does
+            # too (§11): rest is valid training, never a locked board.
+            if await self._streaks.done_today("run", today):
+                return True
+            return await self._streaks.recovery_today(today)
         return bool(await self._store.get(f"gate:{gate_id}:{today.isoformat()}"))
 
     async def outstanding(self, now: datetime) -> list[dict]:

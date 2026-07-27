@@ -221,7 +221,10 @@ async def lifespan(app: FastAPI):
 
     heartbeat.shutdown()
     await router.db.close()
-    for client in (router.telegram, router.claude, router.deepgram, router.elevenlabs):
+    closables = [router.telegram, router.claude, router.deepgram, router.elevenlabs]
+    if getattr(router, "voice_engine", None) is not None:
+        closables.append(router.voice_engine)
+    for client in closables:
         try:
             await client.close()
         except Exception:  # noqa: BLE001
@@ -302,7 +305,18 @@ async def cockpit_voice_url(secret: str, request: Request) -> dict:
         return {"url": await engine.signed_session_url()}
     except Exception as exc:
         logging.getLogger("jarvis").exception("Live voice session failed")
-        return {"error": f"Couldn't open a live session: {str(exc)[:200]}"}
+        detail = str(exc)
+        if "convai" in detail and ("401" in detail or "unauthorized" in detail):
+            return {
+                "error": (
+                    "Your ElevenLabs API key can't manage Conversational AI agents yet. "
+                    "Fix (2 min): elevenlabs.io → your profile → API Keys → edit the key "
+                    "Jarvis uses (or create a new one) and enable the Conversational AI "
+                    "permissions (read + write). If you make a new key, update "
+                    "ELEVENLABS_API_KEY in Render, then try this button again."
+                )
+            }
+        return {"error": f"Couldn't open a live session: {detail[:200]}"}
 
 
 @app.post("/voice/tools/{secret}/{tool_name}")
