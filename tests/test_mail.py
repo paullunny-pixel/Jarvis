@@ -458,8 +458,18 @@ class TestCommandGates(unittest.TestCase):
             "log my run",
             "put a card on Kiefer for the VAT return",
             "what should I eat before the gym",
+            # The hijack bug: 'emails' INSIDE content Paul is composing must
+            # never drag the conversation into the mail pipeline.
+            "Oh also explain I am on holiday with my kids this week so my "
+            "apologies for the delay in emails all correspondence will be "
+            "updated over the next 24 hours",
+            "also need way more polite and formal this is a professional message",
         ):
             self.assertFalse(commands.mentions_email(phrase), phrase)
+
+    def test_parser_carries_composition_guard_and_register_rule(self):
+        self.assertIn("reply []", commands.PARSER_SYSTEM)
+        self.assertIn("BUSINESS contact", commands.PARSER_SYSTEM)
 
     def test_confirm_send_is_strict(self):
         for phrase in ("send it", "Send it.", "yes, send it", "fire it off", "send the email"):

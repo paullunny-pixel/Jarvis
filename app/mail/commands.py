@@ -18,9 +18,14 @@ from app.mail.service import MailService
 
 logger = logging.getLogger(__name__)
 
+# The gate needs an email VERB, not just the word 'email' — "apologies for
+# the delay in emails" inside a message Paul is composing must never hijack
+# the conversation into the mail pipeline.
 EMAIL_HINT = re.compile(
-    r"\b(email|e-?mails?|inbox(es)?|unread|mailbox)\b|\breply to\b"
-    r"|\bcheck (my )?(mail|gmail)\b|\bdraft (a|an|the|me)\b",
+    r"\b(check|read|show|draft|write|send|forward|reply)\b.{0,30}\b(e-?mails?|inbox|mailbox)\b"
+    r"|\b(any|how'?s|what'?s)\b.{0,20}\b(e-?mails?|inbox(es)?)\b"
+    r"|\breply to\b|\binbox(es)?\b|\bunread\b|\bmailbox\b"
+    r"|\bcheck (my )?(mail|gmail)\b",
     re.IGNORECASE,
 )
 
@@ -39,6 +44,16 @@ CANCEL_SEND = re.compile(
 
 PARSER_SYSTEM = """\
 You convert Paul's message into email actions. His connected inboxes: {labels}.
+
+CRITICAL: only output actions Paul EXPLICITLY requested about EMAIL. He often
+composes or edits OTHER messages (WhatsApp/group/text) in conversation — if
+he's dictating or amending wording, reply [] even when the words 'email' or
+'emails' appear INSIDE that content. Never start a fresh draft when he's
+clearly changing something already being worked on elsewhere.
+
+REGISTER RULE (from Paul): anyone who is NOT one of his registered
+person-contacts is a BUSINESS contact — polite, professional, formal, no
+matey sign-offs. His casual register is reserved ONLY for the named people.
 Messages he has recently been shown (1-indexed; may be empty):
 {listing}
 

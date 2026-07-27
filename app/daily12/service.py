@@ -155,6 +155,15 @@ class Daily12Service:
             (*ids, run_started),
         )
 
+        # Cards Paul ticked off IN TRELLO (moved to a done-ish list) count on
+        # today's plan too — the board and the plan must agree by the hour.
+        await self._db.execute(
+            "UPDATE daily_12 SET done = 1, done_at = ? WHERE plan_date = ? AND done = 0"
+            " AND task_id IN (SELECT id FROM tasks WHERE LOWER(list_name)"
+            " IN ('done', 'complete', 'completed'))",
+            (utc_now_iso(), (await self.paul_today()).isoformat()),
+        )
+
         await self._tag_untagged()
         await self._refresh_project_activity()
         await self._settings.set("trello_last_sync", utc_now_iso())

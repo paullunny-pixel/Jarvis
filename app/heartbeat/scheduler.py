@@ -73,6 +73,8 @@ class Heartbeat:
             ("med_trt", partial(self.jobs.med_reminder, "trt"), CronTrigger(day_of_week="sat", hour=10, minute=0, timezone=timezone), 1800),
             # §10: wind-down check-in after the 21:00 review
             ("bedtime_nudge", self.jobs.bedtime_nudge, CronTrigger(hour=21, minute=45, timezone=timezone), 1800),
+            # Cache honesty: hourly board re-sync through the working day
+            ("trello_resync", self.jobs.trello_resync, CronTrigger(hour="7-22", minute=40, timezone=timezone), 900),
             # WhatsApp SIM keep-alive: daily check, nags from day 60 of 90
             ("sim_keepalive", self.jobs.sim_keepalive, CronTrigger(hour=10, minute=15, timezone=timezone), 1800),
             # Paul's rule: 22:30 lights out without fail (plus one 23:00 chaser)

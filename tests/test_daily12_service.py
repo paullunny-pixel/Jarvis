@@ -77,7 +77,7 @@ TAGS = [
 class ServiceHarness:
     def __init__(self, db):
         self.trello_writes = []
-        self.cards = list(CARDS)   # mutable — tests can delete cards mid-flight
+        self.cards = [dict(c) for c in CARDS]   # per-test copies — mutable mid-flight
 
         def trello_handler(request: httpx.Request) -> httpx.Response:
             path = urlparse(str(request.url)).path
@@ -193,6 +193,25 @@ class TestService(unittest.IsolatedAsyncioTestCase):
         await self.service.sync()
         row = await self.db.fetch_one("SELECT actionable FROM tasks WHERE trello_id = 'C1'")
         self.assertEqual(row["actionable"], 0)  # retired, not haunting
+
+    async def test_trello_side_tick_lands_on_todays_plan(self):
+        # Paul completes a card IN TRELLO (drags it to Done) — the next
+        # hourly sync must tick it on Today's Focus too.
+        today = await self.service.paul_today()
+        await self.service.generate(today)
+        for card in self.h.cards:
+            if card["id"] == "C1":
+                card["idList"] = "L3"  # moved to Done on the board
+        import asyncio
+
+        await asyncio.sleep(1.1)
+        await self.service.sync()
+        row = await self.db.fetch_one(
+            "SELECT d.done FROM daily_12 d JOIN tasks t ON t.id = d.task_id"
+            " WHERE t.trello_id = 'C1' AND d.plan_date = ?",
+            (today.isoformat(),),
+        )
+        self.assertEqual(row["done"], 1)
 
     async def test_archive_really_removes_a_card(self):
         await self.service.generate(date(2026, 7, 25))

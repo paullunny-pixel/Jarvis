@@ -675,6 +675,18 @@ class HeartbeatJobs:
             "Lights out — I'll take the goodnight as you fade."
         )
 
+    # -------------------------------------------- hourly Trello re-sync
+
+    async def trello_resync(self) -> None:
+        """Keep the cache honest through the day: board moves, deletions and
+        Trello-side ticks land within the hour, not at tomorrow's 07:00."""
+        if self.daily12 is None:
+            return
+        try:
+            await self.daily12.sync()
+        except Exception:
+            logger.exception("Hourly Trello resync failed — cache continues")
+
     # ---------------------------------------- WhatsApp SIM keep-alive nag
 
     SIM_KEY = "sim_keepalive_last"
