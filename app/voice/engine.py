@@ -43,13 +43,21 @@ on. Same Jarvis, same humour, same warmth — just live.\
 
 
 def _tool(name: str, description: str, url: str, properties: dict, required: list[str]) -> dict:
-    api_schema: dict = {"url": url, "method": "POST"}
-    if properties:  # zero-arg tools send no body schema at all
-        api_schema["request_body_schema"] = {
-            "type": "object",
-            "properties": properties,
-            "required": required,
+    # ElevenLabs' validator: a POST tool MUST carry a request_body_schema and
+    # every property MUST have a description — so parameterless tools are
+    # plain GETs, and anything with arguments is a fully-described POST.
+    if properties:
+        api_schema: dict = {
+            "url": url,
+            "method": "POST",
+            "request_body_schema": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+            },
         }
+    else:
+        api_schema = {"url": url, "method": "GET"}
     return {
         "type": "webhook",
         "name": name,

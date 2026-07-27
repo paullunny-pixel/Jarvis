@@ -28,11 +28,13 @@ class TestAgentConfig(unittest.TestCase):
         self.assertIn("mark_done", names)
         for t in tools:
             self.assertIn("/voice/tools/SECRET99/", t["api_schema"]["url"])
-            # ElevenLabs 422s on parameters without descriptions, and on
-            # empty body schemas — every property described, or no schema.
+            # ElevenLabs' validator: POST requires a body schema with every
+            # property described; parameterless tools must be plain GETs.
             schema = t["api_schema"].get("request_body_schema")
-            if schema is None:
+            if t["api_schema"]["method"] == "GET":
+                self.assertIsNone(schema)
                 continue
+            self.assertEqual(t["api_schema"]["method"], "POST")
             self.assertTrue(schema["properties"])
             for prop in schema["properties"].values():
                 self.assertIn("description", prop)

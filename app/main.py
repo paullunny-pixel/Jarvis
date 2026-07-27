@@ -319,7 +319,7 @@ async def cockpit_voice_url(secret: str, request: Request) -> dict:
         return {"error": f"Couldn't open a live session: {detail[:200]}"}
 
 
-@app.post("/voice/tools/{secret}/{tool_name}")
+@app.api_route("/voice/tools/{secret}/{tool_name}", methods=["GET", "POST"])
 async def voice_tool(secret: str, tool_name: str, request: Request) -> dict:
     """Webhook the live agent calls mid-conversation (memory + actions)."""
     router: JarvisRouter = request.app.state.router
