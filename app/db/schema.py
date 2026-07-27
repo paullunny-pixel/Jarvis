@@ -238,6 +238,19 @@ TABLES: list[str] = [
         taken_at TEXT NOT NULL
     )
     """,
+    # --- Master Update §13: WhatsApp work-group ingestion (read-only) ---
+    """
+    CREATE TABLE IF NOT EXISTS whatsapp_ingest (
+        id {pk},
+        ts TEXT NOT NULL,
+        group_id TEXT NOT NULL DEFAULT '',
+        group_name TEXT NOT NULL DEFAULT '',
+        company_tag TEXT NOT NULL DEFAULT '',
+        sender TEXT NOT NULL DEFAULT '',
+        message TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_whatsapp_company ON whatsapp_ingest (company_tag, ts)",
     # --- Milestone 6: the private sobriety track (content encrypted at rest) ---
     """
     CREATE TABLE IF NOT EXISTS sobriety (

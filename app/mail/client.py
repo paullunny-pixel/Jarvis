@@ -130,6 +130,39 @@ class MailClient:
                 )
             return {"unread": len(ids), "messages": messages}
 
+    SENT_FOLDERS = ('"[Gmail]/Sent Mail"', "Sent", '"Sent Items"')
+
+    async def sent_samples(self, limit: int = 15) -> list[str]:
+        """Bodies of Paul's OWN recent sent emails — the raw material for the
+        writing-style profile. Size-capped like everything else."""
+        return await asyncio.to_thread(self._sent_samples_sync, limit)
+
+    def _sent_samples_sync(self, limit: int) -> list[str]:
+        with self._imap() as imap:
+            imap.login(self.account.address, self.account.app_password)
+            selected = False
+            for folder in self.SENT_FOLDERS:
+                status, _ = imap.select(folder, readonly=True)
+                if status == "OK":
+                    selected = True
+                    break
+            if not selected:
+                return []
+            _, data = imap.search(None, "ALL")
+            ids = data[0].split() if data and data[0] else []
+            samples = []
+            for msg_id in reversed(ids[-limit:]):
+                if self._message_size(imap, msg_id) > self.FULL_FETCH_CEILING_BYTES:
+                    continue
+                _, fetched = imap.fetch(msg_id, "(BODY.PEEK[])")
+                raw = next((part[1] for part in fetched if isinstance(part, tuple)), None)
+                if not raw:
+                    continue
+                text = _plaintext(email.message_from_bytes(raw)).strip()
+                if text:
+                    samples.append(text[:1500])
+            return samples
+
     async def send(self, to: str, subject: str, body: str) -> None:
         def _send() -> None:
             msg = MIMEText(body, "plain", "utf-8")

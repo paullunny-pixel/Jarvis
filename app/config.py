@@ -119,6 +119,13 @@ class Settings(BaseSettings):
         return hashlib.sha256(f"jarvis-cockpit:{self.telegram_bot_token}".encode()).hexdigest()[:24]
 
     @property
+    def effective_whatsapp_secret(self) -> str:
+        """Auth token for the read-only WhatsApp bridge's ingest webhook."""
+        import hashlib
+
+        return hashlib.sha256(f"jarvis-whatsapp:{self.telegram_bot_token}".encode()).hexdigest()[:32]
+
+    @property
     def effective_voice_tool_secret(self) -> str:
         """Auth token in the live agent's tool webhook URLs."""
         import hashlib

@@ -238,6 +238,41 @@ class MailService:
     async def health(self) -> list[dict]:
         return list(await asyncio.gather(*(c.check() for c in self._clients)))
 
+    # -------------------------------------------------- Paul's writing voice
+
+    async def style_profile(self) -> str:
+        from app.mail.style import STYLE_KEY
+
+        return await self._settings.get(STYLE_KEY, "")
+
+    async def learn_style(self, claude) -> str:
+        """Sample every Sent folder, distill Paul's voice, store the guide."""
+        from app.mail.style import STYLE_KEY, build_style_profile
+
+        results = await asyncio.gather(
+            *(c.sent_samples(limit=15) for c in self._clients), return_exceptions=True
+        )
+        samples = {
+            c.account.label: r
+            for c, r in zip(self._clients, results)
+            if not isinstance(r, Exception) and r
+        }
+        if not samples:
+            return (
+                "I couldn't read any sent mail to learn from — the Sent folders "
+                "came back empty. Send a few emails and try 'learn my email style' again."
+            )
+        profile = await build_style_profile(claude, samples)
+        if not profile:
+            return "The style study didn't take — try 'learn my email style' again shortly."
+        await self._settings.set(STYLE_KEY, profile)
+        count = sum(len(v) for v in samples.values())
+        return (
+            f"Studied {count} of your sent emails across {len(samples)} account(s) — "
+            "I've got your voice now, sir. Every draft from here on is written as you. "
+            "Run 'learn my email style' again any time to refresh it."
+        )
+
     async def brief_line(self) -> str:
         """'INBOXES  Personal 4 · Derma Direct 2 · Prodermis 0' for the brief."""
         results = await asyncio.gather(

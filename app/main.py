@@ -337,6 +337,64 @@ async def voice_tool(secret: str, tool_name: str, request: Request) -> dict:
     return {"result": await tools.dispatch(tool_name, args)}
 
 
+GROUP_COMPANY_HINTS = {
+    "derma direct uk": "derma_uk", "derma uk": "derma_uk",
+    "derma eu": "derma_eu", "derma direct eu": "derma_eu",
+    "aesthetics": "aesthetics_supply", "grey": "aesthetics_supply",
+    "prodermis": "prodermis", "prime derm": "prodermis", "bmi": "prodermis",
+    "derma": "derma_uk",  # generic fallback, checked last (dict order matters)
+}
+
+
+@app.post("/webhook/whatsapp/{secret}")
+async def whatsapp_ingest(secret: str, request: Request) -> dict:
+    """Read-only ingest from the WhatsApp bridge (Master Update §13).
+
+    The bridge is a separate small service holding the companion-device link
+    on the DEDICATED number — it POSTs one JSON message at a time:
+    {"group_id": "...", "group_name": "...", "sender": "...", "text": "...",
+     "ts": "ISO8601 (optional)"}. It NEVER sends messages to WhatsApp.
+    """
+    router: JarvisRouter = request.app.state.router
+    if not hmac.compare_digest(secret, router.settings.effective_whatsapp_secret):
+        raise HTTPException(status_code=403, detail="nope")
+    payload = await request.json()
+    text = str(payload.get("text", "")).strip()
+    if not text:
+        return {"ok": True, "stored": False}
+    group_name = str(payload.get("group_name", ""))[:200]
+    # Group → company mapping: explicit settings override, else name hints.
+    import json as _json
+
+    overrides = {}
+    try:
+        overrides = _json.loads(await router.store.get("whatsapp_group_map", "{}"))
+    except Exception:
+        pass
+    company = overrides.get(str(payload.get("group_id", ""))) or overrides.get(group_name) or ""
+    if not company:
+        lowered = group_name.lower()
+        for hint, slug in GROUP_COMPANY_HINTS.items():
+            if hint in lowered:
+                company = slug
+                break
+    from app.core.store import utc_now_iso
+
+    await router.db.execute(
+        "INSERT INTO whatsapp_ingest (ts, group_id, group_name, company_tag, sender, message)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            str(payload.get("ts") or utc_now_iso())[:32],
+            str(payload.get("group_id", ""))[:100],
+            group_name,
+            company,
+            str(payload.get("sender", ""))[:120],
+            text[:2000],
+        ),
+    )
+    return {"ok": True, "stored": True, "company": company}
+
+
 @app.post("/webhook/apple-health")
 async def apple_health(request: Request) -> dict:
     """Daily push from the iOS Shortcut: run, sleep, weight, steps, HR/HRV."""

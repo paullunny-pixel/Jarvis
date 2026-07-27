@@ -28,10 +28,13 @@ def raw_email(from_addr: str, subject: str, body: str, from_name: str = "") -> b
 
 
 class FakeIMAP:
-    """Just enough of imaplib for MailClient: login/select/search/fetch."""
+    """Just enough of imaplib for MailClient: login/select/search/fetch,
+    with a separate Sent mailbox for the style learner."""
 
-    def __init__(self, messages: list[bytes], fail_login: bool = False):
-        self._messages = messages
+    def __init__(self, messages: list[bytes], fail_login: bool = False, sent=None):
+        self._inbox = messages
+        self._sent = sent or []
+        self._messages = self._inbox
         self._fail = fail_login
 
     def __enter__(self):
@@ -46,6 +49,10 @@ class FakeIMAP:
         return "OK", []
 
     def select(self, mailbox, readonly=False):
+        if "sent" in str(mailbox).lower():
+            self._messages = self._sent
+            return ("OK", []) if self._sent else ("NO", [])
+        self._messages = self._inbox
         return "OK", []
 
     def search(self, charset, criterion):
@@ -97,15 +104,28 @@ INBOXES = {
 }
 
 
+SENT_SAMPLES = {
+    "paullunny@gmail.com": [
+        raw_email("paullunny@gmail.com", "Re: Padel", "Mate — 10am works. Loser buys breakfast!\n\nPaul"),
+        raw_email("paullunny@gmail.com", "Villa", "All good my end. Chase them Monday if nothing lands.\n\nCheers,\nPaul"),
+    ],
+    "info@dermadirect.co.uk": [
+        raw_email("info@dermadirect.co.uk", "Re: QA", "Harry — approved, crack on. Flag anything gnarly.\n\nPaul"),
+    ],
+    "info@prodermis.com": [],
+}
+
+
 def build_service(db, sent: list, fail_login: set | None = None) -> MailService:
     clients = []
     for address, messages in INBOXES.items():
         account = MailAccount(address, "app-pass")
         fail = fail_login is not None and address in fail_login
+        outbox = SENT_SAMPLES.get(address, [])
         clients.append(
             MailClient(
                 account,
-                imap_factory=lambda m=messages, f=fail: FakeIMAP(m, fail_login=f),
+                imap_factory=lambda m=messages, f=fail, s=outbox: FakeIMAP(m, fail_login=f, sent=s),
                 smtp_factory=lambda: FakeSMTP(sent),
             )
         )
@@ -257,6 +277,57 @@ class TestMailService(unittest.IsolatedAsyncioTestCase):
         self.assertIn("INBOXES", line)
         self.assertIn("Personal 2", line)
         self.assertIn("Prodermis 0", line)
+
+
+class TestWritingStyle(unittest.IsolatedAsyncioTestCase):
+    """'Learn my email style' — Paul's voice from Paul's own sent mail."""
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = SqliteDatabase(os.path.join(self._dir.name, "t.db"))
+        await self.db.init()
+        self.service = build_service(self.db, [])
+
+    async def asyncTearDown(self):
+        await self.db.close()
+        self._dir.cleanup()
+
+    def test_strip_quoted_keeps_only_pauls_words(self):
+        from app.mail.style import strip_quoted
+
+        text = (
+            "Sounds good, let's do Thursday.\n\nPaul\n\n"
+            "On Mon, 27 Jul 2026 at 09:12, Harry wrote:\n> Original stuff\n> More quoted"
+        )
+        cleaned = strip_quoted(text)
+        self.assertIn("Thursday", cleaned)
+        self.assertNotIn("Original stuff", cleaned)
+
+    async def test_learn_style_studies_sent_mail_and_stores_the_guide(self):
+        def claude_handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"content": [{"type": "text", "text":
+                "Greets by first name, short punchy sentences, signs off 'Paul'."}]})
+
+        claude = ClaudeClient("K", transport=httpx.MockTransport(claude_handler))
+        result = await self.service.learn_style(claude)
+        self.assertIn("I've got your voice", result)
+        profile = await self.service.style_profile()
+        self.assertIn("punchy", profile)
+
+    async def test_draft_prompt_carries_the_learned_style(self):
+        captured = {}
+
+        def claude_handler(request: httpx.Request) -> httpx.Response:
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json={"content": [{"type": "text", "text": "[]"}]})
+
+        claude = ClaudeClient("K", transport=httpx.MockTransport(claude_handler))
+        await commands.parse_actions(
+            claude, "draft an email to harry", ["Personal"], [],
+            style="Signs off 'Cheers, Paul', short sentences.",
+        )
+        self.assertIn("Cheers, Paul", captured["system"])
+        self.assertIn("PAUL'S OWN VOICE", captured["system"])
 
 
 class TestCommandGates(unittest.TestCase):

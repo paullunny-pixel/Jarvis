@@ -48,8 +48,9 @@ Reply ONLY a JSON array (empty if the message contains no email actions):
 - {{"action":"draft","reply_index":<number from the list, or 0>,"to":"<address if he gave one, else empty>","account":"<sending inbox words or empty>","subject":"<subject, or empty>","body":"<the email text, written out properly>"}}
 - {{"action":"update","to":"","subject":"","body":"","account":""}}  (he's changing the draft he already has — fill ONLY what changes, leave the rest empty)
 - {{"action":"cancel"}}   (he wants to scrap the current draft)
-For drafts: write the body in Paul's professional voice, complete and ready to
-send, signed off 'Paul'. NEVER invent a recipient address — if he named a
+For drafts: write the body COMPLETE and ready to send, signed off 'Paul'.
+{style_block}
+NEVER invent a recipient address — if he named a
 person from the shown list use reply_index; otherwise leave "to" empty. A
 draft with no recipient is fine: it's held until he gives the address ("leave
 it in draft" / "no address yet" = exactly that — use update with all fields
@@ -71,15 +72,24 @@ def cancels_send(text: str) -> bool:
 
 
 async def parse_actions(
-    claude: ClaudeClient, text: str, labels: list[str], listing: list[dict]
+    claude: ClaudeClient, text: str, labels: list[str], listing: list[dict],
+    style: str = "",
 ) -> list[dict[str, Any]]:
     shown = "\n".join(
         f"{i}. [{m['account']}] {m['from']} — {m['subject']}" for i, m in enumerate(listing, 1)
     )
+    style_block = (
+        "Write in PAUL'S OWN VOICE — match this style guide exactly (learned from "
+        "his real sent emails):\n" + style
+        if style
+        else "Write in Paul's professional voice."
+    )
     try:
         raw = await claude.quick(
             text,
-            system=PARSER_SYSTEM.format(labels=", ".join(labels), listing=shown or "(none)"),
+            system=PARSER_SYSTEM.format(
+                labels=", ".join(labels), listing=shown or "(none)", style_block=style_block
+            ),
             max_tokens=800,
         )
         start, end = raw.find("["), raw.rfind("]")

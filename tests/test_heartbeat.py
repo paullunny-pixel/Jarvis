@@ -526,6 +526,30 @@ class TestDayRhythmRouter(unittest.IsolatedAsyncioTestCase):
         self.assertIn("TODAY'S WINS", combined)
         self.assertIn("1.2L water", combined)
 
+    async def test_whatsapp_catchup_summarises_recent_traffic(self):
+        from datetime import datetime as dt, timezone as tz
+
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        now = dt.now(tz.utc).isoformat(timespec="seconds")
+        await self.db.execute(
+            "INSERT INTO whatsapp_ingest (ts, group_id, group_name, company_tag, sender, message)"
+            " VALUES (?, 'g1', 'Prodermis Ops', 'prodermis', 'Alicia', 'MOH registration approved!')",
+            (now,),
+        )
+        await self.h.router.handle_update(text_update("catch me up on prodermis", OWNER))
+        # The harness Claude echoes its stock line as the summary — what
+        # matters is the pipeline ran and answered from stored traffic.
+        self.assertIn("Short answer. Go run.", " ".join(self.texts()))
+
+    async def test_whatsapp_catchup_honest_when_bridge_unlinked(self):
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        await self.h.router.handle_update(text_update("catch me up on whatsapp", OWNER))
+        self.assertIn("bridge", " ".join(self.texts()).lower())
+
     async def test_water_and_movement_logged_by_voice(self):
         from tests.test_router import OWNER
         from tests.test_telegram_client import text_update

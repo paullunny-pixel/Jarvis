@@ -520,6 +520,16 @@ class JarvisRouter:
             "✅ Apple Health: webhook ready" if s.apple_health_webhook_secret
             else "▫️ Apple Health: not configured"
         )
+        recent_wa = await self.db.fetch_one(
+            "SELECT COUNT(*) AS n FROM whatsapp_ingest WHERE ts >= ?",
+            ((datetime.now(ZoneInfo("UTC")) - timedelta(hours=24)).isoformat(timespec="seconds"),),
+        )
+        wa_count = int(recent_wa["n"]) if recent_wa else 0
+        lines.append(
+            f"✅ WhatsApp: {wa_count} group messages in 24h"
+            if wa_count
+            else "▫️ WhatsApp: bridge not linked yet (no messages stored)"
+        )
         lines.append("✅ Voice, hearing, vision, heartbeat, gates, private track: active")
         report = "\n".join(lines)
         await self.log.log("out", report, chat_id=message.chat_id, meta={"status_check": True})
@@ -625,6 +635,25 @@ class JarvisRouter:
             await self.telegram.send_text(message.chat_id, reply)
             return True
 
+        # WhatsApp bridge setup: Jarvis hands over the exact webhook URL.
+        if re.search(r"\bwhatsapp\b.{0,16}\b(setup|set ?up|link|url|webhook)\b", lowered):
+            if self.settings.public_url:
+                url = (
+                    f"{self.settings.public_url.rstrip('/')}/webhook/whatsapp/"
+                    f"{self.settings.effective_whatsapp_secret}"
+                )
+                reply = (
+                    "[TEXT]\nFor the WhatsApp bridge, set this as JARVIS_WEBHOOK_URL on the "
+                    f"jarvis-whatsapp service in Render:\n\n{url}\n\nThen watch that "
+                    "service's logs for the QR code and scan it from the dedicated phone: "
+                    "WhatsApp → Settings → Linked devices → Link a device."
+                )
+            else:
+                reply = "I need my public URL configured before the bridge can reach me."
+            await self.log.log("out", reply, chat_id=message.chat_id)
+            await self.telegram.send_text(message.chat_id, reply.replace("[TEXT]\n", ""))
+            return True
+
         # The cockpit link: "show me the cockpit / dashboard"
         if re.search(r"\b(cockpit|dashboard)\b", lowered):
             if self.settings.public_url:
@@ -635,6 +664,19 @@ class JarvisRouter:
                 reply = f"Your cockpit: {url}\nBookmark it — live streaks, the 12, the villa, the lot."
             else:
                 reply = "The cockpit goes live once I'm deployed with a public URL — soon."
+            await self.log.log("out", reply, chat_id=message.chat_id)
+            await self.telegram.send_text(message.chat_id, reply)
+            return True
+
+        # §13: "catch me up on <company/group>" — summarise WhatsApp traffic.
+        catch = re.search(
+            r"\bcatch me up\b(?:\s+on\s+(.+))?"
+            r"|\bwhat'?s (?:been )?(?:happening|going on)\b.{0,12}\b(?:in|with|on)\s+(.+?)\s*(?:group|whatsapp|$)",
+            lowered,
+        )
+        if catch and ("whatsapp" in lowered or "catch me up" in lowered):
+            topic = (catch.group(1) or catch.group(2) or "").strip()
+            reply = await self._whatsapp_catchup(topic)
             await self.log.log("out", reply, chat_id=message.chat_id)
             await self.telegram.send_text(message.chat_id, reply)
             return True
@@ -882,6 +924,62 @@ class JarvisRouter:
             return False
         return False
 
+    async def _whatsapp_catchup(self, topic: str) -> str:
+        """Summarise the last 48h of ingested work-group WhatsApp traffic."""
+        from datetime import timedelta as _td
+        from datetime import timezone as _tz
+
+        since = (datetime.now(_tz.utc) - _td(hours=48)).isoformat(timespec="seconds")
+        slug_hints = {
+            "eu": "derma_eu", "uk": "derma_uk", "derma": "derma_uk",
+            "prodermis": "prodermis", "prime": "prodermis", "bmi": "prodermis",
+            "aesthetic": "aesthetics_supply", "grey": "aesthetics_supply",
+        }
+        slug = next((s for hint, s in slug_hints.items() if hint in topic.lower()), "")
+        if slug:
+            rows = await self.db.fetch_all(
+                "SELECT ts, group_name, sender, message FROM whatsapp_ingest"
+                " WHERE ts >= ? AND company_tag = ? ORDER BY ts DESC LIMIT 80",
+                (since, slug),
+            )
+        elif topic:
+            rows = await self.db.fetch_all(
+                "SELECT ts, group_name, sender, message FROM whatsapp_ingest"
+                " WHERE ts >= ? AND LOWER(group_name) LIKE ? ORDER BY ts DESC LIMIT 80",
+                (since, f"%{topic.lower()}%"),
+            )
+        else:
+            rows = await self.db.fetch_all(
+                "SELECT ts, group_name, sender, message FROM whatsapp_ingest"
+                " WHERE ts >= ? ORDER BY ts DESC LIMIT 120",
+                (since,),
+            )
+        if not rows:
+            any_row = await self.db.fetch_one("SELECT id FROM whatsapp_ingest LIMIT 1")
+            if any_row is None:
+                return (
+                    "No WhatsApp traffic in the brain yet — the bridge on the dedicated "
+                    "number isn't linked. Say the word and we'll wire it up."
+                )
+            return f"Quiet on {'that front' if topic else 'the work groups'} these last two days, sir."
+        lines = "\n".join(
+            f"[{r['group_name']}] {r['sender']}: {r['message'][:220]}" for r in reversed(rows)
+        )
+        try:
+            summary = await self.claude.quick(
+                lines,
+                system=(
+                    "Summarise these work WhatsApp group messages for Paul as Jarvis: what "
+                    "moved, decisions, anything waiting on Paul, anything urgent. Group by "
+                    "topic, concise, warm. Plain text, no markdown."
+                ),
+                max_tokens=500,
+            )
+            return summary or "Traffic's there but the summary escaped me — ask again."
+        except Exception:
+            logger.exception("WhatsApp catch-up summary failed")
+            return "Couldn't build the summary just now — try again in a minute."
+
     ACTIVITY_CONFIRM_SYSTEM = (
         'Paul mentioned daily activities. For each of run, workout, meals, medication, portuguese '
         'decide from his message alone: "done" (he clearly states he completed/took/practised it '
@@ -991,6 +1089,8 @@ class JarvisRouter:
         """Inbox triage / drafting / the confirm-to-send flow. Returns True when
         handled; False falls through to normal conversation. A send happens ONLY
         when a pending draft exists and Paul explicitly confirms it."""
+        import re
+
         assert self.mail is not None
         try:
             pending = await self.mail.pending_draft()
@@ -1002,8 +1102,16 @@ class JarvisRouter:
                 return await self._say(message, reply)
             if not mail_commands.mentions_email(transcript):
                 return False
+            # "learn my email style" — study the Sent folders, keep the voice.
+            if re.search(
+                r"\b(learn|study|copy)\b.{0,20}\b(email |writing )?(style|voice)\b",
+                transcript, re.IGNORECASE,
+            ):
+                reply = await self.mail.learn_style(self.claude)
+                return await self._say(message, reply)
             actions = await mail_commands.parse_actions(
-                self.claude, transcript, self.mail.labels, await self.mail.last_listing()
+                self.claude, transcript, self.mail.labels, await self.mail.last_listing(),
+                style=await self.mail.style_profile(),
             )
             if not actions:
                 return False  # ordinary conversation after all

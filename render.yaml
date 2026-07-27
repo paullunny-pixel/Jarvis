@@ -57,6 +57,24 @@ services:
       - key: PRIVATE_ROOM_KEY
         generateValue: true   # encryption key for the private room — generated once, kept by Render
 
+  # Read-only WhatsApp bridge (Master Update §13) — companion device on the
+  # DEDICATED number. QR to link appears in this service's logs. The disk
+  # keeps the WhatsApp session across restarts (no re-scanning).
+  - type: worker
+    name: jarvis-whatsapp
+    runtime: node
+    rootDir: bridge/whatsapp
+    plan: starter
+    buildCommand: npm install
+    startCommand: node index.js
+    disk:
+      name: wa-auth
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: JARVIS_WEBHOOK_URL
+        sync: false   # https://<jarvis url>/webhook/whatsapp/<secret> — Jarvis tells Paul the exact value
+
 databases:
   - name: jarvis-db
     plan: basic-256mb
