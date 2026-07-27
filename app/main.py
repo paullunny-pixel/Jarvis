@@ -44,6 +44,8 @@ from app.memory.embedder import HashEmbedder, VoyageEmbedder
 from app.memory.seed import load_day_one_brain
 from app.memory.store import LivingFacts, MemoryStore
 from app.private.service import PrivateTrack
+from app.voice.engine import VoiceEngine
+from app.voice.tools import VoiceTools
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("jarvis")
@@ -127,6 +129,19 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
     else:
         logger.warning("No email accounts set — inbox triage dormant until they are")
 
+    # Live voice (Build Slice: Voice Access) — shared realtime engine for the
+    # cockpit's browser sessions and Twilio phone calls. Rides the existing
+    # ElevenLabs key; dormant until Paul opens a session.
+    voice_engine = None
+    if settings.elevenlabs_api_key:
+        voice_engine = VoiceEngine(
+            settings.elevenlabs_api_key,
+            settings.elevenlabs_voice_id,
+            db,
+            public_url=settings.public_url,
+            tool_secret=settings.effective_voice_tool_secret,
+        )
+
     # The heartbeat (Milestone 4).
     jobs = HeartbeatJobs(
         settings=settings,
@@ -141,10 +156,11 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
         private_track=private_track,
         gates=gates,
         mail=mail,
+        voice_engine=voice_engine,
     )
     heartbeat = Heartbeat(jobs)
 
-    return JarvisRouter(
+    router_obj = JarvisRouter(
         settings=settings,
         db=db,
         memory=memory,
@@ -160,7 +176,13 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
         claude=claude,
         deepgram=DeepgramClient(settings.deepgram_api_key, model=settings.deepgram_model),
         elevenlabs=elevenlabs,
-    ), heartbeat
+    )
+    router_obj.voice_engine = voice_engine
+    router_obj.voice_tools = VoiceTools(
+        db, memory=memory, living=living, daily12=daily12, mail=mail, jobs=jobs,
+        timezone_default=settings.timezone_default,
+    )
+    return router_obj, heartbeat
 
 
 @asynccontextmanager
@@ -265,6 +287,40 @@ async def cockpit_data(secret: str, request: Request) -> dict:
         timezone_default=router.settings.timezone_default,
     )
     return await service.gather()
+
+
+@app.post("/cockpit/{secret}/voice-url")
+async def cockpit_voice_url(secret: str, request: Request) -> dict:
+    """Mint a short-lived live-session URL for the cockpit's Talk button."""
+    router: JarvisRouter = request.app.state.router
+    if not hmac.compare_digest(secret, router.settings.effective_cockpit_secret):
+        raise HTTPException(status_code=404)
+    engine = getattr(router, "voice_engine", None)
+    if engine is None:
+        return {"error": "Live voice needs the ElevenLabs key — it's not set."}
+    try:
+        return {"url": await engine.signed_session_url()}
+    except Exception as exc:
+        logging.getLogger("jarvis").exception("Live voice session failed")
+        return {"error": f"Couldn't open a live session: {str(exc)[:200]}"}
+
+
+@app.post("/voice/tools/{secret}/{tool_name}")
+async def voice_tool(secret: str, tool_name: str, request: Request) -> dict:
+    """Webhook the live agent calls mid-conversation (memory + actions)."""
+    router: JarvisRouter = request.app.state.router
+    if not hmac.compare_digest(secret, router.settings.effective_voice_tool_secret):
+        raise HTTPException(status_code=403, detail="nope")
+    tools: VoiceTools | None = getattr(router, "voice_tools", None)
+    if tools is None:
+        return {"result": "Tools aren't wired on this deployment."}
+    try:
+        args = await request.json()
+    except Exception:
+        args = {}
+    if not isinstance(args, dict):
+        args = {}
+    return {"result": await tools.dispatch(tool_name, args)}
 
 
 @app.post("/webhook/apple-health")

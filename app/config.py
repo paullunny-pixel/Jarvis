@@ -88,6 +88,12 @@ class Settings(BaseSettings):
     apple_health_webhook_secret: str = ""
     private_room_key: str = ""   # encryption key for the sobriety room (Milestone 6)
 
+    # --- Live voice (Build Slice: Voice Access) — rides on the ElevenLabs key ---
+    # Phone-call surface: the Twilio number registered in ElevenLabs (its
+    # phone_number_id) + Paul's own number for outbound wake calls.
+    elevenlabs_phone_number_id: str = ""
+    paul_phone_number: str = ""
+
     # --- Day rhythm (Master Update §§4-6) ---
     water_target_ml: int = 2500
     # Twilio voice-call wake channel — placeholders only, the seam exists but
@@ -111,6 +117,13 @@ class Settings(BaseSettings):
         import hashlib
 
         return hashlib.sha256(f"jarvis-cockpit:{self.telegram_bot_token}".encode()).hexdigest()[:24]
+
+    @property
+    def effective_voice_tool_secret(self) -> str:
+        """Auth token in the live agent's tool webhook URLs."""
+        import hashlib
+
+        return hashlib.sha256(f"jarvis-voice:{self.telegram_bot_token}".encode()).hexdigest()[:32]
 
     @property
     def effective_webhook_secret(self) -> str:

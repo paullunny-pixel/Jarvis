@@ -23,6 +23,25 @@ class WakeChannel(Protocol):
     async def escalate(self, step: int, text: str) -> None: ...
 
 
+class PhoneCallWakeChannel:
+    """The Twilio escalation, live: Jarvis literally rings Paul and holds a
+    realtime conversation until he's demonstrably conscious. The mirror
+    selfie in Telegram remains the confirm step. Activates only when the
+    Twilio number is registered in ElevenLabs and both numbers configured."""
+
+    name = "phone"
+
+    def __init__(self, engine, phone_number_id: str, to_number: str) -> None:
+        self._engine = engine
+        self._phone_number_id = phone_number_id
+        self._to = to_number
+
+    async def escalate(self, step: int, text: str) -> None:
+        called = await self._engine.outbound_call(self._phone_number_id, self._to)
+        if not called:
+            logger.warning("Wake call failed at step %d — Telegram carries on", step)
+
+
 class TelegramWakeChannel:
     """Escalating Telegram messages; a voice note every few steps."""
 

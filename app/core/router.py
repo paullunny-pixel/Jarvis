@@ -461,6 +461,12 @@ class JarvisRouter:
             "wake-ups', skips one day with 'no wake-up tomorrow'); hourly move+water nudges; "
             "med reminders (ADHD 09:30, supplements 14:00, TRT Saturdays); 'override' releases "
             "any block.",
+            (
+                "- Live voice: the cockpit's 'Talk to Jarvis' button opens a realtime, "
+                "interruptible spoken conversation (same persona, same memory via tools)."
+                if getattr(self, "voice_engine", None) is not None
+                else "- Live voice: not available (ElevenLabs key required)."
+            ),
             "- Voice (ElevenLabs), hearing (Deepgram), vision, the heartbeat, gates and the "
             "private track: all active.",
             "If Paul asks about a connection, answer from this list — or tell him to say "

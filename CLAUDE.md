@@ -16,7 +16,7 @@ non-skippable gates (run + meds).
 
 ## Commands
 
-- Tests: `python -m unittest discover -s tests` (265 tests; stdlib unittest,
+- Tests: `python -m unittest discover -s tests` (275 tests; stdlib unittest,
   NOT pytest — keep it that way. Only `requirements.txt` is needed; two PDF
   tests also use `reportlab` and skip automatically when it isn't installed)
 - No local run needed for most work; local dev uses SQLite automatically
@@ -52,6 +52,10 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
 - `app/heartbeat/` — scheduler jobs, streaks, gates, ICS calendar, SMTP email,
   day rhythm: wake sequence (OFF until Paul arms it; channel seam for Twilio
   in `wake_channels.py`), hourly move+water, med reminders, nudge dedupe
+- `app/voice/` — live voice engine (ElevenLabs Conversational AI agent:
+  Paul's Jarvis voice, persona-primed, barge-in; cockpit 'Talk' button via
+  signed URL; webhook tools back into memory/Trello/mail/rhythm; Twilio
+  phone surface + wake-call channel once the number is registered)
 - `app/private/` — sobriety track (walled off)
 - `app/cockpit/` — dashboard (design source: `docs/prototype-progress-cockpit.html`)
 
@@ -85,7 +89,7 @@ He speaks in feature ideas and screenshots, not specs. Small tweaks (tone,
 times, thresholds) are "Level 1" — often just prompt/config edits. New
 capabilities are "Level 2" — keep them modular bolt-ons per Plan §14. Pending
 upgrade list: WhatsApp work-group ingestion (§13, dedicated number pending);
-calendar event alerts (deferred by Paul); Twilio wake-call channel. Phase 2 (per Plan §9): email is live (read/draft/confirmed
+calendar event alerts (deferred by Paul). Phase 2 (per Plan §9): email is live (read/draft/confirmed
 send); calendar reads multiple ICS feeds — write-back (event creation via
 OAuth) still pending; then Apple Health + MyFitnessPal, finance/villa
 tracker, live workout coaching.

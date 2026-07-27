@@ -129,6 +129,8 @@ COCKPIT_HTML = """<!DOCTYPE html>
     <div class="spacer"></div>
     <span class="pill" id="pill-loc">📍 …</span>
     <span class="pill"><span class="dot"></span> <span id="pill-day">Day — with Jarvis</span></span>
+    <button class="pill" id="talk-btn" style="cursor:pointer;border:none;font:inherit"
+      title="Live, interruptible conversation — headphones recommended">🎙 Talk to Jarvis</button>
   </div>
 
   <div class="sec">Streaks · consecutive days</div>
@@ -273,6 +275,34 @@ function render(d){
 fetch('DATA_URL').then(r => r.json()).then(render)
   .catch(() => document.getElementById('pill-day').textContent = 'connection hiccup — refresh');
 setInterval(() => fetch('DATA_URL').then(r => r.json()).then(render).catch(()=>{}), 60000);
+
+// Live voice (Build Slice: Voice Access): open a realtime, interruptible
+// session with Jarvis in the browser — his real voice, barge-in and all.
+document.getElementById('talk-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('talk-btn');
+  if (document.querySelector('elevenlabs-convai')) { return; }  // already live
+  btn.textContent = '🎙 Connecting…';
+  try {
+    const res = await fetch('DATA_URL'.replace(/\/data$/, '/voice-url'), {method:'POST'});
+    const body = await res.json();
+    if (body.error) { btn.textContent = '🎙 Talk to Jarvis'; alert(body.error); return; }
+    if (!window.customElements.get('elevenlabs-convai')) {
+      await new Promise((ok, err) => {
+        const s = document.createElement('script');
+        s.src = 'https://unpkg.com/@elevenlabs/convai-widget-embed';
+        s.async = true; s.onload = ok; s.onerror = err;
+        document.body.appendChild(s);
+      });
+    }
+    const widget = document.createElement('elevenlabs-convai');
+    widget.setAttribute('signed-url', body.url);
+    document.body.appendChild(widget);
+    btn.textContent = '🎙 Live — talk away';
+  } catch (e) {
+    btn.textContent = '🎙 Talk to Jarvis';
+    alert('Could not open the live session — try again in a moment.');
+  }
+});
 </script>
 </body>
 </html>"""

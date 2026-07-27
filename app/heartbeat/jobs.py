@@ -27,7 +27,7 @@ from app.db.base import Database
 from app.heartbeat.calendar_ics import IcsCalendar, travel_or_event_flags
 from app.heartbeat.emailer import Emailer
 from app.heartbeat.streaks import STREAK_LABELS, Streaks
-from app.heartbeat.wake_channels import TelegramWakeChannel
+from app.heartbeat.wake_channels import PhoneCallWakeChannel, TelegramWakeChannel
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +73,7 @@ class HeartbeatJobs:
         private_track=None,   # PrivateTrack — trigger-aware support (Milestone 6)
         gates=None,           # GateKeeper — the non-skippables
         mail=None,            # MailService — inbox counts in the brief (Phase 2)
+        voice_engine=None,    # VoiceEngine — live calls (Build Slice: Voice Access)
     ) -> None:
         self.settings = settings
         self.db = db
@@ -92,6 +93,16 @@ class HeartbeatJobs:
         self.wake_channel = TelegramWakeChannel(
             telegram, elevenlabs, self._owner_chat, self.log
         )
+        # Phone-call escalation joins in when the number is wired up.
+        self.phone_wake = None
+        if (
+            voice_engine is not None
+            and settings.elevenlabs_phone_number_id
+            and settings.paul_phone_number
+        ):
+            self.phone_wake = PhoneCallWakeChannel(
+                voice_engine, settings.elevenlabs_phone_number_id, settings.paul_phone_number
+            )
 
     # ------------------------------------------------------------ plumbing
 
@@ -470,6 +481,10 @@ class HeartbeatJobs:
             return
         step = ((now.hour - WAKE_WINDOW[0]) * 60 + now.minute) // 3
         text = WAKE_LINES[step % len(WAKE_LINES)].format(time=now.strftime("%H:%M"))
+        # Escalation: Telegram every tick; a real phone call joins in every
+        # fifth step (~15 min) once the Twilio channel is configured.
+        if self.phone_wake is not None and step > 0 and step % 5 == 0:
+            await self.phone_wake.escalate(step, text)
         await self.wake_channel.escalate(step, text)
 
     # ------------------------------------------ §5 hourly movement + water
