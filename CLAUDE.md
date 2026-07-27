@@ -10,13 +10,13 @@ complete and LIVE in production; Paul (non-technical) talks to this bot daily.
 A Telegram bot (webhook mode) + FastAPI backend on Render with managed
 Postgres (pgvector). Voice notes → Deepgram STT → Claude Opus (Jarvis persona)
 → ElevenLabs TTS replies. Second brain (rooms/types + living facts + document
-library), Trello-driven "Daily 12" task engine, APScheduler heartbeat
+library), Trello-driven "Today's Focus" task engine (né Daily 12), APScheduler heartbeat
 (briefs/nudges/reviews/Kiefer email), web cockpit, private sobriety track,
 non-skippable gates (run + meds).
 
 ## Commands
 
-- Tests: `python -m unittest discover -s tests` (225 tests; stdlib unittest,
+- Tests: `python -m unittest discover -s tests` (238 tests; stdlib unittest,
   NOT pytest — keep it that way. Only `requirements.txt` is needed; two PDF
   tests also use `reportlab` and skip automatically when it isn't installed)
 - No local run needed for most work; local dev uses SQLite automatically

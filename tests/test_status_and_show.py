@@ -119,14 +119,14 @@ class TestStatusAndShow(unittest.IsolatedAsyncioTestCase):
         await h.router.handle_update(text_update("morning, how are we looking?", OWNER))
         system = h.claude_requests[-1]["system"]
         self.assertIn("ground truth about your integrations", system)
-        self.assertIn("Trello / Daily 12: CONNECTED", system)
+        self.assertIn("Trello / Today's Focus: CONNECTED", system)
 
     async def test_show_request_builds_the_plan_instead_of_brush_off(self):
         h = StatusHarness(self.db)
         await h.router.handle_update(text_update("what's my 12?", OWNER))
         combined = " ".join(h.texts())
-        self.assertIn("THE DAILY 12", combined)
-        self.assertNotIn("No Daily 12 yet", combined)
+        self.assertIn("TODAY'S FOCUS", combined)
+        self.assertNotIn("is clear", combined)
         rows = await self.db.fetch_all("SELECT * FROM daily_12 WHERE position != 0")
         self.assertGreater(len(rows), 0)
 

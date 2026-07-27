@@ -9,7 +9,8 @@ from typing import Any
 from app.db.base import Database
 
 STREAK_TYPES = ("run", "workout", "twelve", "meals")
-STREAK_LABELS = {"run": "Run", "workout": "Workout", "twelve": "Daily 12", "meals": "Meals on-plan"}
+# "twelve" keeps its DB key for continuity; the habit is now "Today's Focus".
+STREAK_LABELS = {"run": "Run", "workout": "Workout", "twelve": "Today's Focus", "meals": "Meals on-plan"}
 
 RUN_DONE = re.compile(
     r"\b(run|5k|5 ?km)\b.{0,20}\b(done|smashed|in the bag|finished|complete)\b"

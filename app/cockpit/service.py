@@ -152,7 +152,7 @@ class CockpitService:
             {"time": "06:30", "title": "5km run — the keystone", "type": "run",
              "done": snapshot["run"]["done_today"]},
             {"time": "07:00", "title": "Morning brief with Jarvis", "type": "rev", "done": False},
-            {"time": "09:00", "title": "Daily 12 — deep-work block", "type": "work", "done": False},
+            {"time": "09:00", "title": "Today's Focus — deep-work block", "type": "work", "done": False},
             {"time": "13:30", "title": "Midday check-in", "type": "rev", "done": False},
             {"time": "17:30", "title": "Workout (Push/Pull/Legs)", "type": "gym",
              "done": snapshot["workout"]["done_today"]},

@@ -16,10 +16,11 @@ from app.db.sqlite import SqliteDatabase
 
 BOARD = {"id": "B1", "name": "Master Board"}
 LISTS = [
-    {"id": "L1", "name": "To Do"},
+    {"id": "L1", "name": "Paul Today"},
     {"id": "L2", "name": "In Progress"},
     {"id": "L3", "name": "Done"},
     {"id": "L4", "name": "Blocked/Waiting"},
+    {"id": "L5", "name": "Paul Personal"},
 ]
 
 
@@ -48,8 +49,11 @@ CARDS = [
     trello_card(8, "5-for-5 boosters promo"),
     trello_card(9, "Old done thing", list_id="L3"),
     trello_card(10, "Stuck on supplier", list_id="L4"),
+    trello_card(11, "Book the dentist", list_id="L5"),
+    trello_card(12, "Renew passport", list_id="L5", due="2026-08-05T12:00:00.000Z"),
 ]
 
+# Order matches the untagged ACTIONABLE rows the tagger sees: C1-C8, C11, C12.
 TAGS = [
     {"company": "prodermis", "project": "BMI relationship"},
     {"company": "derma_uk", "project": "Website relaunch"},
@@ -59,8 +63,8 @@ TAGS = [
     {"company": "aesthetics_supply", "project": "Range activation"},
     {"company": "prodermis", "project": "Distributor registrations"},
     {"company": "aesthetics_supply", "project": "Promotions"},
-    {"company": "derma_uk", "project": "Website relaunch"},
-    {"company": "prodermis", "project": "BMI relationship"},
+    {"company": "", "project": ""},   # dentist — personal
+    {"company": "", "project": ""},   # passport — personal
 ]
 
 
@@ -131,12 +135,43 @@ class TestService(unittest.IsolatedAsyncioTestCase):
     async def test_generate_produces_plan_grouped_and_idempotent(self):
         plan = await self.service.generate(date(2026, 7, 25))
         main = [r for r in plan if r["position"] != 0]
-        # 8 actionable+tagged cards only → fewer than 12, but every company shows up
-        self.assertEqual(len(main), 8)
+        # 8 business cards from Paul Today (≤3/company) + 2 from Paul Personal
+        self.assertEqual(len(main), 10)
         companies = {r["company_slug"] for r in main}
-        self.assertEqual(companies, {"derma_uk", "derma_eu", "aesthetics_supply", "prodermis"})
+        self.assertEqual(
+            companies,
+            {"derma_uk", "derma_eu", "aesthetics_supply", "prodermis", "personal"},
+        )
         again = await self.service.generate(date(2026, 7, 25))
         self.assertEqual(len(again), len(plan))  # no duplicates on regeneration
+
+    async def test_focus_only_sources_from_the_two_lists(self):
+        # An actionable card parked in "In Progress" must NOT enter the pool.
+        await self.service.sync()
+        await self.db.execute(
+            "UPDATE tasks SET list_name = 'In Progress' WHERE trello_id = 'C2'"
+        )
+        plan = await self.service.generate(date(2026, 7, 25), resync=False)
+        titles = [r["title"] for r in plan]
+        self.assertNotIn("Website relaunch QA", titles)
+
+    async def test_personal_capped_at_three(self):
+        plan = await self.service.generate(date(2026, 7, 25))
+        personal = [r for r in plan if r["company_slug"] == "personal"]
+        self.assertLessEqual(len(personal), 3)
+        self.assertEqual({r["title"] for r in personal}, {"Book the dentist", "Renew passport"})
+
+    async def test_format_uses_focus_name_and_variable_count(self):
+        await self.service.generate(date(2026, 7, 25))
+        text = await self.service.format_plan(date(2026, 7, 25))
+        self.assertIn("TODAY'S FOCUS", text)
+        self.assertIn("/10 done", text)
+        self.assertIn("PERSONAL", text)
+        self.assertNotIn("BONUS", text)
+
+    async def test_empty_day_is_a_clear_day(self):
+        text = await self.service.format_plan(date(2026, 7, 20))
+        self.assertIn("clear", text.lower())
 
     async def test_urgent_bmi_survey_ranks_top_of_prodermis(self):
         await self.service.generate(date(2026, 7, 25))
@@ -203,7 +238,7 @@ MULTI_BOARDS = [
     {"id": "B2", "name": "Prodermis Board"},
 ]
 B2_LISTS = [
-    {"id": "L21", "name": "To Do"},
+    {"id": "L21", "name": "Paul Today"},
     {"id": "L23", "name": "Done"},
 ]
 B2_CARDS = [trello_card(21, "Pyway booster launch", list_id="L21", labels=["£££"])]
@@ -353,7 +388,8 @@ class TestBoardScope(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(health["scoped"])
         self.assertEqual(health["boards"], 3)             # visible
         self.assertEqual(health["board_name"], "Master Board")  # in play
-        self.assertEqual(health["cached_cards"], 8)       # actionable cards only
+        # actionable cards only: Done (C9) and Blocked (C10) don't count
+        self.assertEqual(health["cached_cards"], len(CARDS) - 2)
 
 
 class TestCommands(unittest.IsolatedAsyncioTestCase):

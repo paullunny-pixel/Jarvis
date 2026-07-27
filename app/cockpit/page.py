@@ -134,7 +134,7 @@ COCKPIT_HTML = """<!DOCTYPE html>
   <div class="sec">Streaks · consecutive days</div>
   <div class="streaks" id="streaks"></div>
 
-  <div class="sec" id="twelve-sec">Your 12 today · built by Jarvis from your board</div>
+  <div class="sec" id="twelve-sec">Today's Focus · built by Jarvis from your board</div>
   <div class="twelve" id="twelve"></div>
 
   <div class="sec">Body · progress</div>
@@ -149,7 +149,7 @@ COCKPIT_HTML = """<!DOCTYPE html>
   <div class="sec">Right now</div>
   <div class="lower">
     <div class="card">
-      <p class="ch">The Daily 12</p>
+      <p class="ch">Today's Focus</p>
       <div class="ring-wrap">
         <svg class="ring" viewBox="0 0 36 36">
           <circle cx="18" cy="18" r="15.5" fill="none" stroke="#242a35" stroke-width="4"/>
@@ -167,7 +167,7 @@ COCKPIT_HTML = """<!DOCTYPE html>
         <p id="kiefer-preview">…</p>
         <div class="row"><span>Run</span><b id="k-run">—</b></div>
         <div class="row"><span>Workout</span><b id="k-workout">—</b></div>
-        <div class="row"><span>Daily 12</span><b id="k-twelve">—</b></div>
+        <div class="row"><span>Today's Focus</span><b id="k-twelve">—</b></div>
       </div>
     </div>
     <div class="card sob">
@@ -199,7 +199,7 @@ function render(d){
   document.getElementById('gen').textContent = d.generated_at;
 
   const meta = {run:['🏃 Daily 5km run', true], workout:['🏋️ Workout (PPL)', false],
-                twelve:['✅ Daily 12 cleared', false], meals:['🥗 Meals on-plan', false]};
+                twelve:['✅ Today's Focus cleared', false], meals:['🥗 Meals on-plan', false]};
   document.getElementById('streaks').innerHTML = Object.entries(meta).map(([k,[label,key]]) => {
     const s = d.streaks[k];
     const today = s.done_today ? '✓ done today' : 'not logged today';
@@ -210,11 +210,11 @@ function render(d){
 
   const t = d.twelve;
   document.getElementById('twelve-sec').textContent =
-    `Your 12 today · built by Jarvis from your board (${t.done} done)`;
+    `Today's Focus · built by Jarvis from your board (${t.done} done)`;
   document.getElementById('twelve').innerHTML = t.by_company.map(c => `
     <div class="twc"><div class="h"><span class="b" style="background:${c.gradient}">${c.initials}</span>${esc(c.name)}</div>
     ${c.tasks.length ? c.tasks.map(x => `<div class="tt${x.done?' d':''}"><span class="cb">${TICK}</span><span>${esc(x.title)}</span></div>`).join('')
-                     : '<div class="empty">No tasks selected yet — say "plan my 12" to Jarvis.</div>'}
+                     : '<div class="empty">No tasks selected yet — say "plan my day" to Jarvis.</div>'}
     </div>`).join('') + (t.bonus ? `<div class="bonus">🎁 Bonus unlocked: ${esc(t.bonus.title)}</div>` : '');
 
   const total = t.total || 12;

@@ -77,7 +77,7 @@ class TestCockpit(unittest.IsolatedAsyncioTestCase):
         preview = data["kiefer"]["preview"].lower()
         self.assertNotIn("sober", preview)
         self.assertNotIn("41 days strong", preview)
-        self.assertIn("daily 12", preview)
+        self.assertIn("today's focus", preview)
 
     async def test_empty_day_still_renders(self):
         data = await self.service.gather()

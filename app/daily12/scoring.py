@@ -142,6 +142,46 @@ def select_daily_12(
     return Selection(picks=ordered, bonus=remaining[0] if remaining else None, by_company=by_company)
 
 
+@dataclass
+class FocusSelection:
+    """Today's Focus (Master Update §2): a VARIABLE-length list sourced only
+    from the 'Paul Today' (business, ≤3 per company) and 'Paul Personal'
+    (≤3) Trello lists. §16 scoring only ORDERS within the pool."""
+
+    picks: list[Card]
+    by_group: dict[str, list[Card]]   # company slug, "" (untagged) or "personal"
+
+
+def select_focus(
+    business: list[Card],
+    personal: list[Card],
+    today: date,
+    per_company: int = 3,
+    personal_max: int = 3,
+    weights: dict[str, float] | None = None,
+) -> FocusSelection:
+    for card in business + personal:
+        card.score = score_card(card, today, weights)
+    by_group: dict[str, list[Card]] = {}
+    picks: list[Card] = []
+    for company in COMPANIES + [""]:   # "" = business cards not yet tagged
+        group = sorted(
+            (c for c in business if c.actionable and c.company == company),
+            key=lambda c: c.score,
+            reverse=True,
+        )[:per_company]
+        if group:
+            by_group[company] = group
+            picks.extend(group)
+    personal_picks = sorted(
+        (c for c in personal if c.actionable), key=lambda c: c.score, reverse=True
+    )[:personal_max]
+    if personal_picks:
+        by_group["personal"] = personal_picks
+        picks.extend(personal_picks)
+    return FocusSelection(picks=picks, by_group=by_group)
+
+
 def parse_iso_date(value: str) -> date | None:
     if not value:
         return None

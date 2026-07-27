@@ -13,9 +13,10 @@ from app.daily12.scoring import (
     COMPANIES,
     COMPANY_NAMES,
     Card,
+    avoidance_score,
     is_actionable_list,
     parse_iso_date,
-    select_daily_12,
+    select_focus,
 )
 from app.daily12.trello import TrelloClient
 from app.db.base import Database
@@ -43,12 +44,20 @@ class Daily12Service:
         claude: ClaudeClient,
         timezone_default: str = "Europe/London",
         board_filter: str = "",
+        today_list: str = "Paul Today",
+        personal_list: str = "Paul Personal",
+        per_company: int = 3,
+        personal_max: int = 3,
     ) -> None:
         self._db = db
         self._trello = trello
         self._claude = claude
         self._settings = SettingsStore(db)
         self._tz_default = timezone_default
+        self._today_list = today_list.strip().lower()
+        self._personal_list = personal_list.strip().lower()
+        self._per_company = per_company
+        self._personal_max = personal_max
         # Board scope: names to work from; empty / "all" = every open board.
         self._board_filter = [
             name.strip().lower()
@@ -271,10 +280,23 @@ class Daily12Service:
         tz = ZoneInfo(timezone or await self._settings.get("current_timezone", self._tz_default))
         return datetime.now(tz).date()
 
+    def _card_from_row(self, r: dict) -> Card:
+        return Card(
+            id=int(r["id"]),
+            title=r["title"],
+            company=r["company_slug"],
+            project_id=int(r["project_id"]),
+            due_date=parse_iso_date(r["due_date"]),
+            money=int(r["money"]),
+            waiting_on_paul=bool(r["waiting_on_paul"]),
+            last_moved=parse_iso_date(r["last_moved"]),
+            defer_count=int(r["defer_count"]),
+        )
+
     async def generate(self, plan_date: date | None = None, resync: bool = True) -> list[dict]:
-        """Build (or rebuild) the Daily 12 for the date. Idempotent per day —
-        an existing plan is returned untouched unless resync forces scoring
-        anew before the day starts."""
+        """Build (or rebuild) Today's Focus for the date. Idempotent per day.
+        Pool = the 'Paul Today' list (≤3 per company) + 'Paul Personal' (≤3);
+        variable length, zero is a valid day. §16 scoring orders the pool."""
         plan_date = plan_date or await self.paul_today()
         existing = await self.plan(plan_date)
         if existing:
@@ -285,27 +307,27 @@ class Daily12Service:
             except Exception:
                 logger.exception("Trello sync failed — selecting from cache")
 
-        rows = await self._db.fetch_all(
-            "SELECT * FROM tasks WHERE actionable = 1 AND company_slug != ''"
-        )
-        cards = [
-            Card(
-                id=int(r["id"]),
-                title=r["title"],
-                company=r["company_slug"],
-                project_id=int(r["project_id"]),
-                due_date=parse_iso_date(r["due_date"]),
-                money=int(r["money"]),
-                waiting_on_paul=bool(r["waiting_on_paul"]),
-                last_moved=parse_iso_date(r["last_moved"]),
-                defer_count=int(r["defer_count"]),
+        business = [
+            self._card_from_row(r)
+            for r in await self._db.fetch_all(
+                "SELECT * FROM tasks WHERE actionable = 1 AND LOWER(list_name) = ?",
+                (self._today_list,),
             )
-            for r in rows
         ]
-        selection = select_daily_12(cards, await self.live_projects(), plan_date)
+        personal = [
+            self._card_from_row(r)
+            for r in await self._db.fetch_all(
+                "SELECT * FROM tasks WHERE actionable = 1 AND LOWER(list_name) = ?",
+                (self._personal_list,),
+            )
+        ]
+        selection = select_focus(
+            business, personal, plan_date,
+            per_company=self._per_company, personal_max=self._personal_max,
+        )
 
         # A UNIQUE index on (plan_date, position) + conflict-ignoring inserts
-        # make generation race-safe: if the 07:00 job and a "plan my 12" land
+        # make generation race-safe: if the 07:00 job and a "plan my day" land
         # together, exactly one plan wins.
         ignore = (
             "INSERT INTO daily_12 (plan_date, position, task_id, company_slug) VALUES (?, ?, ?, ?)"
@@ -315,14 +337,12 @@ class Daily12Service:
             " VALUES (?, ?, ?, ?)"
         )
         position = 0
-        for card in selection.picks[:12]:
+        personal_ids = {c.id for c in selection.by_group.get("personal", [])}
+        for card in selection.picks:
             position += 1
-            await self._db.execute(ignore, (plan_date.isoformat(), position, card.id, card.company))
+            group = "personal" if card.id in personal_ids else card.company
+            await self._db.execute(ignore, (plan_date.isoformat(), position, card.id, group))
             await self._db.execute("UPDATE tasks SET score = ? WHERE id = ?", (card.score, card.id))
-        if selection.bonus is not None:
-            await self._db.execute(
-                ignore, (plan_date.isoformat(), 0, selection.bonus.id, selection.bonus.company)
-            )
         return await self.plan(plan_date)
 
     async def plan(self, plan_date: date) -> list[dict]:
@@ -334,31 +354,54 @@ class Daily12Service:
             (plan_date.isoformat(),),
         )
 
+    GROUP_LABELS = {**COMPANY_NAMES, "": "Other", "personal": "Personal"}
+
     async def format_plan(self, plan_date: date | None = None) -> str:
-        """The 12, grouped by company, bonus hidden until 12/12 (§16.6-7)."""
+        """Today's Focus, grouped by company then Personal. Variable length —
+        an empty day is a clear day, not a failure."""
         plan_date = plan_date or await self.paul_today()
         rows = await self.plan(plan_date)
         if not rows:
-            return "No Daily 12 yet for today — say 'plan my 12' and I'll build it."
+            return (
+                "Today's Focus is clear — nothing queued in 'Paul Today' or 'Paul Personal'. "
+                "Move cards in (or tell me what matters) and I'll line the day up."
+            )
         main = [r for r in rows if r["position"] != 0]
-        bonus = next((r for r in rows if r["position"] == 0), None)
         done_count = sum(1 for r in main if r["done"])
-        lines = [f"THE DAILY 12 — {plan_date.strftime('%A %d %B')} · {done_count}/12 done"]
-        for company in COMPANIES:
-            company_rows = [r for r in main if r["company_slug"] == company]
-            if not company_rows:
+        lines = [
+            f"TODAY'S FOCUS — {plan_date.strftime('%A %d %B')} · {done_count}/{len(main)} done"
+        ]
+        for group in COMPANIES + ["", "personal"]:
+            group_rows = [r for r in main if r["company_slug"] == group]
+            if not group_rows:
                 continue
             lines.append("")
-            lines.append(COMPANY_NAMES.get(company, company).upper())
-            for r in company_rows:
+            lines.append(self.GROUP_LABELS.get(group, group).upper())
+            for r in group_rows:
                 mark = "✅" if r["done"] else "▫️"
                 due = f" (due {r['due_date'][:10]})" if r["due_date"] else ""
                 lines.append(f"{mark} {r['position']}. {r['title']}{due}")
-        if done_count >= 12 and bonus is not None:
-            mark = "✅" if bonus["done"] else "🎁"
-            lines.append("")
-            lines.append(f"{mark} BONUS UNLOCKED: {bonus['title']}")
         return "\n".join(lines)
+
+    async def frog(self, plan_date: date | None = None) -> str:
+        """Eat-the-frog (§8): the most-avoided undone item on today's list."""
+        plan_date = plan_date or await self.paul_today()
+        rows = [r for r in await self.plan(plan_date) if not r["done"]]
+        if not rows:
+            return ""
+        best_title, best_score = "", -1.0
+        for r in rows:
+            task = await self._db.fetch_one(
+                "SELECT last_moved, defer_count FROM tasks WHERE id = ?", (r["task_id"],)
+            )
+            if task is None:
+                continue
+            score = avoidance_score(
+                parse_iso_date(task["last_moved"]), plan_date, int(task["defer_count"])
+            )
+            if score > best_score:
+                best_title, best_score = r["title"], score
+        return best_title if best_score > 0 else rows[0]["title"]
 
     # ------------------------------------------------- feedback → board (§16.8)
 
@@ -407,13 +450,15 @@ class Daily12Service:
                 await self._trello.move_card(task["trello_id"], done_list)
         except Exception:
             logger.exception("Trello move failed (local state updated)")
-        rows = await self.plan(await self.paul_today())
-        done = sum(1 for r in rows if r["position"] != 0 and r["done"])
-        if done >= 12:
-            bonus = next((r for r in rows if r["position"] == 0), None)
-            extra = f" That's all 12 — bonus unlocked: {bonus['title']}." if bonus else " That's all 12. Outstanding."
-            return f"'{task['title']}' done — 12 of 12.{extra}"
-        return f"'{task['title']}' done and moved on the board. {done} of 12."
+        rows = [r for r in await self.plan(await self.paul_today()) if r["position"] != 0]
+        done = sum(1 for r in rows if r["done"])
+        total = len(rows)
+        if total and done >= total:
+            return (
+                f"'{task['title']}' done — {done} of {total}. That's the lot: "
+                "Today's Focus cleared. Outstanding."
+            )
+        return f"'{task['title']}' done and moved on the board. {done} of {total}."
 
     async def defer(self, reference: str, due_iso: str, human_when: str) -> str:
         task = await self.find_plan_task(reference)

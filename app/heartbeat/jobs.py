@@ -10,8 +10,9 @@ THE WALL: the Kiefer note and all business output draw only from business data.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from app.clients.anthropic_client import ClaudeClient
@@ -79,10 +80,57 @@ class HeartbeatJobs:
     async def _today(self) -> date:
         return datetime.now(await self._tz()).date()
 
+    # --- Nudge idempotency (Master Update §14): a proactive message may ask
+    # once, then it waits for a reply or a REAL change — never a repeat loop.
+
+    async def _seen_within(self, key: str, hours: float) -> bool:
+        row = await self.db.fetch_one(
+            "SELECT last_sent_at FROM nudge_state WHERE nudge_key = ?", (key,)
+        )
+        if not row:
+            return False
+        last = datetime.fromisoformat(row["last_sent_at"])
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) - last < timedelta(hours=hours)
+
+    async def _stamp(self, key: str) -> None:
+        if self.db.dialect == "postgres":
+            await self.db.execute(
+                "INSERT INTO nudge_state (nudge_key, last_sent_at) VALUES (?, ?)"
+                " ON CONFLICT (nudge_key) DO UPDATE SET last_sent_at = EXCLUDED.last_sent_at",
+                (key, utc_now_iso()),
+            )
+        else:
+            await self.db.execute(
+                "INSERT OR REPLACE INTO nudge_state (nudge_key, last_sent_at) VALUES (?, ?)",
+                (key, utc_now_iso()),
+            )
+
+    async def _once(self, key: str, hours: float = 20.0) -> bool:
+        """True exactly once per window — the per-job send guard."""
+        if await self._seen_within(key, hours):
+            logger.info("Nudge '%s' already sent this window — skipping", key)
+            return False
+        await self._stamp(key)
+        return True
+
+    async def _not_a_repeat(self, text: str) -> bool:
+        """Global outbound dedupe: an identical proactive message can never
+        fire twice within the window, whatever job produced it."""
+        key = "msg:" + hashlib.sha1(text.encode("utf-8")).hexdigest()[:20]
+        if await self._seen_within(key, 6.0):
+            logger.info("Identical heartbeat message suppressed (dedupe)")
+            return False
+        await self._stamp(key)
+        return True
+
     async def _send_text(self, text: str) -> None:
         chat_id = await self._owner_chat()
         if not chat_id:
             logger.warning("No owner chat yet — heartbeat message skipped")
+            return
+        if not await self._not_a_repeat(text):
             return
         await self.log.log("out", text, chat_id=chat_id, meta={"heartbeat": True})
         await self.telegram.send_text(chat_id, text)
@@ -90,6 +138,8 @@ class HeartbeatJobs:
     async def _send_voice(self, text: str) -> None:
         chat_id = await self._owner_chat()
         if not chat_id:
+            return
+        if not await self._not_a_repeat(text):
             return
         await self.log.log("out", text, chat_id=chat_id, kind="voice", meta={"heartbeat": True})
         if self.elevenlabs is not None:
@@ -125,6 +175,8 @@ class HeartbeatJobs:
         today = await self._today()
         if await self.streaks.done_today("run", today):
             return
+        if not await self._once(f"runprotect:{today.isoformat()}"):
+            return
         snapshot = await self.streaks.snapshot(today)
         streak = snapshot["run"]["current"]
         line = f"Run o'clock. 5k before the day gets its hands on you — streak's at {streak}."
@@ -136,6 +188,8 @@ class HeartbeatJobs:
 
     async def morning_brief(self) -> None:
         today = await self._today()
+        if not await self._once(f"brief:{today.isoformat()}"):
+            return
         tz = await self._tz()
         plan_text = ""
         if self.daily12 is not None:
@@ -173,6 +227,14 @@ class HeartbeatJobs:
         message = opener + "\n\n" + skeleton
         if plan_text:
             message += "\n\n" + plan_text
+        # Eat the frog (§8): the most-avoided item goes first, every day.
+        if self.daily12 is not None:
+            try:
+                frog = await self.daily12.frog(today)
+                if frog:
+                    message += f"\n\n🐸 FROG FIRST: {frog} — before anything else. Ten minutes and it's dead."
+            except Exception:
+                logger.exception("Frog selection failed — brief goes out without it")
         await self._send_text(message)
 
         # Private trigger radar (Milestone 6): flights/trade shows get a warm,
@@ -188,7 +250,9 @@ class HeartbeatJobs:
 
     async def midday_nudge(self) -> None:
         today = await self._today()
-        done, total = await self._twelve_progress(today)
+        if not await self._once(f"midday:{today.isoformat()}"):
+            return
+        done, total = await self._focus_progress(today)
         run_done = await self.streaks.done_today("run", today)
         target = int(await self.store.get(MIDDAY_TARGET_KEY, "4") or 4)
 
@@ -197,7 +261,9 @@ class HeartbeatJobs:
             await self.store.set(HOUND_KEY, today.isoformat())
             logger.info("Hound mode auto-triggered (run_done=%s, done=%d/%d)", run_done, done, total)
 
-        status = f"{done} of {total or 12} done" + ("" if run_done else ", run still not in")
+        status = (
+            f"{done} of {total} done" if total else "the focus list is empty"
+        ) + ("" if run_done else ", run still not in")
         if self.gates is not None:
             tz = await self._tz()
             for gate in await self.gates.outstanding(datetime.now(tz)):
@@ -205,7 +271,7 @@ class HeartbeatJobs:
                     status += f", {gate['label']} unconfirmed"
         if await self.hound_active():
             fallback = (
-                f"Sir — {status}. May I suggest the top task on the twelve: two minutes to start it, "
+                f"Sir — {status}. May I suggest the top task on the focus list: two minutes to start it, "
                 f"now, and tell me when it's moving." + ("" if run_done else " The run still happens today — that one isn't negotiable.")
             )
             nudge = await self._flourish(
@@ -229,13 +295,13 @@ class HeartbeatJobs:
         if not await self.hound_active():
             return
         today = await self._today()
-        done, total = await self._twelve_progress(today)
+        done, total = await self._focus_progress(today)
         if total and done >= total:
             await self.store.set(HOUND_KEY, "")
-            await self._send_voice("All twelve down. Hound's back in the kennel — enormous day. ")
+            await self._send_voice("Focus list clear. Hound's back in the kennel — enormous day. ")
             return
         run_done = await self.streaks.done_today("run", today)
-        status = f"{done}/{total or 12}" + ("" if run_done else ", run missing")
+        status = f"{done}/{total}" + ("" if run_done else ", run missing")
         await self._send_voice(
             await self._flourish(
                 "Hound mode ping. Short, composed, quietly insistent — the perfectly courteous aide "
@@ -255,7 +321,9 @@ class HeartbeatJobs:
 
     async def evening_review(self) -> None:
         today = await self._today()
-        done, total = await self._twelve_progress(today)
+        if not await self._once(f"review:{today.isoformat()}"):
+            return
+        done, total = await self._focus_progress(today)
         snapshot = await self.streaks.snapshot(today)
         summary = compose_evening_summary(today, done, total, snapshot)
         review = await self._flourish(
@@ -277,7 +345,9 @@ class HeartbeatJobs:
         """The friendly 9pm 'here's what Paul's been up to' email. Business and
         training data ONLY — the private room does not exist to this function."""
         today = await self._today()
-        done, total = await self._twelve_progress(today)
+        if await self._seen_within(f"kiefer:{today.isoformat()}", 20.0):
+            return False
+        done, total = await self._focus_progress(today)
         snapshot = await self.streaks.snapshot(today)
         body_data = compose_kiefer_data(today, done, total, snapshot)
         note = await self._flourish(
@@ -295,11 +365,12 @@ class HeartbeatJobs:
         sent = await self.emailer.send(self.kiefer_email, f"Paul's day — {today.strftime('%a %d %b')}", note)
         if sent:
             await self.store.set("last_kiefer_note", utc_now_iso())
+            await self._stamp(f"kiefer:{today.isoformat()}")
         return sent
 
     # ------------------------------------------------------------ shared
 
-    async def _twelve_progress(self, today: date) -> tuple[int, int]:
+    async def _focus_progress(self, today: date) -> tuple[int, int]:
         rows = await self.db.fetch_all(
             "SELECT done FROM daily_12 WHERE plan_date = ? AND position != 0",
             (today.isoformat(),),
@@ -329,7 +400,9 @@ def compose_morning_skeleton(today: date, events: list[dict], snapshot: dict) ->
 
 def compose_evening_summary(today: date, done: int, total: int, snapshot: dict) -> str:
     lines = [f"TODAY — {today.strftime('%A %d %B')}"]
-    lines.append(f"The 12: {done}/{total or 12} done")
+    lines.append(
+        f"Today's Focus: {done}/{total} done" if total else "Today's Focus: clear day (nothing queued)"
+    )
     for t in ("run", "workout", "meals"):
         s = snapshot[t]
         state = "✅ done" if s["done_today"] else "▫️ not logged"
@@ -338,13 +411,15 @@ def compose_evening_summary(today: date, done: int, total: int, snapshot: dict) 
 
 
 def compose_kiefer_data(today: date, done: int, total: int, snapshot: dict) -> str:
-    parts = [f"Daily 12: {done}/{total or 12} cleared."]
+    parts = [
+        f"Today's Focus: {done}/{total} cleared." if total else "A clear-list day."
+    ]
     for t in ("run", "workout", "twelve", "meals"):
         s = snapshot[t]
         if s["current"]:
             parts.append(f"{STREAK_LABELS[t]} streak: {s['current']} days (best {s['best']}).")
-    if done >= (total or 12) and total:
-        parts.append("Full board cleared — big day.")
+    if total and done >= total:
+        parts.append("Full list cleared — big day.")
     return " ".join(parts)
 
 

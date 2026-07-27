@@ -18,20 +18,21 @@ from app.daily12.service import Daily12Service, relative_due
 logger = logging.getLogger(__name__)
 
 TASK_HINT = re.compile(
-    r"\b(daily )?(12|twelve)\b|\btask|\btrello|\bcard\b|\bdone\b|\bfinished\b|\btick\b"
+    r"\b(daily )?(12|twelve)\b|\b(today'?s )?focus\b|\btask|\btrello|\bcard\b|\bdone\b"
+    r"|\bfinished\b|\btick\b"
     r"|\bpush (it|that|the|number)|\bput .{0,30}on (kiefer|harry|adriana|adrianna|alicia|kenny|ella)"
     r"|\bassign\b|\bmy (list|plan|tasks)\b",
     re.IGNORECASE,
 )
 
 SHOW_PLAN = re.compile(
-    r"\b(what('| i)?s|show|give|read)\b.{0,24}\b(my )?(daily )?(12|twelve|plan|tasks|list)\b"
-    r"|\bplan my (12|twelve|day)\b",
+    r"\b(what('| i)?s|show|give|read)\b.{0,24}\b(my )?(daily |today'?s )?(12|twelve|focus|plan|tasks|list)\b"
+    r"|\bplan my (12|twelve|day|focus)\b",
     re.IGNORECASE,
 )
 
 PARSER_SYSTEM = """\
-You convert Paul's message into Trello task actions. Today's Daily 12 is:
+You convert Paul's message into Trello task actions. Today's Focus list is:
 {plan}
 
 Reply ONLY a JSON array of actions (empty if the message contains none):

@@ -74,6 +74,11 @@ class Settings(BaseSettings):
     # every open board. Paul's call (July 2026): Master Board only while the
     # board gets knocked into shape.
     trello_boards: str = "Master Board"
+    # Today's Focus sourcing (Master Update §2): the two source lists.
+    trello_today_list: str = "Paul Today"
+    trello_personal_list: str = "Paul Personal"
+    focus_per_company: int = 3
+    focus_personal_max: int = 3
     google_oauth_client_id: str = ""
     google_oauth_client_secret: str = ""
     r2_access_key: str = ""

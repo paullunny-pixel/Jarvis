@@ -188,6 +188,45 @@ class JobsHarness:
         return [body for method, body in self.telegram_calls if method == "sendMessage"]
 
 
+class TestNudgeIdempotency(unittest.IsolatedAsyncioTestCase):
+    """Master Update §14: a proactive message asks once — never a repeat loop."""
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = SqliteDatabase(os.path.join(self._dir.name, "t.db"))
+        await self.db.init()
+        self.h = JobsHarness(self.db)
+        self.jobs = self.h.jobs
+
+    async def asyncTearDown(self):
+        await self.db.close()
+        self._dir.cleanup()
+
+    async def test_identical_message_never_fires_twice(self):
+        await self.jobs._send_text("Sir, the metrics remain at zero. Shall we begin?")
+        await self.jobs._send_text("Sir, the metrics remain at zero. Shall we begin?")
+        self.assertEqual(len(self.h.sent_texts()), 1)
+
+    async def test_different_messages_still_flow(self):
+        await self.jobs._send_text("First message.")
+        await self.jobs._send_text("Second, different message.")
+        self.assertEqual(len(self.h.sent_texts()), 2)
+
+    async def test_midday_nudge_fires_once_per_day(self):
+        await self.jobs.midday_nudge()
+        first = len(self.h.sent_texts())
+        self.assertEqual(first, 1)
+        await self.jobs.midday_nudge()
+        await self.jobs.midday_nudge()
+        self.assertEqual(len(self.h.sent_texts()), first)
+
+    async def test_evening_review_fires_once_per_day(self):
+        await self.jobs.evening_review()
+        first = len(self.h.sent_texts())
+        await self.jobs.evening_review()
+        self.assertEqual(len(self.h.sent_texts()), first)
+
+
 class TestJobs(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self._dir = tempfile.TemporaryDirectory()
@@ -247,7 +286,7 @@ class TestJobs(unittest.IsolatedAsyncioTestCase):
 
     async def test_completing_the_twelve_increments_streak(self):
         await self._plant_twelve(done=12)
-        await self.jobs._twelve_progress(date.fromisoformat(self.today))
+        await self.jobs._focus_progress(date.fromisoformat(self.today))
         snap = await self.jobs.streaks.snapshot(date.fromisoformat(self.today))
         self.assertEqual(snap["twelve"]["current"], 1)
 

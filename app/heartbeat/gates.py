@@ -32,6 +32,7 @@ def mentions_meds(text: str) -> bool:
 
 class GateKeeper:
     def __init__(self, db: Database, streaks: Streaks) -> None:
+        self._db = db
         self._store = SettingsStore(db)
         self._streaks = streaks
 
@@ -57,14 +58,30 @@ class GateKeeper:
         return bool(await self._store.get(f"gate:{gate_id}:{today.isoformat()}"))
 
     async def outstanding(self, now: datetime) -> list[dict]:
-        """Gates past their deadline and still unconfirmed (today, local time)."""
+        """Gates past their deadline, unconfirmed, and not overridden today."""
         result = []
         for gate in await self.config():
             if now.strftime("%H:%M") < gate.get("by", "00:00"):
                 continue
+            if await self.is_overridden(gate["id"], now.date()):
+                continue
             if not await self.is_confirmed(gate["id"], now.date()):
                 result.append(gate)
         return result
+
+    # --- The universal override (Master Update §1). Unconditional: once Paul
+    # gives the word and a reason, the item never blocks again today.
+
+    async def is_overridden(self, item: str, today: date) -> bool:
+        return bool(await self._store.get(f"override:{item}:{today.isoformat()}"))
+
+    async def override(self, items: list[str], reason: str, today: date) -> None:
+        for item in items:
+            await self._store.set(f"override:{item}:{today.isoformat()}", utc_now_iso())
+            await self._db.execute(
+                "INSERT INTO override_log (ts, item, reason) VALUES (?, ?, ?)",
+                (utc_now_iso(), item, reason[:500]),
+            )
 
     @staticmethod
     def block_message(outstanding: list[dict]) -> str:

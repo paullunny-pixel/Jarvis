@@ -167,6 +167,21 @@ TABLES: list[str] = [
         created_at TEXT NOT NULL
     )
     """,
+    # --- Master Update: override failsafe + nudge idempotency ---
+    """
+    CREATE TABLE IF NOT EXISTS override_log (
+        id {pk},
+        ts TEXT NOT NULL,
+        item TEXT NOT NULL,
+        reason TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS nudge_state (
+        nudge_key TEXT PRIMARY KEY,
+        last_sent_at TEXT NOT NULL
+    )
+    """,
     # --- Milestone 6: the private sobriety track (content encrypted at rest) ---
     """
     CREATE TABLE IF NOT EXISTS sobriety (

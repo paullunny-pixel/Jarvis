@@ -9,7 +9,7 @@ Phase 1 build, per `docs/Jarvis-Build-and-Launch-Plan.md` (locked stack §15, Da
 |---|---|---|
 | 1 | Telegram voice loop (Deepgram → Claude Opus → ElevenLabs, full transcript log) | ✅ Built & tested |
 | 2 | Second brain (pgvector, rooms, Day-One Brain seed, document library) | ✅ Built & tested |
-| 3 | Trello + the Daily 12 (§16 scoring) | ✅ Built & tested |
+| 3 | Trello + Today's Focus (né Daily 12; §16 ordering) | ✅ Built & tested |
 | 4 | Heartbeat (07:00 brief · 13:30 nudge · 21:00 review + Kiefer note · hound mode · streaks) | ✅ Built & tested |
 | 5 | Web cockpit (Progress Cockpit design) | ✅ Built & tested |
 | 6 | Private sobriety track (walled-off, encrypted) | ✅ Built & tested |
@@ -62,7 +62,7 @@ python -m unittest discover -s tests
 
 162 tests cover the reply policy, all service clients (mocked at the HTTP
 layer), the second brain (rooms, privacy wall, encryption, seeding), the exact
-§16 Daily 12 scoring and selection, Trello write-back, streaks, heartbeat jobs
+§16 scoring (now ordering Today's Focus), Trello write-back, streaks, heartbeat jobs
 (incl. the private-content guard on the Kiefer note), the cockpit data layer,
 the private sobriety track, and the full end-to-end router flows. An
 independent adversarial review pass ran over the whole codebase before v1;

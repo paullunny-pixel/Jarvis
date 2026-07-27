@@ -416,7 +416,7 @@ class JarvisRouter:
         it can never confabulate about its own connections."""
         s = self.settings
         lines = [
-            f"- Trello / Daily 12: {'CONNECTED' if self.daily12 is not None else 'not connected yet'}",
+            f"- Trello / Today's Focus: {'CONNECTED' if self.daily12 is not None else 'not connected yet'}",
             f"- Memory search: {'Voyage embeddings' if s.voyage_api_key else 'local fallback (Voyage key pending)'}",
             f"- Calendar: {'connected (read-only)' if s.calendar_ics_url else 'not connected yet'}",
             (
@@ -493,10 +493,65 @@ class JarvisRouter:
         "london": "Europe/London", "nottingham": "Europe/London", "home": "Europe/London",
     }
 
+    OVERRIDE_PHRASE = None  # compiled below
+
     async def _handle_life_signals(self, message: IncomingMessage, transcript: str) -> bool:
+        import json as _json
         import re
 
         lowered = transcript.lower()
+
+        # THE UNIVERSAL OVERRIDE (Master Update §1). Unconditional failsafe:
+        # nothing may suppress it. One confirm, reason logged, gates released
+        # for the rest of the day.
+        pending = await self.store.get("pending_override")
+        today_iso = datetime.now(
+            ZoneInfo(await self.store.get(TIMEZONE_KEY, self.settings.timezone_default))
+        ).date().isoformat()
+        if pending:
+            try:
+                state = _json.loads(pending)
+            except Exception:
+                state = {}
+            await self.store.set("pending_override", "")
+            if state.get("date") == today_iso and self.gates is not None:
+                if re.search(r"\b(no|leave it|never ?mind|cancel|as you were|forget it)\b", lowered):
+                    reply = "As you were, sir — everything stays in place."
+                else:
+                    await self.gates.override(
+                        state.get("items", []),
+                        transcript,
+                        datetime.fromisoformat(today_iso).date(),
+                    )
+                    reply = (
+                        "Understood — released, and it won't block you again today. "
+                        "Noted the why; on we go."
+                    )
+                await self.log.log("out", reply, chat_id=message.chat_id, meta={"override": True})
+                await self.telegram.send_text(message.chat_id, reply)
+                return True
+        override_hit = re.search(
+            r"^\s*override[,.!]?(\s+jarvis)?\s*$|\boverride,?\s+jarvis\b|\bmove on\b", lowered
+        )
+        if override_hit and self.gates is not None:
+            tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
+            now_local = datetime.now(ZoneInfo(tz_name))
+            outstanding = await self.gates.outstanding(now_local)
+            if outstanding:
+                await self.store.set(
+                    "pending_override",
+                    _json.dumps({"date": today_iso, "items": [g["id"] for g in outstanding]}),
+                )
+                reply = "You sure? What's up — one line and I'll release it."
+                await self.log.log("out", reply, chat_id=message.chat_id, meta={"override": True})
+                await self.telegram.send_text(message.chat_id, reply)
+                return True
+            if lowered.strip().strip(".,!").startswith("override"):
+                reply = "Nothing's locked right now, sir — the day's already open."
+                await self.log.log("out", reply, chat_id=message.chat_id)
+                await self.telegram.send_text(message.chat_id, reply)
+                return True
+            # A conversational "move on" with nothing blocked — not an override.
 
         # System check: "status" / "are you connected to trello?"
         if re.search(

@@ -75,6 +75,79 @@ class TestGateKeeper(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("photo", message.lower())
 
+    async def test_overridden_gate_stays_open_all_day(self):
+        await self.gates.override(["run"], "physio said rest today", TODAY)
+        outstanding = await self.gates.outstanding(at("10:00"))
+        self.assertEqual([g["id"] for g in outstanding], ["meds"])
+        rows = await self.db.fetch_all("SELECT item, reason FROM override_log")
+        self.assertEqual(rows[0]["item"], "run")
+        self.assertIn("physio", rows[0]["reason"])
+
+
+ALWAYS_BLOCKED = json.dumps(
+    [{"id": "run", "label": "the 5km run", "by": "00:00"},
+     {"id": "meds", "label": "supplements & medication", "by": "00:00"}]
+)
+NEVER_BLOCKED = json.dumps(
+    [{"id": "run", "label": "the 5km run", "by": "23:59"},
+     {"id": "meds", "label": "supplements & medication", "by": "23:59"}]
+)
+
+
+class TestUniversalOverride(unittest.IsolatedAsyncioTestCase):
+    """Master Update §1: 'override' releases any block — one confirm, logged."""
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = SqliteDatabase(os.path.join(self._dir.name, "t.db"))
+        await self.db.init()
+        from app.core.store import SettingsStore
+
+        self.store = SettingsStore(self.db)
+
+    async def asyncTearDown(self):
+        await self.db.close()
+        self._dir.cleanup()
+
+    async def test_override_releases_after_one_confirm(self):
+        h = GatedHarness(self.db)
+        await self.store.set("gates_config", ALWAYS_BLOCKED)
+        await h.router.handle_update(text_update("override", OWNER))
+        self.assertIn("You sure?", " ".join(h.texts()))
+        await h.router.handle_update(text_update("flight day, zero time this morning", OWNER))
+        self.assertIn("released", " ".join(h.texts()).lower())
+        # The override marks the REAL today (router clock), not the fixture date.
+        noon_today = datetime.now(TZ).replace(hour=12, minute=0)
+        self.assertEqual(await h.gates.outstanding(noon_today), [])
+        rows = await self.db.fetch_all("SELECT item, reason FROM override_log")
+        self.assertEqual({r["item"] for r in rows}, {"run", "meds"})
+        self.assertIn("flight day", rows[0]["reason"])
+
+    async def test_override_can_be_called_off(self):
+        h = GatedHarness(self.db)
+        await self.store.set("gates_config", ALWAYS_BLOCKED)
+        await h.router.handle_update(text_update("override jarvis", OWNER))
+        await h.router.handle_update(text_update("no, leave it — I'll do the run", OWNER))
+        self.assertIn("stays in place", " ".join(h.texts()).lower())
+        noon_today = datetime.now(TZ).replace(hour=12, minute=0)
+        self.assertEqual(len(await h.gates.outstanding(noon_today)), 2)
+
+    async def test_override_with_nothing_blocked(self):
+        h = GatedHarness(self.db)
+        await self.store.set("gates_config", NEVER_BLOCKED)
+        await h.router.handle_update(text_update("override", OWNER))
+        self.assertIn("already open", " ".join(h.texts()).lower())
+
+    async def test_conversational_move_on_is_not_hijacked(self):
+        h = GatedHarness(self.db)
+        await self.store.set("gates_config", NEVER_BLOCKED)
+        await h.router.handle_update(
+            text_update("right, let's move on to the villa numbers", OWNER)
+        )
+        combined = " ".join(h.texts())
+        self.assertNotIn("You sure?", combined)   # fell through to conversation
+        self.assertIn("Very good, sir.", combined)
+
 
 class GatedHarness:
     """Router + gates + a minimal Daily12 stub over mocked HTTP."""
