@@ -54,6 +54,11 @@ class FakeIMAP:
 
     def fetch(self, msg_id, spec):
         raw = self._messages[int(msg_id) - 1]
+        if "RFC822.SIZE" in spec:
+            return "OK", [b"%s (RFC822.SIZE %d)" % (msg_id, len(raw))]
+        if "HEADER" in spec:
+            header = raw.split(b"\n\n", 1)[0] + b"\n\n"
+            return "OK", [(b"1 (BODY[HEADER] {%d}" % len(header), header), b")"]
         return "OK", [(b"1 (BODY[] {%d}" % len(raw), raw), b")"]
 
 
@@ -145,6 +150,18 @@ class TestMailService(unittest.IsolatedAsyncioTestCase):
         text = await self.service.read("derma", limit=5)
         self.assertIn("Website QA list", text)
         self.assertNotIn("Padel", text)
+
+    async def test_huge_attachment_email_never_loads_fully(self):
+        # 2-in-a-day OOM guard: a big email gets headers only — subject
+        # still listed, the multi-megabyte body never enters memory.
+        big = raw_email(
+            "supplier@example.com", "Catalogue attached", "x" * 300_000, "BMI"
+        )
+        service = build_service(self.db, self.sent)
+        client = service.match("personal")[0]
+        client._imap = lambda: FakeIMAP([big])
+        text = await service.read("personal")
+        self.assertIn("Catalogue attached", text)
 
     async def test_one_broken_inbox_degrades_gracefully(self):
         service = build_service(self.db, self.sent, fail_login={"info@prodermis.com"})

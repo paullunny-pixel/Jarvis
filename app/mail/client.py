@@ -82,6 +82,23 @@ class MailClient:
         """{'unread': total count, 'messages': newest-first details}."""
         return await asyncio.to_thread(self._unread_sync, limit)
 
+    # Full-body fetches are capped: a newsletter is fine, a 25MB attachment
+    # email must never be pulled into RAM just for a snippet (512MB box!).
+    FULL_FETCH_CEILING_BYTES = 200_000
+
+    def _message_size(self, imap, msg_id) -> int:
+        import re as _re
+
+        try:
+            _, meta = imap.fetch(msg_id, "(RFC822.SIZE)")
+            blob = b" ".join(
+                part if isinstance(part, bytes) else part[0] for part in meta if part
+            )
+            match = _re.search(rb"RFC822\.SIZE (\d+)", blob)
+            return int(match.group(1)) if match else 0
+        except Exception:
+            return 0
+
     def _unread_sync(self, limit: int) -> dict:
         with self._imap() as imap:
             imap.login(self.account.address, self.account.app_password)
@@ -90,7 +107,13 @@ class MailClient:
             ids = data[0].split() if data and data[0] else []
             messages = []
             for msg_id in reversed(ids[-limit:]):
-                _, fetched = imap.fetch(msg_id, "(BODY.PEEK[])")
+                size = self._message_size(imap, msg_id)
+                spec = (
+                    "(BODY.PEEK[HEADER])"
+                    if size > self.FULL_FETCH_CEILING_BYTES
+                    else "(BODY.PEEK[])"
+                )
+                _, fetched = imap.fetch(msg_id, spec)
                 raw = next((part[1] for part in fetched if isinstance(part, tuple)), None)
                 if not raw:
                     continue
