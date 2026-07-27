@@ -121,9 +121,10 @@ class Daily12Service:
 
     async def sync(self) -> int:
         """Pull every card from every list on every in-scope board into the
-        tasks cache; retire cached cards that fall outside the scope; tag any
-        untagged cards."""
+        tasks cache; retire cached cards that fall outside the scope OR that
+        vanished from the board (deleted/archived/moved away); tag untagged."""
         boards = await self._scoped_boards()
+        run_started = utc_now_iso()
 
         total = 0
         for board in boards:
@@ -145,6 +146,13 @@ class Daily12Service:
         await self._db.execute(
             f"UPDATE tasks SET actionable = 0 WHERE board_id NOT IN ({placeholders})",
             tuple(ids),
+        )
+        # And cards this sync did NOT see on their own board are gone from
+        # Trello (deleted/archived) — retire them, or ghosts haunt the plan.
+        await self._db.execute(
+            f"UPDATE tasks SET actionable = 0"
+            f" WHERE board_id IN ({placeholders}) AND synced_at < ?",
+            (*ids, run_started),
         )
 
         await self._tag_untagged()
@@ -379,7 +387,11 @@ class Daily12Service:
             lines.append(self.GROUP_LABELS.get(group, group).upper())
             for r in group_rows:
                 mark = "✅" if r["done"] else "▫️"
-                due = f" (due {r['due_date'][:10]})" if r["due_date"] else ""
+                due = ""
+                if r["due_date"]:
+                    due_day = parse_iso_date(r["due_date"])
+                    overdue = " — OVERDUE" if due_day and due_day < plan_date else ""
+                    due = f" (due {r['due_date'][:10]}{overdue})"
                 lines.append(f"{mark} {r['position']}. {r['title']}{due}")
         return "\n".join(lines)
 
@@ -657,6 +669,30 @@ class Daily12Service:
             if name_lower in member.get("fullName", "").lower() or name_lower in member.get("username", "").lower():
                 return member["id"]
         return ""
+
+    async def archive(self, reference: str) -> str:
+        """Really remove a card (archive on Trello) — the capability behind
+        'delete the test order', so it can never again be claimed unperformed."""
+        reference_l = reference.strip().lower()
+        rows = await self._db.fetch_all("SELECT * FROM tasks WHERE actionable = 1")
+        scored = [
+            (sum(1 for w in reference_l.split() if w in r["title"].lower()), r) for r in rows
+        ]
+        scored.sort(key=lambda x: x[0], reverse=True)
+        task = scored[0][1] if scored and scored[0][0] > 0 else None
+        if task is None:
+            return f"Couldn't find '{reference}' on the board to archive."
+        try:
+            await self._trello.archive_card(task["trello_id"])
+        except Exception:
+            logger.exception("Trello archive failed")
+            return f"Trello wouldn't archive '{task['title']}' just now — try again shortly."
+        await self._db.execute("UPDATE tasks SET actionable = 0 WHERE id = ?", (task["id"],))
+        await self._db.execute(
+            "DELETE FROM daily_12 WHERE task_id = ? AND plan_date = ?",
+            (task["id"], (await self.paul_today()).isoformat()),
+        )
+        return f"Archived '{task['title']}' — actually gone from the board this time."
 
     async def comment(self, reference: str, text: str) -> str:
         task = await self.find_plan_task(reference)

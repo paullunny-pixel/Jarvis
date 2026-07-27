@@ -119,7 +119,16 @@ def build_system_prompt(
     tz = ZoneInfo(timezone)
     current = (now or datetime.now(tz)).astimezone(tz)
     stamp = current.strftime("%A %d %B %Y, %H:%M")
-    parts = [JARVIS_SYSTEM_PROMPT, f"\n\n---\nCurrent date & time for Paul: {stamp} ({timezone})."]
+    parts = [
+        JARVIS_SYSTEM_PROMPT,
+        f"\n\n---\nCurrent date & time for Paul: {stamp} ({timezone}).",
+        "\nAnchor ALL time reasoning to this moment: a deadline before now is PAST — call it "
+        "overdue or done-with, never upcoming. If it's Monday, the weekend and 'Sunday "
+        "midnight' are gone. Recalled memories may carry stale dates; this clock wins.",
+        "\nYou change Trello ONLY through the task pipeline. NEVER claim a card was created, "
+        "moved, archived or deleted unless an action result confirmed it — if you couldn't "
+        "do it, say so and tell Paul the phrase that will (e.g. 'archive the test order').",
+    ]
     if system_status:
         parts.append(
             "\n\nYour own system status — this is ground truth about your integrations; "

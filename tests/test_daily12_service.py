@@ -77,6 +77,7 @@ TAGS = [
 class ServiceHarness:
     def __init__(self, db):
         self.trello_writes = []
+        self.cards = list(CARDS)   # mutable — tests can delete cards mid-flight
 
         def trello_handler(request: httpx.Request) -> httpx.Response:
             path = urlparse(str(request.url)).path
@@ -90,7 +91,7 @@ class ServiceHarness:
             if path.endswith("/lists"):
                 return httpx.Response(200, json=LISTS)
             if path.endswith("/cards"):
-                return httpx.Response(200, json=CARDS)
+                return httpx.Response(200, json=self.cards)
             if path.endswith("/members"):
                 return httpx.Response(
                     200,
@@ -178,6 +179,35 @@ class TestService(unittest.IsolatedAsyncioTestCase):
     async def test_empty_day_is_a_clear_day(self):
         text = await self.service.format_plan(date(2026, 7, 20))
         self.assertIn("clear", text.lower())
+
+    async def test_deleted_card_stops_haunting_the_plan(self):
+        # The BMI ghost: a card deleted from Trello stayed actionable in the
+        # cache forever and Jarvis swore it was 'still sitting there'.
+        await self.service.sync()
+        row = await self.db.fetch_one("SELECT actionable FROM tasks WHERE trello_id = 'C1'")
+        self.assertEqual(row["actionable"], 1)
+        self.h.cards = [c for c in self.h.cards if c["id"] != "C1"]  # deleted on Trello
+        import asyncio
+
+        await asyncio.sleep(1.1)  # a later sync run (second-resolution timestamps)
+        await self.service.sync()
+        row = await self.db.fetch_one("SELECT actionable FROM tasks WHERE trello_id = 'C1'")
+        self.assertEqual(row["actionable"], 0)  # retired, not haunting
+
+    async def test_archive_really_removes_a_card(self):
+        await self.service.generate(date(2026, 7, 25))
+        result = await self.service.archive("website relaunch qa")
+        self.assertIn("Archived 'Website relaunch QA'", result)
+        closes = [w for w in self.h.trello_writes if "/cards/C2" in w[1]]
+        self.assertTrue(any(w[2].get("closed") == "true" for w in closes))
+        row = await self.db.fetch_one("SELECT actionable FROM tasks WHERE trello_id = 'C2'")
+        self.assertEqual(row["actionable"], 0)
+
+    async def test_overdue_due_dates_say_so(self):
+        # Monday must never hear 'due Sunday' as if it's still coming.
+        await self.service.generate(date(2026, 7, 27))
+        text = await self.service.format_plan(date(2026, 7, 27))
+        self.assertIn("2026-07-26 — OVERDUE", text)   # C1's Sunday deadline
 
     # ------- §3 planning rituals + §7 park-it (Trello writes) -------
 

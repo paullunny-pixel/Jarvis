@@ -43,6 +43,13 @@ class TestPersona(unittest.TestCase):
         self.assertIn("Villa balance", prompt)
         self.assertNotIn("Relevant knowledge", build_system_prompt())
 
+    def test_prompt_anchors_time_and_forbids_phantom_actions(self):
+        # The Monday-after bug: 'Sunday midnight' spoken of as upcoming, and a
+        # deletion claimed that never happened. Both rules ride every turn.
+        prompt = build_system_prompt()
+        self.assertIn("deadline before now is PAST", prompt)
+        self.assertIn("NEVER claim a card was created", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

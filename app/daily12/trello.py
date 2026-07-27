@@ -65,6 +65,9 @@ class TrelloClient:
     async def comment(self, card_id: str, text: str) -> None:
         await self._call("POST", f"/cards/{card_id}/actions/comments", text=text)
 
+    async def archive_card(self, card_id: str) -> None:
+        await self._call("PUT", f"/cards/{card_id}", closed="true")
+
     async def create_card(self, list_id: str, name: str, desc: str = "", due_iso: str = "") -> dict:
         params: dict[str, Any] = {"idList": list_id, "name": name}
         if desc:

@@ -199,10 +199,22 @@ class JarvisRouter:
         # 3. Think (with the second brain's recalled knowledge, Milestone 2).
         timezone = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
         memory_context = await self._recall(transcript)
+        system_status = self._integration_status()
+        # LIVE BOARD TRUTH: the brain sees Today's Focus as it actually is,
+        # so it can never insist a long-gone card is "still sitting there".
+        if self.daily12 is not None:
+            try:
+                board_truth = await self.daily12.format_plan()
+                system_status += (
+                    "\n\nLIVE BOARD TRUTH — Today's Focus as of this message "
+                    "(trust this over anything remembered):\n" + board_truth
+                )
+            except Exception:
+                logger.exception("Board truth injection failed — continuing without")
         system = build_system_prompt(
             timezone=timezone,
             memory_context=memory_context,
-            system_status=self._integration_status(),
+            system_status=system_status,
         )
         history = await self.log.as_claude_messages(self.settings.history_messages)
         raw_reply = await self.claude.converse(system, history)
