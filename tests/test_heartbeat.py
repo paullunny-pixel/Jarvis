@@ -553,6 +553,26 @@ class TestDayRhythmRouter(unittest.IsolatedAsyncioTestCase):
         self.assertIn("TODAY'S WINS", combined)
         self.assertIn("1.2L water", combined)
 
+    async def test_sync_trello_on_command(self):
+        from tests.test_daily12_service import ServiceHarness
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        self.h.router.daily12 = ServiceHarness(self.db).service
+        await self.h.router.handle_update(text_update("sync trello please", OWNER))
+        combined = " ".join(self.texts())
+        self.assertIn("Board synced", combined)
+        self.assertIn("cards read", combined)
+        row = await self.db.fetch_one("SELECT COUNT(*) AS n FROM tasks")
+        self.assertGreater(int(row["n"]), 0)   # the sync really ran
+
+    async def test_sync_trello_honest_when_unconnected(self):
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        await self.h.router.handle_update(text_update("refresh the board", OWNER))
+        self.assertIn("isn't connected", " ".join(self.texts()))
+
     async def test_whatsapp_catchup_summarises_recent_traffic(self):
         from datetime import datetime as dt, timezone as tz
 

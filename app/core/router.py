@@ -647,6 +647,29 @@ class JarvisRouter:
             await self.telegram.send_text(message.chat_id, reply)
             return True
 
+        # On-demand board sync: "sync trello" / "refresh the board".
+        if re.search(
+            r"\b(sync|resync|re-sync|refresh)\b.{0,16}\b(trello|board|cards)\b"
+            r"|\btrello\b.{0,12}\b(sync|refresh)\b",
+            lowered,
+        ):
+            if self.daily12 is None:
+                reply = "Trello isn't connected on this deployment, sir."
+            else:
+                try:
+                    count = await self.daily12.sync()
+                    health = await self.daily12.health()
+                    reply = (
+                        f"Board synced — {count} cards read, {health['cached_cards']} in play "
+                        f"from {health['board_name']}. Moves, ticks and deletions all landed."
+                    )
+                except Exception:
+                    logger.exception("Manual Trello sync failed")
+                    reply = "Trello wouldn't answer just now — I'll retry on the hourly pass."
+            await self.log.log("out", reply, chat_id=message.chat_id)
+            await self.telegram.send_text(message.chat_id, reply)
+            return True
+
         # WhatsApp SIM keep-alive confirmation: "SIM done" resets the clock.
         if re.search(r"\bsim\b.{0,24}\b(done|sent|sorted|topped up|kept alive)\b", lowered):
             if self.heartbeat is not None:
