@@ -37,6 +37,17 @@ style ONLY. Reply with just the guide.\
 """
 
 
+PERSON_ANALYSIS_SYSTEM = """\
+You are analysing messages PAUL wrote to ONE specific person: {name}
+({relationship_hint}). Capture how Paul talks to THIS person, which differs
+from his default register. Produce a compact guide (max ~200 words):
+- the register (banter? blunt shorthand? in-jokes? how casual?)
+- exact greetings, nicknames and sign-offs he uses with them
+- rhythm, warmth, directness, humour level with this person specifically
+Style ONLY — no confidential facts or content. Reply with just the guide.\
+"""
+
+
 def strip_quoted(text: str) -> str:
     """Keep only Paul's own words: cut everything from the first quoted-reply
     marker down, and drop '>' quoted lines."""
@@ -61,4 +72,17 @@ async def build_style_profile(claude, samples_by_account: dict[str, list[str]]) 
     corpus = "\n\n".join(sections)[:24000]
     history = [{"role": "user", "content": corpus}]
     guide = await claude.converse(ANALYSIS_SYSTEM, history)
+    return (guide or "").strip()
+
+
+async def build_person_profile(claude, name: str, samples: list[str], hint: str = "") -> str:
+    cleaned = [strip_quoted(s) for s in samples]
+    cleaned = [c for c in cleaned if len(c) > 20][:15]
+    if not cleaned:
+        return ""
+    corpus = "\n---\n".join(cleaned)[:16000]
+    system = PERSON_ANALYSIS_SYSTEM.format(
+        name=name.title(), relationship_hint=hint or "someone Paul writes to often"
+    )
+    guide = await claude.converse(system, [{"role": "user", "content": corpus}])
     return (guide or "").strip()

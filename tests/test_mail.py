@@ -19,10 +19,12 @@ from tests.test_router import OWNER, RouterHarness
 from tests.test_telegram_client import text_update
 
 
-def raw_email(from_addr: str, subject: str, body: str, from_name: str = "") -> bytes:
+def raw_email(from_addr: str, subject: str, body: str, from_name: str = "", to: str = "") -> bytes:
     msg = MIMEText(body, "plain", "utf-8")
     msg["From"] = f"{from_name} <{from_addr}>" if from_name else from_addr
     msg["Subject"] = subject
+    if to:
+        msg["To"] = to
     msg["Date"] = "Fri, 24 Jul 2026 10:00:00 +0000"
     return msg.as_bytes()
 
@@ -56,7 +58,18 @@ class FakeIMAP:
         return "OK", []
 
     def search(self, charset, criterion):
-        ids = b" ".join(str(i + 1).encode() for i in range(len(self._messages)))
+        import re as _re
+
+        matches = range(1, len(self._messages) + 1)
+        to_filter = _re.search(r'TO "([^"]+)"', str(criterion))
+        if to_filter:
+            addr = to_filter.group(1).lower().encode()
+            matches = [
+                i + 1
+                for i, raw in enumerate(self._messages)
+                if addr in raw.split(b"\n\n", 1)[0].lower()
+            ]
+        ids = b" ".join(str(i).encode() for i in matches)
         return "OK", [ids]
 
     def fetch(self, msg_id, spec):
@@ -337,6 +350,73 @@ class TestWritingStyle(unittest.IsolatedAsyncioTestCase):
         self.assertIn("smash the surveys", corpus)        # voice notes in
         self.assertIn("labels look class", corpus)        # his WhatsApp lines in
         self.assertNotIn("[private exchange]", corpus)    # the wall holds
+
+    async def test_person_style_kiefer_is_not_generic_paul(self):
+        captured = {}
+
+        def claude_handler(request: httpx.Request) -> httpx.Response:
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json={"content": [{"type": "text", "text":
+                "Full banter, opens 'Kief', signs off 'PL'."}]})
+
+        claude = ClaudeClient("K", transport=httpx.MockTransport(claude_handler))
+        await self.service.add_contact("Kiefer", phone="+447700900123",
+                                       email="kiefer@dermadirect.co.uk", note="CFO and best mate")
+        await self.service.add_person_sample(
+            "kiefer", "Kief you absolute legend, numbers look filthy. Beers Friday. PL"
+        )
+        result = await self.service.learn_person_style(claude, "kiefer")
+        self.assertIn("kept separate from generic-you", result)
+        self.assertIn("absolute legend", captured["messages"][0]["content"])
+        styles = await self.service.person_styles()
+        self.assertIn("Kiefer", styles)
+        self.assertEqual(styles["Kiefer"]["email"], "kiefer@dermadirect.co.uk")
+        self.assertIn("banter", styles["Kiefer"]["guide"])
+
+    async def test_learn_person_style_pulls_emails_sent_to_them(self):
+        # A sent email TO Harry counts for Harry's voice — and only his.
+        harry_mail = raw_email(
+            "info@dermadirect.co.uk", "Re: launch", "Harry lad — ship it. Shout if it wobbles.",
+            to="harry@dermadirect.co.uk",
+        )
+        service = build_service(self.db, [])
+        client = service.match("derma")[0]
+        client._imap = lambda: FakeIMAP([], sent=[harry_mail])
+        captured = {}
+
+        def claude_handler(request: httpx.Request) -> httpx.Response:
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json={"content": [{"type": "text", "text": "Blunt, warm."}]})
+
+        claude = ClaudeClient("K", transport=httpx.MockTransport(claude_handler))
+        await service.add_contact("Harry", email="harry@dermadirect.co.uk")
+        result = await service.learn_person_style(claude, "harry")
+        self.assertIn("learned from", result)
+        self.assertIn("ship it", captured["messages"][0]["content"])
+
+    async def test_person_voices_ride_into_the_draft_prompt(self):
+        captured = {}
+
+        def claude_handler(request: httpx.Request) -> httpx.Response:
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json={"content": [{"type": "text", "text": "[]"}]})
+
+        claude = ClaudeClient("K", transport=httpx.MockTransport(claude_handler))
+        await commands.parse_actions(
+            claude, "reply to kiefer saying sorted", ["Personal"], [],
+            style="Generic Paul guide.",
+            person_styles={"Kiefer": {"email": "kiefer@x.com", "phone": "", "guide": "Full banter, PL."}},
+        )
+        self.assertIn("PERSON-SPECIFIC voices", captured["system"])
+        self.assertIn("Full banter, PL.", captured["system"])
+        self.assertIn("Generic Paul guide.", captured["system"])
+
+    async def test_unknown_person_gets_a_helpful_nudge(self):
+        claude = ClaudeClient("K", transport=httpx.MockTransport(
+            lambda r: httpx.Response(200, json={"content": []})
+        ))
+        result = await self.service.learn_person_style(claude, "steph")
+        self.assertIn("add style contact Steph", result)
 
     async def test_learn_style_honest_with_no_material(self):
         def claude_handler(request: httpx.Request) -> httpx.Response:

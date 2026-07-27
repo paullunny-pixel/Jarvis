@@ -132,12 +132,12 @@ class MailClient:
 
     SENT_FOLDERS = ('"[Gmail]/Sent Mail"', "Sent", '"Sent Items"')
 
-    async def sent_samples(self, limit: int = 15) -> list[str]:
-        """Bodies of Paul's OWN recent sent emails — the raw material for the
-        writing-style profile. Size-capped like everything else."""
-        return await asyncio.to_thread(self._sent_samples_sync, limit)
+    async def sent_samples(self, limit: int = 15, to_address: str = "") -> list[str]:
+        """Bodies of Paul's OWN sent emails — optionally only those addressed
+        to one person (per-person style). Size-capped like everything else."""
+        return await asyncio.to_thread(self._sent_samples_sync, limit, to_address)
 
-    def _sent_samples_sync(self, limit: int) -> list[str]:
+    def _sent_samples_sync(self, limit: int, to_address: str = "") -> list[str]:
         with self._imap() as imap:
             imap.login(self.account.address, self.account.app_password)
             selected = False
@@ -148,7 +148,8 @@ class MailClient:
                     break
             if not selected:
                 return []
-            _, data = imap.search(None, "ALL")
+            criterion = f'TO "{to_address}"' if to_address else "ALL"
+            _, data = imap.search(None, criterion)
             ids = data[0].split() if data and data[0] else []
             samples = []
             for msg_id in reversed(ids[-limit:]):

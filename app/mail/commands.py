@@ -73,17 +73,27 @@ def cancels_send(text: str) -> bool:
 
 async def parse_actions(
     claude: ClaudeClient, text: str, labels: list[str], listing: list[dict],
-    style: str = "",
+    style: str = "", person_styles: dict[str, dict] | None = None,
 ) -> list[dict[str, Any]]:
     shown = "\n".join(
         f"{i}. [{m['account']}] {m['from']} — {m['subject']}" for i, m in enumerate(listing, 1)
     )
     style_block = (
         "Write in PAUL'S OWN VOICE — match this style guide exactly (learned from "
-        "his real sent emails):\n" + style
+        "his real voice notes and messages):\n" + style
         if style
         else "Write in Paul's professional voice."
     )
+    if person_styles:
+        lines = [
+            f"— {name} ({info.get('email') or info.get('phone') or 'no address'}): {info['guide']}"
+            for name, info in person_styles.items()
+        ]
+        style_block += (
+            "\nPERSON-SPECIFIC voices — when the draft is TO one of these people "
+            "(matched by name or address), write in THEIR voice instead of the default:\n"
+            + "\n".join(lines)
+        )
     try:
         raw = await claude.quick(
             text,

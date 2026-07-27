@@ -1100,18 +1100,58 @@ class JarvisRouter:
             if pending is not None and mail_commands.cancels_send(transcript):
                 reply = await self.mail.cancel_draft()
                 return await self._say(message, reply)
-            # "learn my style" — study Paul's own voice notes & messages.
-            if re.search(
-                r"\b(learn|study|copy|refresh)\b.{0,20}\b(email |writing )?(style|voice)\b",
+            # Style contacts: "add style contact Kiefer, +447..., kiefer@x.com"
+            contact_hit = re.search(
+                r"\badd\b.{0,16}\bstyle contact\b[:,]?\s*(.+)$", transcript, re.IGNORECASE
+            )
+            if contact_hit:
+                remainder = contact_hit.group(1)
+                email_m = re.search(r"[\w.+-]+@[\w-]+\.[\w.]+", remainder)
+                phone_m = re.search(r"\+?\d[\d\s]{8,14}\d", remainder)
+                note_m = re.search(r"[-—]\s*([^,]+)$", remainder)
+                scrub = remainder
+                for m in (email_m, phone_m, note_m):
+                    if m:
+                        scrub = scrub.replace(m.group(0), " ")
+                name = re.sub(r"[^A-Za-z ]", " ", scrub).strip().split()
+                reply = await self.mail.add_contact(
+                    " ".join(name[:2]) if name else "",
+                    phone=(phone_m.group(0).replace(" ", "") if phone_m else ""),
+                    email=(email_m.group(0) if email_m else ""),
+                    note=(note_m.group(1).strip() if note_m else ""),
+                )
+                return await self._say(message, reply)
+
+            # "teach Kiefer style: <example>" / "this is how I write to Harry: ..."
+            teach_hit = re.search(
+                r"^\s*teach\s+(?:my\s+)?(\w+)(?:'s)?\s+style\s*[:,\-]\s*(.+)$"
+                r"|\bthis is how i (?:write|talk|speak) to (\w+)\s*[:,\-]\s*(.+)$",
+                transcript, re.IGNORECASE | re.DOTALL,
+            )
+            if teach_hit:
+                who = teach_hit.group(1) or teach_hit.group(3)
+                sample = teach_hit.group(2) or teach_hit.group(4)
+                reply = await self.mail.add_person_sample(who, sample)
+                return await self._say(message, reply)
+
+            # "learn my style" (generic) / "learn my Kiefer style" (per-person)
+            learn_hit = re.search(
+                r"\b(?:learn|study|copy|refresh)\b(?:\s+my)?\s+(\w+)?\s*(?:email |writing )?(?:style|voice)\b",
                 transcript, re.IGNORECASE,
-            ):
-                reply = await self.mail.learn_style(self.claude)
+            )
+            if learn_hit:
+                who = (learn_hit.group(1) or "").lower()
+                if who in ("", "my", "own", "email", "writing", "generic"):
+                    reply = await self.mail.learn_style(self.claude)
+                else:
+                    reply = await self.mail.learn_person_style(self.claude, who)
                 return await self._say(message, reply)
             if not mail_commands.mentions_email(transcript):
                 return False
             actions = await mail_commands.parse_actions(
                 self.claude, transcript, self.mail.labels, await self.mail.last_listing(),
                 style=await self.mail.style_profile(),
+                person_styles=await self.mail.person_styles(),
             )
             if not actions:
                 return False  # ordinary conversation after all

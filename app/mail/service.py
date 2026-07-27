@@ -239,6 +239,99 @@ class MailService:
     async def health(self) -> list[dict]:
         return list(await asyncio.gather(*(c.check() for c in self._clients)))
 
+    # ------------------------------------- per-person voices (Kiefer ≠ everyone)
+
+    CONTACTS_KEY = "style_contacts"
+
+    async def contacts(self) -> list[dict]:
+        try:
+            return json.loads(await self._settings.get(self.CONTACTS_KEY, "[]"))
+        except Exception:
+            return []
+
+    async def add_contact(self, name: str, phone: str = "", email: str = "", note: str = "") -> str:
+        name = name.strip().title()
+        if not name:
+            return "Give me at least a name, sir."
+        people = [c for c in await self.contacts() if c["name"].lower() != name.lower()]
+        people.append({"name": name, "phone": phone.strip(), "email": email.strip().lower(),
+                       "note": note.strip()})
+        await self._settings.set(self.CONTACTS_KEY, json.dumps(people))
+        bits = " · ".join(b for b in (phone, email, note) if b)
+        return (
+            f"{name} registered as a style contact{(' (' + bits + ')') if bits else ''}. "
+            f"Now either 'learn my {name} style' (I'll study emails you sent them) or "
+            f"'teach {name} style: <paste how you actually write to them>'."
+        )
+
+    def _contact(self, people: list[dict], name: str) -> dict | None:
+        name = name.strip().lower()
+        return next((c for c in people if c["name"].lower() == name), None)
+
+    async def add_person_sample(self, name: str, text: str) -> str:
+        person = self._contact(await self.contacts(), name)
+        if person is None:
+            return f"I don't have {name.title()} as a style contact yet — 'add style contact {name.title()}' first."
+        key = f"style_samples:{person['name'].lower()}"
+        try:
+            samples = json.loads(await self._settings.get(key, "[]"))
+        except Exception:
+            samples = []
+        samples.append(text.strip())
+        await self._settings.set(key, json.dumps(samples[-20:]))
+        return (
+            f"Noted — that's {len(samples)} example(s) of your {person['name']} voice. "
+            f"Say 'learn my {person['name']} style' when you've fed me enough."
+        )
+
+    async def learn_person_style(self, claude, name: str) -> str:
+        from app.mail.style import build_person_profile
+
+        person = self._contact(await self.contacts(), name)
+        if person is None:
+            return (
+                f"I don't know {name.title()} yet — say 'add style contact {name.title()}, "
+                "<mobile>, <email>' first and I'll map them."
+            )
+        key = person["name"].lower()
+        try:
+            samples = json.loads(await self._settings.get(f"style_samples:{key}", "[]"))
+        except Exception:
+            samples = []
+        if person.get("email"):
+            results = await asyncio.gather(
+                *(c.sent_samples(limit=10, to_address=person["email"]) for c in self._clients),
+                return_exceptions=True,
+            )
+            for r in results:
+                if not isinstance(r, Exception):
+                    samples.extend(r)
+        if not samples:
+            return (
+                f"Nothing of yours addressed to {person['name']} yet. Fastest fix: "
+                f"'teach {person['name']} style: <paste a message you really sent them>'."
+            )
+        guide = await build_person_profile(claude, person["name"], samples, person.get("note", ""))
+        if not guide:
+            return "That study didn't take — try again shortly."
+        await self._settings.set(f"style_person:{key}", guide)
+        return (
+            f"Got it — your {person['name']} voice is learned from {len(samples)} message(s) "
+            "and kept separate from generic-you. Drafts to them switch over automatically."
+        )
+
+    async def person_styles(self) -> dict[str, dict]:
+        """name → {email, phone, guide} for everyone with a learned voice."""
+        result = {}
+        for person in await self.contacts():
+            guide = await self._settings.get(f"style_person:{person['name'].lower()}", "")
+            if guide:
+                result[person["name"]] = {
+                    "email": person.get("email", ""), "phone": person.get("phone", ""),
+                    "guide": guide,
+                }
+        return result
+
     # -------------------------------------------------- Paul's writing voice
 
     async def style_profile(self) -> str:
