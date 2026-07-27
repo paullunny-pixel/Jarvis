@@ -28,6 +28,14 @@ class TestAgentConfig(unittest.TestCase):
         self.assertIn("mark_done", names)
         for t in tools:
             self.assertIn("/voice/tools/SECRET99/", t["api_schema"]["url"])
+            # ElevenLabs 422s on parameters without descriptions, and on
+            # empty body schemas — every property described, or no schema.
+            schema = t["api_schema"].get("request_body_schema")
+            if schema is None:
+                continue
+            self.assertTrue(schema["properties"])
+            for prop in schema["properties"].values():
+                self.assertIn("description", prop)
 
     def test_no_public_url_means_no_tools(self):
         config = build_agent_config("", "V", "S")

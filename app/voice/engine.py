@@ -43,19 +43,18 @@ on. Same Jarvis, same humour, same warmth — just live.\
 
 
 def _tool(name: str, description: str, url: str, properties: dict, required: list[str]) -> dict:
+    api_schema: dict = {"url": url, "method": "POST"}
+    if properties:  # zero-arg tools send no body schema at all
+        api_schema["request_body_schema"] = {
+            "type": "object",
+            "properties": properties,
+            "required": required,
+        }
     return {
         "type": "webhook",
         "name": name,
         "description": description,
-        "api_schema": {
-            "url": url,
-            "method": "POST",
-            "request_body_schema": {
-                "type": "object",
-                "properties": properties,
-                "required": required,
-            },
-        },
+        "api_schema": api_schema,
     }
 
 
@@ -69,8 +68,8 @@ def build_agent_config(public_url: str, voice_id: str, tool_secret: str) -> dict
             _tool("recall_memory", "Search Jarvis's second brain (Paul's knowledge base) for relevant facts before answering.", f"{base}/recall_memory", query, ["query"]),
             _tool("todays_focus", "Get Paul's Today's Focus task list with done/undone state.", f"{base}/todays_focus", {}, []),
             _tool("mark_done", "Mark a task on Today's Focus as done (moves the Trello card). Only when Paul explicitly says it's done.", f"{base}/mark_done", {"reference": {"type": "string", "description": "Position number or title words"}}, ["reference"]),
-            _tool("create_task", "Create a new Trello card for Paul or a teammate.", f"{base}/create_task", {"title": {"type": "string"}, "assignee": {"type": "string", "description": "Teammate name or empty"}}, ["title"]),
-            _tool("log_water", "Log water Paul just drank, in ml (default 300). Only when he explicitly says he drank.", f"{base}/log_water", {"ml": {"type": "integer"}}, []),
+            _tool("create_task", "Create a new Trello card for Paul or a teammate.", f"{base}/create_task", {"title": {"type": "string", "description": "The card title, short and clear"}, "assignee": {"type": "string", "description": "Teammate name, or empty for unassigned"}}, ["title"]),
+            _tool("log_water", "Log water Paul just drank, in ml (default 300). Only when he explicitly says he drank.", f"{base}/log_water", {"ml": {"type": "integer", "description": "Millilitres drunk, e.g. 300"}}, []),
             _tool("log_movement", "Log a movement break Paul just did. Only when he explicitly says he moved.", f"{base}/log_movement", {}, []),
             _tool("inbox_overview", "Unread email counts and headlines across all of Paul's inboxes.", f"{base}/inbox_overview", {}, []),
         ]
