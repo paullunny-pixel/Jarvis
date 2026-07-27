@@ -482,6 +482,25 @@ class TestDayRhythmRouter(unittest.IsolatedAsyncioTestCase):
             if m in ("sendMessage", "sendVoice")
         ]
 
+    async def test_lights_out_fires_once_and_respects_goodnight(self):
+        await self.jobs.lights_out()
+        self.assertEqual(len(self.h_jobs_texts()), 1)
+        self.assertIn("lights out", self.h_jobs_texts()[0].lower())
+        await self.jobs.lights_out()
+        self.assertEqual(len(self.h_jobs_texts()), 1)   # once per night
+        await self.jobs.lights_out_chaser()
+        self.assertEqual(len(self.h_jobs_texts()), 2)   # still up at 23:00 → chased
+
+    async def test_lights_out_stays_silent_after_goodnight(self):
+        today = await self.jobs._today()
+        await self.db.execute(
+            "INSERT INTO sleep_log (day, goodnight_time, tz) VALUES (?, ?, ?)",
+            (today.isoformat(), "2026-07-26T21:20:00+00:00", "Europe/London"),
+        )
+        await self.jobs.lights_out()
+        await self.jobs.lights_out_chaser()
+        self.assertEqual(self.h_jobs_texts(), [])
+
     async def test_evening_review_leads_with_wins(self):
         today = await self.jobs._today()
         await self.jobs.log_water(today, 1200)

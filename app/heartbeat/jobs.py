@@ -184,10 +184,12 @@ class HeartbeatJobs:
             out = await self.claude.quick(
                 f"{instruction}\n\nData:\n{data}\n\nReply with the message only — no preamble.",
                 system=(
-                    "You are Jarvis, Paul's British AI chief-of-staff in the mould of the great "
-                    "fictional AI butlers: impeccably courteous, composed, precise, dry affectionate "
-                    "wit, occasionally 'sir'. Direct and candid but never passive-aggressive, never "
-                    "sarcastic, never guilt-tripping. Concise — this is a Telegram message."
+                    "You are Jarvis, Paul's British AI chief-of-staff — composed and precise but "
+                    "genuinely good company: warm, playful, a proper sense of humour, occasionally "
+                    "'sir'. Quips and affectionate banter welcome; celebrate wins with real feeling. "
+                    "Direct and candid but never passive-aggressive, never guilt-tripping; when he's "
+                    "struggling, drop the comedy and be the steady friend. Concise — this is a "
+                    "Telegram message."
                 ),
                 max_tokens=max_tokens,
             )
@@ -619,8 +621,39 @@ class HeartbeatJobs:
             else "Say 'goodnight — wake me as normal' and I'll run the 05:00 sequence."
         )
         await self._send_voice(
-            f"Wind-down time, sir. Screens dimming, tomorrow's cards are set — a 05:00 start "
-            f"wants lights out by ten. {arm_line}"
+            f"Wind-down time, sir. Screens dimming, tomorrow's cards are set — lights out at "
+            f"half ten, that's the deal we made. {arm_line}"
+        )
+
+    async def lights_out(self) -> None:
+        """22:30 sharp, Paul's rule: lights out, no negotiation — protects the
+        six hours before the 05:00 wake."""
+        today = await self._today()
+        gone = await self.db.fetch_one(
+            "SELECT id FROM sleep_log WHERE day = ?", (today.isoformat(),)
+        )
+        if gone:
+            return
+        if not await self._once(f"lightsout:{today.isoformat()}"):
+            return
+        await self._send_voice(
+            "Half past ten, sir — lights out, your rule, and a rather good one. Phone on the "
+            "nightstand, 'goodnight' to me, and 05:00-you wakes up a hero."
+        )
+
+    async def lights_out_chaser(self) -> None:
+        """23:00: still up? One firmer word — then Jarvis lets the man sleep."""
+        today = await self._today()
+        gone = await self.db.fetch_one(
+            "SELECT id FROM sleep_log WHERE day = ?", (today.isoformat(),)
+        )
+        if gone:
+            return
+        if not await self._once(f"lightsout2:{today.isoformat()}"):
+            return
+        await self._send_voice(
+            "Eleven o'clock, sir. Every minute now comes straight out of tomorrow's 05:00. "
+            "Lights out — I'll take the goodnight as you fade."
         )
 
     # ------------------------------------------------------------ shared

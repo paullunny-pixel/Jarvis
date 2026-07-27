@@ -16,7 +16,7 @@ non-skippable gates (run + meds).
 
 ## Commands
 
-- Tests: `python -m unittest discover -s tests` (262 tests; stdlib unittest,
+- Tests: `python -m unittest discover -s tests` (264 tests; stdlib unittest,
   NOT pytest — keep it that way. Only `requirements.txt` is needed; two PDF
   tests also use `reportlab` and skip automatically when it isn't installed)
 - No local run needed for most work; local dev uses SQLite automatically
@@ -63,8 +63,10 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
    task/streak data and passes `assert_no_private_content` before sending.
    Sobriety rows are encrypted with `PrivateBox` (PRIVATE_ROOM_KEY env).
 2. **Persona register** (`app/persona.py`): composed, courteous British AI
-   aide; dry affectionate wit; firm through candour; NEVER passive-aggressive.
-   Paul explicitly rejected a snarkier tone — keep it.
+   aide who is genuinely good company — warm, playful, a real sense of humour
+   (Paul asked for this, July 2026; the earlier formal register read as cold).
+   Hard lines unchanged: NEVER passive-aggressive, never sniping, never
+   guilt-tripping; comedy drops when Paul is struggling.
 3. **§16 scoring weights** (0.35/0.25/0.25/0.15) are spec-locked; tunable via
    arguments, not by editing constants casually.
 4. **Negation-aware logging:** phrase matchers only nominate; Haiku confirms
