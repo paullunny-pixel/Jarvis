@@ -405,6 +405,39 @@ class Daily12Service:
                 lines.append(f"{mark} {r['position']}. {r['title']}{due}")
         return "\n".join(lines)
 
+    DONE_LISTS = {"done", "complete", "completed"}
+    PARKED_LISTS = {"blocked", "waiting", "blocked/waiting"}
+
+    async def recently_cleared(self, days: int = 7) -> str:
+        """Cards that recently LEFT play — ticked to Done, archived, or parked.
+        Injected beside the live plan: absence from the plan alone can't prove
+        a remembered obligation is finished, so the brain gets told outright
+        (the BMI-surveys bug: memory kept chasing cards the board had closed)."""
+        cutoff = (
+            datetime.now(ZoneInfo("UTC")) - timedelta(days=days)
+        ).isoformat(timespec="seconds")
+        rows = await self._db.fetch_all(
+            "SELECT title, list_name FROM tasks WHERE actionable = 0"
+            " AND synced_at >= ? ORDER BY synced_at DESC LIMIT 12",
+            (cutoff,),
+        )
+        if not rows:
+            return ""
+        lines = [
+            "RECENTLY CLEARED OR PARKED — these are NOT open tasks. Never say "
+            "one is still due or chase it, whatever memory or old chat says:"
+        ]
+        for r in rows:
+            list_name = (r["list_name"] or "").strip().lower()
+            if list_name in self.DONE_LISTS:
+                state = "DONE — completed on the board"
+            elif list_name in self.PARKED_LISTS:
+                state = f"parked in {r['list_name']} (deliberately not active)"
+            else:
+                state = "gone from the board (archived or removed)"
+            lines.append(f"- {r['title']} — {state}")
+        return "\n".join(lines)
+
     async def frog(self, plan_date: date | None = None) -> str:
         """Eat-the-frog (§8): the most-avoided undone item on today's list."""
         plan_date = plan_date or await self.paul_today()

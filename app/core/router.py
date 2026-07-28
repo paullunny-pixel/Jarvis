@@ -307,6 +307,16 @@ class JarvisRouter:
                     "\n\nLIVE BOARD TRUTH — Today's Focus as of this message "
                     "(trust this over anything remembered):\n" + board_truth
                 )
+                cleared = await self.daily12.recently_cleared()
+                if cleared:
+                    system_status += "\n\n" + cleared
+                system_status += (
+                    "\n\nSTALENESS RULE: memory and past conversation go stale; the "
+                    "board above is now. A task you remember as due that is not on "
+                    "the live board has been dealt with, cleared or removed — never "
+                    "present it as still owed. If it genuinely matters, ask Paul or "
+                    "offer to check, don't assert."
+                )
             except Exception:
                 logger.exception("Board truth injection failed — continuing without")
         system = build_system_prompt(

@@ -607,6 +607,50 @@ class TestCardMatching(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(archived, [])  # nothing was binned on a guess
 
 
+class TestRecentlyCleared(unittest.IsolatedAsyncioTestCase):
+    """The BMI-surveys bug (28 Jul): the brain kept chasing cards the board
+    had already closed. The live-truth injection now names what's cleared."""
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = SqliteDatabase(os.path.join(self._dir.name, "t.db"))
+        await self.db.init()
+        self.service = MultiBoardHarness(self.db).service
+
+    async def asyncTearDown(self):
+        await self.db.close()
+        self._dir.cleanup()
+
+    async def _task(self, title, list_name, actionable, synced_at):
+        await self.db.execute(
+            "INSERT INTO tasks (trello_id, title, list_name, board_id, board_name,"
+            " actionable, score, synced_at) VALUES (?, ?, ?, 'B1', 'Master Board',"
+            " ?, 0, ?)",
+            (f"T-{title[:12]}", title, list_name, actionable, synced_at),
+        )
+
+    async def test_cleared_cards_reported_with_their_real_state(self):
+        from datetime import datetime as dt, timedelta as td, timezone as tz
+
+        now = dt.now(tz.utc).isoformat(timespec="seconds")
+        old = (dt.now(tz.utc) - td(days=30)).isoformat(timespec="seconds")
+        await self._task("BMI doctor surveys", "Done", 0, now)
+        await self._task("Chase supplier", "Blocked", 0, now)
+        await self._task("Vanished card", "Paul Today", 0, now)
+        await self._task("Ancient history", "Done", 0, old)
+        await self._task("Still live", "Paul Today", 1, now)
+        text = await self.service.recently_cleared()
+        self.assertIn("BMI doctor surveys — DONE", text)
+        self.assertIn("Chase supplier — parked in Blocked", text)
+        self.assertIn("Vanished card — gone from the board", text)
+        self.assertNotIn("Ancient history", text)   # outside the window
+        self.assertNotIn("Still live", text)        # still in play
+        self.assertIn("NOT open tasks", text)
+
+    async def test_quiet_board_injects_nothing(self):
+        self.assertEqual(await self.service.recently_cleared(), "")
+
+
 class TestCalendarHonesty(unittest.IsolatedAsyncioTestCase):
     """Calendar write-back isn't built yet — a calendar ask must be parked
     honestly, never silently dropped (28 Jul: only the Trello half of a

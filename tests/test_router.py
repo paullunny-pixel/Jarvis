@@ -85,6 +85,28 @@ class TestRouter(unittest.IsolatedAsyncioTestCase):
         await self.db.close()
         self._dir.cleanup()
 
+    async def test_brain_is_told_about_recently_cleared_cards(self):
+        # The BMI-surveys bug: memory kept insisting closed cards were due.
+        # The brain's system prompt must name what's cleared and carry the
+        # staleness rule, so a remembered obligation can be contradicted.
+        from datetime import datetime as dt, timezone as tz
+
+        from tests.test_daily12_service import MultiBoardHarness
+
+        h = RouterHarness(self.db)
+        h.router.daily12 = MultiBoardHarness(self.db).service
+        await self.db.execute(
+            "INSERT INTO tasks (trello_id, title, list_name, board_id, board_name,"
+            " actionable, score, synced_at) VALUES ('TX', 'BMI doctor surveys',"
+            " 'Done', 'B1', 'Master Board', 0, 0, ?)",
+            (dt.now(tz.utc).isoformat(timespec="seconds"),),
+        )
+        await h.router.handle_update(text_update("morning, how are we", OWNER))
+        system = h.claude_requests[-1]["system"]
+        self.assertIn("RECENTLY CLEARED", system)
+        self.assertIn("BMI doctor surveys — DONE", system)
+        self.assertIn("STALENESS RULE", system)
+
     async def test_text_in_short_reply_comes_back_as_voice(self):
         h = RouterHarness(self.db)
         await h.router.handle_update(text_update("what's first today?", OWNER))
