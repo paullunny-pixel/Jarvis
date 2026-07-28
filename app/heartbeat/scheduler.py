@@ -73,6 +73,10 @@ class Heartbeat:
             ("med_trt", partial(self.jobs.med_reminder, "trt"), CronTrigger(day_of_week="sat", hour=10, minute=0, timezone=timezone), 1800),
             # §10: wind-down check-in after the 21:00 review
             ("bedtime_nudge", self.jobs.bedtime_nudge, CronTrigger(hour=21, minute=45, timezone=timezone), 1800),
+            # 3× daily work-group digest (since-last-update, watermarked)
+            ("digest_am", self.jobs.group_digest, CronTrigger(hour=8, minute=30, timezone=timezone), 1800),
+            ("digest_noon", self.jobs.group_digest, CronTrigger(hour=13, minute=0, timezone=timezone), 1800),
+            ("digest_eve", self.jobs.group_digest, CronTrigger(hour=18, minute=0, timezone=timezone), 1800),
             # Cache honesty: hourly board re-sync through the working day
             ("trello_resync", self.jobs.trello_resync, CronTrigger(hour="7-22", minute=40, timezone=timezone), 900),
             # Paul's rule: 22:30 lights out without fail (plus one 23:00 chaser)

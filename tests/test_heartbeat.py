@@ -641,6 +641,44 @@ class TestDayRhythmRouter(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("re-add me", " ".join(self.texts()))
 
+    async def test_group_digest_covers_since_last_and_watermarks(self):
+        from datetime import datetime as dt, timezone as tz
+
+        now = dt.now(tz.utc).isoformat(timespec="seconds")
+        for i, msg in enumerate(
+            ("Registration docs submitted", "Stuck waiting on the notary", "Website fix shipped")
+        ):
+            await self.db.execute(
+                "INSERT INTO telegram_ingest (ts, chat_id, chat_title, company_tag, sender,"
+                " sender_id, kind, message) VALUES (?, -3, 'Prodermis Ops', 'prodermis',"
+                " 'Alicia', 778, 'text', ?)",
+                (now, msg),
+            )
+        sent = await self.jobs.group_digest(force=True)
+        self.assertTrue(sent)
+        digest = self.h_jobs_texts()[-1]
+        self.assertIn("GROUP DIGEST — 3 message(s)", digest)
+        self.assertIn("Right then, Paul.", digest)   # harness Claude's summary text
+        # Watermarked: nothing new → no second digest, and honest on demand.
+        self.assertFalse(await self.jobs.group_digest(force=True))
+        # A NEW message after the watermark gets covered next time.
+        await self.db.execute(
+            "INSERT INTO telegram_ingest (ts, chat_id, chat_title, company_tag, sender,"
+            " sender_id, kind, message) VALUES (?, -3, 'Prodermis Ops', 'prodermis',"
+            " 'Alicia', 778, 'text', 'One more thing')",
+            (now,),
+        )
+        await self.db.execute("DELETE FROM nudge_state WHERE nudge_key LIKE 'msg:%'")
+        self.assertTrue(await self.jobs.group_digest(force=True))
+        self.assertIn("1 message(s)", self.h_jobs_texts()[-1])
+
+    async def test_group_digest_command_honest_when_caught_up(self):
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        await self.h.router.handle_update(text_update("group digest now", OWNER))
+        self.assertIn("all caught up", " ".join(self.texts()))
+
     async def test_group_catchup_honest_when_no_groups_yet(self):
         from tests.test_router import OWNER
         from tests.test_telegram_client import text_update

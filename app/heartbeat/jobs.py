@@ -675,6 +675,59 @@ class HeartbeatJobs:
             "Lights out — I'll take the goodnight as you fade."
         )
 
+    # ------------------------------------ 3× daily work-group digest
+
+    GROUP_DIGEST_SYSTEM = (
+        "You are Jarvis, digesting Paul's work Telegram groups since his last update. "
+        "Structure the digest with EXACTLY these sections, omitting any that are empty, "
+        "plain text, concise, warm but businesslike:\n"
+        "BY COMPANY — one tight paragraph per company/group on what's moved.\n"
+        "⚡ ACTION NEEDED FROM YOU — decisions or replies only Paul can give.\n"
+        "📋 TRELLO CANDIDATES — concrete tasks worth carding (he can say 'put a card…').\n"
+        "🧱 STICKING POINTS — blocked or circling items, and who's stuck.\n"
+        "⚠️ PAIN POINTS — friction, complaints, risks brewing.\n"
+        "🏆 DONE & WINS — completed, shipped, good news worth a cheer.\n"
+        "👀 WORTH KNOWING — anything else he'd want flagged.\n"
+        "Never invent content; if a section has nothing, leave it out entirely."
+    )
+
+    async def group_digest(self, force: bool = False) -> bool:
+        """Everything from the work groups since the last digest — scheduled
+        three times a day, or on demand via 'group digest'. Watermarked by
+        ingest row id so nothing is ever covered twice or missed."""
+        last_id = int(await self.store.get("group_digest_last_id", "0") or 0)
+        rows = await self.db.fetch_all(
+            "SELECT id, ts, chat_title, company_tag, sender, message FROM telegram_ingest"
+            " WHERE id > ? ORDER BY id ASC LIMIT 400",
+            (last_id,),
+        )
+        if not rows:
+            return False
+        now = datetime.now(await self._tz())
+        if not force and not await self._once(
+            f"groupdigest:{now.date().isoformat()}:{now.hour}", hours=3.0
+        ):
+            return False
+        corpus = "\n".join(
+            f"[{r['chat_title']}] {r['sender']}: {r['message'][:300]}" for r in rows
+        )[:24000]
+        try:
+            digest = await self.claude.converse(
+                self.GROUP_DIGEST_SYSTEM, [{"role": "user", "content": corpus}]
+            )
+        except Exception:
+            logger.exception("Group digest composition failed — deterministic fallback")
+            digest = ""
+        if not digest:
+            tail = "\n".join(
+                f"[{r['chat_title']}] {r['sender']}: {r['message'][:120]}" for r in rows[-10:]
+            )
+            digest = f"Summary engine hiccuped — the raw tail instead:\n{tail}"
+        header = f"GROUP DIGEST — {len(rows)} message(s) since the last one\n\n"
+        await self._send_text(header + digest)
+        await self.store.set("group_digest_last_id", str(rows[-1]["id"]))
+        return True
+
     # -------------------------------------------- hourly Trello re-sync
 
     async def trello_resync(self) -> None:

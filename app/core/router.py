@@ -725,6 +725,19 @@ class JarvisRouter:
             await self.telegram.send_text(message.chat_id, reply)
             return True
 
+        # On-demand group digest: "group digest (now)".
+        if re.search(r"\bgroup digest\b|\bdigest (the )?groups?\b|\bdigest now\b", lowered):
+            if self.heartbeat is None:
+                reply = "The heartbeat isn't running here, sir."
+            else:
+                sent = await self.heartbeat.group_digest(force=True)
+                if sent:
+                    return True  # the digest itself just landed as its own message
+                reply = "Nothing new in the groups since the last digest, sir — all caught up."
+            await self.log.log("out", reply, chat_id=message.chat_id)
+            await self.telegram.send_text(message.chat_id, reply)
+            return True
+
         # On-demand board sync: "sync trello" / "refresh the board".
         if re.search(
             r"\b(sync|resync|re-sync|refresh)\b.{0,16}\b(trello|board|cards)\b"
