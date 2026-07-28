@@ -256,9 +256,34 @@ class JarvisRouter:
         if self.daily12 is not None and mentions_tasks(transcript):
             if self.gates is not None:
                 tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
-                outstanding = await self.gates.outstanding(datetime.now(ZoneInfo(tz_name)))
+                now_local = datetime.now(ZoneInfo(tz_name))
+                outstanding = await self.gates.outstanding(now_local)
                 if outstanding:
-                    block = self.gates.block_message(outstanding)
+                    # QUEUE the request — the gate must never eat instructions.
+                    # It replays the moment the gates open (run/rest/meds/override).
+                    # A second blocked ask the same day joins the queue, it
+                    # doesn't replace the first.
+                    import json as _json
+
+                    queued_text = transcript
+                    try:
+                        prev = _json.loads(await self.store.get("gated_request", "") or "null")
+                        if (
+                            isinstance(prev, dict)
+                            and prev.get("date") == now_local.date().isoformat()
+                            and prev.get("text")
+                        ):
+                            queued_text = prev["text"] + "\n" + transcript
+                    except Exception:
+                        pass
+                    await self.store.set(
+                        "gated_request",
+                        _json.dumps({"date": now_local.date().isoformat(), "text": queued_text}),
+                    )
+                    block = self.gates.block_message(outstanding) + (
+                        " Your instructions are queued, not lost — the moment the gate "
+                        "opens I'll action them."
+                    )
                     await self.log.log("out", block, chat_id=message.chat_id, meta={"gated": True})
                     try:
                         audio = await self.elevenlabs.synthesize(strip_for_speech(block))
@@ -404,6 +429,7 @@ class JarvisRouter:
                         await self.telegram.send_voice(message.chat_id, audio, transcript=ack)
                     except SynthesisError:
                         await self.telegram.send_text(message.chat_id, ack)
+                    await self._replay_gated_request(message)  # run proof opens the gate
                     return
 
         # §4: the morning mirror selfie — ends the wake sequence.
@@ -669,6 +695,7 @@ class JarvisRouter:
                     )
                 await self.log.log("out", reply, chat_id=message.chat_id, meta={"override": True})
                 await self.telegram.send_text(message.chat_id, reply)
+                await self._replay_gated_request(message)  # override opens everything
                 return True
         override_hit = re.search(
             r"^\s*override[,.!]?(\s+jarvis)?\s*$|\boverride,?\s+jarvis\b|\bmove on\b", lowered
@@ -923,6 +950,7 @@ class JarvisRouter:
                 )
                 await self.log.log("out", reply, chat_id=message.chat_id)
                 await self.telegram.send_text(message.chat_id, reply)
+                await self._replay_gated_request(message)  # the gate just opened
                 return True
 
             # §5: water and movement logging by voice
@@ -1069,6 +1097,7 @@ class JarvisRouter:
                     ack += " Keystone's in — the day's yours now."
                 await self.log.log("out", ack, chat_id=message.chat_id)
                 await self.telegram.send_text(message.chat_id, ack)
+                await self._replay_gated_request(message)  # run/meds may have opened the gate
                 return not ("?" in transcript or wants_plan(transcript))
             if corrected:
                 ack = f"My mistake — {' and '.join(corrected)} unlogged, streak corrected."
@@ -1352,6 +1381,46 @@ class JarvisRouter:
                 logger.exception("TTS failed — falling back to text")
         await self.telegram.send_text(message.chat_id, reply_text)
         return True
+
+    async def _replay_gated_request(self, message: IncomingMessage) -> None:
+        """A request the gate blocked earlier today gets actioned the moment
+        the gates open — instructions must never die at the gate."""
+        import json as _json
+
+        raw = await self.store.get("gated_request", "")
+        if not raw:
+            return
+        try:
+            state = _json.loads(raw)
+        except Exception:
+            await self.store.set("gated_request", "")
+            return
+        tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
+        now_local = datetime.now(ZoneInfo(tz_name))
+        if state.get("date") != now_local.date().isoformat() or not state.get("text"):
+            await self.store.set("gated_request", "")
+            return
+        if self.gates is not None and await self.gates.outstanding(now_local):
+            return  # another gate still shut — keep holding
+        await self.store.set("gated_request", "")
+        intro = "Now — back to what you asked before the gate, sir:"
+        await self.log.log("out", intro, chat_id=message.chat_id)
+        await self.telegram.send_text(message.chat_id, intro)
+        handled = False
+        try:
+            if self.daily12 is not None:
+                handled = await self._handle_task_talk(message, state["text"])
+        except Exception:
+            logger.exception("Replaying the gated request failed")
+        if not handled:
+            # The intro must never dangle — if the replay couldn't be actioned,
+            # hand the words back rather than silently swallowing them again.
+            fallback = (
+                f'You asked: "{state["text"]}" — give me that again in one line '
+                "and I'll run it now."
+            )
+            await self.log.log("out", fallback, chat_id=message.chat_id)
+            await self.telegram.send_text(message.chat_id, fallback)
 
     async def _handle_document_request(self, chat_id: int, transcript: str) -> bool:
         """Try to serve a 'show me the X' request from the library. Returns True

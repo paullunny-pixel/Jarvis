@@ -270,5 +270,102 @@ class TestGatedRouter(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("Very good, sir." in t for t in h.texts()))
 
 
+MEDS_ONLY_BLOCKED = json.dumps(
+    [{"id": "meds", "label": "supplements & medication", "by": "00:00"}]
+)
+RUN_ONLY_BLOCKED = json.dumps(
+    [{"id": "run", "label": "the 5km run", "by": "00:00"}]
+)
+
+
+class TestGatedRequestReplay(unittest.IsolatedAsyncioTestCase):
+    """The production bug (28 Jul): a voice note's instructions died at the
+    run gate, and opening the gate later never actioned them. The gate must
+    queue instructions and replay them the moment it opens."""
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = SqliteDatabase(os.path.join(self._dir.name, "t.db"))
+        await self.db.init()
+        from app.core.store import SettingsStore
+
+        self.store = SettingsStore(self.db)
+
+    async def asyncTearDown(self):
+        await self.db.close()
+        self._dir.cleanup()
+
+    async def test_blocked_instructions_are_queued_not_lost(self):
+        h = GatedHarness(self.db)
+        await self.store.set("gates_config", ALWAYS_BLOCKED)
+        await h.router.handle_update(
+            text_update("stick a card on the board for the VAT return", OWNER)
+        )
+        self.assertIn("queued", " ".join(h.texts()))
+        stash = json.loads(await self.store.get("gated_request"))
+        self.assertIn("VAT return", stash["text"])
+
+    async def test_second_blocked_ask_joins_the_queue(self):
+        h = GatedHarness(self.db)
+        await self.store.set("gates_config", ALWAYS_BLOCKED)
+        await h.router.handle_update(
+            text_update("stick a card on the board for the VAT return", OWNER)
+        )
+        await h.router.handle_update(
+            text_update("and a card for the BMI stock order", OWNER)
+        )
+        stash = json.loads(await self.store.get("gated_request"))
+        self.assertIn("VAT return", stash["text"])
+        self.assertIn("BMI stock", stash["text"])
+
+    async def test_meds_confirm_replays_the_queued_request(self):
+        h = GatedHarness(self.db)
+        await self.store.set("gates_config", MEDS_ONLY_BLOCKED)
+        await h.router.handle_update(
+            text_update("put a card on the board for the VAT return", OWNER)
+        )
+        self.assertIn("queued", " ".join(h.texts()))
+        await h.router.handle_update(text_update("meds and vitamins taken", OWNER))
+        self.assertIn("back to what you asked", " ".join(h.texts()))
+        self.assertEqual(await self.store.get("gated_request", ""), "")
+
+    async def test_rest_day_replays_like_production(self):
+        from tests.test_heartbeat import JobsHarness
+
+        h = GatedHarness(self.db)
+        h.router.heartbeat = JobsHarness(self.db).jobs
+        await self.store.set("gates_config", RUN_ONLY_BLOCKED)
+        await h.router.handle_update(
+            text_update("add the BMI order to my trello", OWNER)
+        )
+        self.assertIn("queued", " ".join(h.texts()))
+        await h.router.handle_update(text_update("I'm having a rest day", OWNER))
+        combined = " ".join(h.texts())
+        self.assertIn("Recovery day logged", combined)
+        self.assertIn("back to what you asked", combined)
+        self.assertEqual(await self.store.get("gated_request", ""), "")
+
+    async def test_replay_holds_until_every_gate_is_open(self):
+        h = GatedHarness(self.db)
+        await self.store.set("gates_config", ALWAYS_BLOCKED)
+        await h.router.handle_update(
+            text_update("put a card on the board for the VAT return", OWNER)
+        )
+        await h.router.handle_update(text_update("meds and vitamins taken", OWNER))
+        # The run gate is still shut — the queue holds rather than half-fires.
+        self.assertNotIn("back to what you asked", " ".join(h.texts()))
+        self.assertTrue(await self.store.get("gated_request", ""))
+
+    async def test_yesterdays_stash_never_replays(self):
+        h = GatedHarness(self.db)
+        await self.store.set("gates_config", NEVER_BLOCKED)
+        await self.store.set(
+            "gated_request", json.dumps({"date": "2026-07-27", "text": "old ask"})
+        )
+        await h.router.handle_update(text_update("meds and vitamins taken", OWNER))
+        self.assertNotIn("back to what you asked", " ".join(h.texts()))
+        self.assertEqual(await self.store.get("gated_request", ""), "")
+
+
 if __name__ == "__main__":
     unittest.main()

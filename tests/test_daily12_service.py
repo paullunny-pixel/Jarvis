@@ -531,5 +531,47 @@ class TestCommands(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(relative_due(base, "2026-08-03")[0], "2026-08-03")
 
 
+class TestCalendarHonesty(unittest.IsolatedAsyncioTestCase):
+    """Calendar write-back isn't built yet — a calendar ask must be parked
+    honestly, never silently dropped (28 Jul: only the Trello half of a
+    two-instruction voice note happened)."""
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = SqliteDatabase(os.path.join(self._dir.name, "t.db"))
+        await self.db.init()
+        self.h = MultiBoardHarness(self.db)
+        await self.h.service.sync()
+
+    async def asyncTearDown(self):
+        await self.db.close()
+        self._dir.cleanup()
+
+    def test_hint_catches_calendar_asks(self):
+        self.assertTrue(mentions_tasks("add the dentist to my calendar for Thursday"))
+        self.assertTrue(mentions_tasks("stick that in the diary"))
+
+    async def test_calendar_ask_is_parked_not_dropped(self):
+        results, _ = await execute_actions(
+            self.h.service,
+            [{"action": "calendar_event", "title": "Dentist", "when": "friday"}],
+        )
+        line = results[0]
+        self.assertIn("can't add events yet", line)
+        self.assertIn("CALENDAR: Dentist", line)
+        creates = [w for w in self.h.trello_writes if w[1] == "/1/cards"]
+        self.assertEqual(len(creates), 1)
+
+    async def test_two_instructions_both_execute(self):
+        results, _ = await execute_actions(
+            self.h.service,
+            [{"action": "calendar_event", "title": "Dentist"},
+             {"action": "create", "title": "Order BMI stock"}],
+        )
+        self.assertEqual(len(results), 2)
+        creates = [w for w in self.h.trello_writes if w[1] == "/1/cards"]
+        self.assertEqual(len(creates), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

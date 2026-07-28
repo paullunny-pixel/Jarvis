@@ -22,7 +22,8 @@ TASK_HINT = re.compile(
     r"|\bfinished\b|\btick\b|\bqueue\b|\bpromote\b|\bthis week\b|\bbrain dump\b"
     r"|\b(delete|archive|remove|bin|scrap)\b.{0,24}\b(card|task|order|test|one)\b"
     r"|\bpush (it|that|the|number)|\bput .{0,30}on (kiefer|harry|adriana|adrianna|alicia|kenny|ella)"
-    r"|\bassign\b|\bmy (list|plan|tasks)\b",
+    r"|\bassign\b|\bmy (list|plan|tasks)\b"
+    r"|\b(add|put|stick|pop|book|schedule)\b.{0,40}\b(calendar|diary)\b",
     re.IGNORECASE,
 )
 
@@ -45,7 +46,10 @@ Reply ONLY a JSON array of actions (empty if the message contains none):
 - {{"action":"promote","target":"..."}}   (Sunday grooming: Brain Dump → This Week)
 - {{"action":"archive","target":"..."}}   (delete/remove/bin a card — archives it on Trello)
 - {{"action":"show"}}   (he wants to see/hear the list)
-Only include actions he clearly asked for. "Put X on <person>" = create + assignee.\
+- {{"action":"calendar_event","title":"...","when":"<the date/time words he said, or empty>"}}   (he asked to put something in his CALENDAR or diary — never turn this into a plain create)
+Only include actions he clearly asked for — and cover EVERY instruction in the
+message: two asks means two actions, never just the first. "Put X on <person>"
+= create + assignee.\
 """
 
 
@@ -109,6 +113,20 @@ async def execute_actions(
                 results.append(await service.promote_to_week(str(action.get("target", ""))))
             elif kind == "archive":
                 results.append(await service.archive(str(action.get("target", ""))))
+            elif kind == "calendar_event":
+                # Honesty over silence: calendar write-back isn't wired yet
+                # (needs the Google OAuth upgrade), so the event is parked as a
+                # card rather than quietly dropped. Never claim it's booked.
+                title = str(action.get("title", "") or "Untitled event")
+                due_iso = ""
+                if action.get("when"):
+                    due_iso, _ = relative_due(today, str(action["when"]))
+                parked = await service.create(f"CALENDAR: {title}", due_iso=due_iso)
+                results.append(
+                    "On the calendar I have to be straight with you, sir — I can "
+                    "read it but can't add events yet (that needs the Google "
+                    f"OAuth upgrade). So it isn't lost: {parked}"
+                )
             elif kind == "show":
                 show = True
         except Exception:
