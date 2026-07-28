@@ -238,19 +238,22 @@ TABLES: list[str] = [
         taken_at TEXT NOT NULL
     )
     """,
-    # --- Master Update §13: WhatsApp work-group ingestion (read-only) ---
+    # --- Telegram org ingestion (replaces the WhatsApp §13 route) ---
     """
-    CREATE TABLE IF NOT EXISTS whatsapp_ingest (
+    CREATE TABLE IF NOT EXISTS telegram_ingest (
         id {pk},
         ts TEXT NOT NULL,
-        group_id TEXT NOT NULL DEFAULT '',
-        group_name TEXT NOT NULL DEFAULT '',
+        chat_id BIGINT NOT NULL DEFAULT 0,
+        chat_title TEXT NOT NULL DEFAULT '',
         company_tag TEXT NOT NULL DEFAULT '',
         sender TEXT NOT NULL DEFAULT '',
+        sender_id BIGINT NOT NULL DEFAULT 0,
+        kind TEXT NOT NULL DEFAULT 'text',    -- text | voice | photo | document
         message TEXT NOT NULL
     )
     """,
-    "CREATE INDEX IF NOT EXISTS idx_whatsapp_company ON whatsapp_ingest (company_tag, ts)",
+    "CREATE INDEX IF NOT EXISTS idx_tg_ingest_company ON telegram_ingest (company_tag, ts)",
+    "CREATE INDEX IF NOT EXISTS idx_tg_ingest_chat ON telegram_ingest (chat_id, ts)",
     # --- Milestone 6: the private sobriety track (content encrypted at rest) ---
     """
     CREATE TABLE IF NOT EXISTS sobriety (

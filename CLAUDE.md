@@ -16,7 +16,7 @@ non-skippable gates (run + meds).
 
 ## Commands
 
-- Tests: `python -m unittest discover -s tests` (298 tests; stdlib unittest,
+- Tests: `python -m unittest discover -s tests` (299 tests; stdlib unittest,
   NOT pytest — keep it that way. Only `requirements.txt` is needed; two PDF
   tests also use `reportlab` and skip automatically when it isn't installed)
 - No local run needed for most work; local dev uses SQLite automatically
@@ -48,7 +48,7 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
 - `app/mail/` — Paul's inboxes (IMAP/SMTP, Google app passwords, no OAuth):
   triage/read across all accounts, drafts by voice IN PAUL'S OWN STYLE
   ('learn my style' distills it from his voice-note transcripts, Telegram
-  messages and own WhatsApp lines — NOT his emails, many were AI-written;
+  messages and his own work-group lines — NOT his emails, many AI-written;
   private-exchange markers are excluded); a send fires
   ONLY after Paul confirms a read-back draft; recipient-less drafts are
   held, and a stale draft (45 min) needs one fresh read-back confirm
@@ -91,9 +91,12 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
 He speaks in feature ideas and screenshots, not specs. Small tweaks (tone,
 times, thresholds) are "Level 1" — often just prompt/config edits. New
 capabilities are "Level 2" — keep them modular bolt-ons per Plan §14. Pending
-upgrade list: calendar event alerts (deferred by Paul). WhatsApp ingestion
-(§13) is live server-side (webhook + catch-me-up + bridge/whatsapp worker);
-the bridge just needs Paul's QR link on the dedicated number. Phase 2 (per Plan §9): email is live (read/draft/confirmed
+upgrade list: calendar event alerts (deferred by Paul); optional Telegram
+userbot for DM coverage (MTProto, only if Paul asks). Org ingestion runs on
+TELEGRAM now (the org moved there; WhatsApp route removed): the bot sits in
+work groups (privacy mode OFF in BotFather), ingests every message —
+voice notes transcribed — tagged group→company, read-only, summarised via
+'catch me up on X'; 'map the <name> group to <company>' remaps on the fly. Phase 2 (per Plan §9): email is live (read/draft/confirmed
 send); calendar reads multiple ICS feeds — write-back (event creation via
 OAuth) still pending; then Apple Health + MyFitnessPal, finance/villa
 tracker, live workout coaching.

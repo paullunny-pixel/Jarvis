@@ -109,7 +109,80 @@ class JarvisRouter:
             except Exception:
                 logger.exception("Even the apology failed")
 
+    # Group-name → company heuristics; a settings map ("telegram_group_map")
+    # set by "map the X group to Y" overrides them.
+    GROUP_COMPANY_HINTS = (
+        ("derma direct uk", "derma_uk"), ("derma uk", "derma_uk"),
+        ("derma eu", "derma_eu"), ("derma direct eu", "derma_eu"),
+        ("aesthetics", "aesthetics_supply"), ("grey", "aesthetics_supply"),
+        ("prodermis", "prodermis"), ("prime derm", "prodermis"), ("bmi", "prodermis"),
+        ("derma", "derma_uk"),  # generic fallback — checked last
+    )
+
+    async def _group_company(self, chat_id: int, chat_title: str) -> str:
+        import json as _json
+
+        try:
+            overrides = _json.loads(await self.store.get("telegram_group_map", "{}"))
+        except Exception:
+            overrides = {}
+        mapped = overrides.get(str(chat_id)) or overrides.get(chat_title.strip().lower())
+        if mapped:
+            return mapped
+        lowered = chat_title.lower()
+        for hint, slug in self.GROUP_COMPANY_HINTS:
+            if hint in lowered:
+                return slug
+        return ""
+
+    async def _ingest_group_message(self, message: IncomingMessage) -> None:
+        """Telegram org ingestion: the bot sits in the work groups (privacy
+        mode off) and READS — it never replies there. Text is stored as-is,
+        voice notes go through Deepgram first, media leaves a marker."""
+        kind, content = "text", message.text
+        if message.is_voice:
+            kind = "voice"
+            try:
+                audio = await self.telegram.download_file(message.voice_file_id)
+                content = await self.deepgram.transcribe(audio, "audio/ogg")
+            except Exception:
+                logger.exception("Group voice transcription failed")
+                content = ""
+            if not content:
+                content = "[voice note — transcription unavailable]"
+        elif message.is_photo:
+            kind = "photo"
+            content = f"[photo] {message.text}".strip()
+        elif message.is_document:
+            kind = "document"
+            content = f"[document: {message.document_name}] {message.text}".strip()
+        if not content:
+            return
+        company = await self._group_company(message.chat_id, message.chat_title)
+        await self.db.execute(
+            "INSERT INTO telegram_ingest (ts, chat_id, chat_title, company_tag, sender,"
+            " sender_id, kind, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                datetime.now(ZoneInfo("UTC")).isoformat(timespec="seconds"),
+                message.chat_id,
+                message.chat_title[:200],
+                company,
+                message.from_name[:120],
+                message.sender_id,
+                kind,
+                content[:2000],
+            ),
+        )
+
     async def _handle_message(self, message: IncomingMessage) -> None:
+        # WORK GROUPS: ingest silently, reply never (Telegram org ingestion).
+        if message.is_group:
+            try:
+                await self._ingest_group_message(message)
+            except Exception:
+                logger.exception("Group ingestion failed")
+            return
+
         if not await self._is_owner(message.chat_id):
             logger.warning("Ignoring stranger %s (chat %s)", message.from_name, message.chat_id)
             await self.telegram.send_text(message.chat_id, STRANGER_REPLY)
@@ -473,6 +546,9 @@ class JarvisRouter:
             "wake-ups', skips one day with 'no wake-up tomorrow'); hourly move+water nudges; "
             "med reminders (ADHD 09:30, supplements 14:00, TRT Saturdays); 'override' releases "
             "any block.",
+            "- Work-group ears: Paul's org runs on Telegram; when this bot is in a work "
+            "group (privacy mode off) every message is ingested, tagged by company and "
+            "summarisable ('catch me up on Derma EU'). The bot never replies in groups.",
             (
                 "- Live voice: the cockpit's 'Talk to Jarvis' button opens a realtime, "
                 "interruptible spoken conversation (same persona, same memory via tools)."
@@ -532,15 +608,17 @@ class JarvisRouter:
             "✅ Apple Health: webhook ready" if s.apple_health_webhook_secret
             else "▫️ Apple Health: not configured"
         )
-        recent_wa = await self.db.fetch_one(
-            "SELECT COUNT(*) AS n FROM whatsapp_ingest WHERE ts >= ?",
-            ((datetime.now(ZoneInfo("UTC")) - timedelta(hours=24)).isoformat(timespec="seconds"),),
+        since_24h = (datetime.now(ZoneInfo("UTC")) - timedelta(hours=24)).isoformat(timespec="seconds")
+        recent_tg = await self.db.fetch_one(
+            "SELECT COUNT(*) AS n, COUNT(DISTINCT chat_id) AS chats FROM telegram_ingest"
+            " WHERE ts >= ?",
+            (since_24h,),
         )
-        wa_count = int(recent_wa["n"]) if recent_wa else 0
+        tg_count = int(recent_tg["n"]) if recent_tg else 0
         lines.append(
-            f"✅ WhatsApp: {wa_count} group messages in 24h"
-            if wa_count
-            else "▫️ WhatsApp: bridge not linked yet (no messages stored)"
+            f"✅ Work groups: {tg_count} messages in 24h across {int(recent_tg['chats'])} group(s)"
+            if tg_count
+            else "▫️ Work groups: no traffic yet (add me to the groups + privacy mode OFF in BotFather)"
         )
         lines.append("✅ Voice, hearing, vision, heartbeat, gates, private track: active")
         report = "\n".join(lines)
@@ -670,37 +748,6 @@ class JarvisRouter:
             await self.telegram.send_text(message.chat_id, reply)
             return True
 
-        # WhatsApp SIM keep-alive confirmation: "SIM done" resets the clock.
-        if re.search(r"\bsim\b.{0,24}\b(done|sent|sorted|topped up|kept alive)\b", lowered):
-            if self.heartbeat is not None:
-                tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
-                await self.heartbeat.sim_keepalive_confirmed(
-                    datetime.now(ZoneInfo(tz_name)).date()
-                )
-            reply = "SIM logged as alive — clock reset, I'll nudge you again around day 60."
-            await self.log.log("out", reply, chat_id=message.chat_id)
-            await self.telegram.send_text(message.chat_id, reply)
-            return True
-
-        # WhatsApp bridge setup: Jarvis hands over the exact webhook URL.
-        if re.search(r"\bwhatsapp\b.{0,16}\b(setup|set ?up|link|url|webhook)\b", lowered):
-            if self.settings.public_url:
-                url = (
-                    f"{self.settings.public_url.rstrip('/')}/webhook/whatsapp/"
-                    f"{self.settings.effective_whatsapp_secret}"
-                )
-                reply = (
-                    "[TEXT]\nFor the WhatsApp bridge, set this as JARVIS_WEBHOOK_URL on the "
-                    f"jarvis-whatsapp service in Render:\n\n{url}\n\nThen watch that "
-                    "service's logs for the QR code and scan it from the dedicated phone: "
-                    "WhatsApp → Settings → Linked devices → Link a device."
-                )
-            else:
-                reply = "I need my public URL configured before the bridge can reach me."
-            await self.log.log("out", reply, chat_id=message.chat_id)
-            await self.telegram.send_text(message.chat_id, reply.replace("[TEXT]\n", ""))
-            return True
-
         # The cockpit link: "show me the cockpit / dashboard"
         if re.search(r"\b(cockpit|dashboard)\b", lowered):
             if self.settings.public_url:
@@ -715,15 +762,51 @@ class JarvisRouter:
             await self.telegram.send_text(message.chat_id, reply)
             return True
 
-        # §13: "catch me up on <company/group>" — summarise WhatsApp traffic.
+        # "Catch me up on <company/group>" — summarise work-group traffic.
         catch = re.search(
             r"\bcatch me up\b(?:\s+on\s+(.+))?"
-            r"|\bwhat'?s (?:been )?(?:happening|going on)\b.{0,12}\b(?:in|with|on)\s+(.+?)\s*(?:group|whatsapp|$)",
+            r"|\bwhat'?s (?:been )?(?:happening|going on)\b.{0,12}\b(?:in|with|on)\s+(.+?)\s*(?:group|chat|$)",
             lowered,
         )
-        if catch and ("whatsapp" in lowered or "catch me up" in lowered):
+        if catch and ("catch me up" in lowered or "group" in lowered):
             topic = (catch.group(1) or catch.group(2) or "").strip()
-            reply = await self._whatsapp_catchup(topic)
+            reply = await self._group_catchup(topic)
+            await self.log.log("out", reply, chat_id=message.chat_id)
+            await self.telegram.send_text(message.chat_id, reply)
+            return True
+
+        # On-the-fly group mapping: "map the Warehouse group to Derma EU".
+        map_hit = re.search(
+            r"\bmap\b\s+(?:the\s+)?(.+?)\s+group\s+to\s+([\w '&.]+)$", lowered
+        )
+        if map_hit:
+            import json as _json
+
+            slug_lookup = {
+                "derma uk": "derma_uk", "derma direct uk": "derma_uk",
+                "derma eu": "derma_eu", "derma direct eu": "derma_eu",
+                "aesthetics": "aesthetics_supply", "aesthetics supply": "aesthetics_supply",
+                "aesthetics supply uk": "aesthetics_supply",
+                "prodermis": "prodermis", "personal": "",
+            }
+            target = map_hit.group(2).strip().rstrip(".")
+            slug = slug_lookup.get(target)
+            if slug is None:
+                reply = (
+                    f"I don't know '{target}' as a company — use Derma UK, Derma EU, "
+                    "Aesthetics Supply, Prodermis or Personal."
+                )
+            else:
+                try:
+                    mapping = _json.loads(await self.store.get("telegram_group_map", "{}"))
+                except Exception:
+                    mapping = {}
+                mapping[map_hit.group(1).strip().lower()] = slug
+                await self.store.set("telegram_group_map", _json.dumps(mapping))
+                reply = (
+                    f"Mapped — messages from the '{map_hit.group(1).strip()}' group now file "
+                    f"under {target.title() if slug else 'Personal (ignored for business)'}. "
+                )
             await self.log.log("out", reply, chat_id=message.chat_id)
             await self.telegram.send_text(message.chat_id, reply)
             return True
@@ -971,8 +1054,8 @@ class JarvisRouter:
             return False
         return False
 
-    async def _whatsapp_catchup(self, topic: str) -> str:
-        """Summarise the last 48h of ingested work-group WhatsApp traffic."""
+    async def _group_catchup(self, topic: str) -> str:
+        """Summarise the last 48h of ingested work-group Telegram traffic."""
         from datetime import timedelta as _td
         from datetime import timezone as _tz
 
@@ -985,38 +1068,38 @@ class JarvisRouter:
         slug = next((s for hint, s in slug_hints.items() if hint in topic.lower()), "")
         if slug:
             rows = await self.db.fetch_all(
-                "SELECT ts, group_name, sender, message FROM whatsapp_ingest"
+                "SELECT ts, chat_title, sender, message FROM telegram_ingest"
                 " WHERE ts >= ? AND company_tag = ? ORDER BY ts DESC LIMIT 80",
                 (since, slug),
             )
         elif topic:
             rows = await self.db.fetch_all(
-                "SELECT ts, group_name, sender, message FROM whatsapp_ingest"
-                " WHERE ts >= ? AND LOWER(group_name) LIKE ? ORDER BY ts DESC LIMIT 80",
+                "SELECT ts, chat_title, sender, message FROM telegram_ingest"
+                " WHERE ts >= ? AND LOWER(chat_title) LIKE ? ORDER BY ts DESC LIMIT 80",
                 (since, f"%{topic.lower()}%"),
             )
         else:
             rows = await self.db.fetch_all(
-                "SELECT ts, group_name, sender, message FROM whatsapp_ingest"
+                "SELECT ts, chat_title, sender, message FROM telegram_ingest"
                 " WHERE ts >= ? ORDER BY ts DESC LIMIT 120",
                 (since,),
             )
         if not rows:
-            any_row = await self.db.fetch_one("SELECT id FROM whatsapp_ingest LIMIT 1")
+            any_row = await self.db.fetch_one("SELECT id FROM telegram_ingest LIMIT 1")
             if any_row is None:
                 return (
-                    "No WhatsApp traffic in the brain yet — the bridge on the dedicated "
-                    "number isn't linked. Say the word and we'll wire it up."
+                    "No group traffic in the brain yet — add me to the work groups and turn "
+                    "OFF my privacy mode in BotFather, and I'll hear everything from there."
                 )
             return f"Quiet on {'that front' if topic else 'the work groups'} these last two days, sir."
         lines = "\n".join(
-            f"[{r['group_name']}] {r['sender']}: {r['message'][:220]}" for r in reversed(rows)
+            f"[{r['chat_title']}] {r['sender']}: {r['message'][:220]}" for r in reversed(rows)
         )
         try:
             summary = await self.claude.quick(
                 lines,
                 system=(
-                    "Summarise these work WhatsApp group messages for Paul as Jarvis: what "
+                    "Summarise these work Telegram group messages for Paul as Jarvis: what "
                     "moved, decisions, anything waiting on Paul, anything urgent. Group by "
                     "topic, concise, warm. Plain text, no markdown."
                 ),
@@ -1024,7 +1107,7 @@ class JarvisRouter:
             )
             return summary or "Traffic's there but the summary escaped me — ask again."
         except Exception:
-            logger.exception("WhatsApp catch-up summary failed")
+            logger.exception("Group catch-up summary failed")
             return "Couldn't build the summary just now — try again in a minute."
 
     ACTIVITY_CONFIRM_SYSTEM = (

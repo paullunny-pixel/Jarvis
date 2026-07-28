@@ -94,10 +94,6 @@ class Settings(BaseSettings):
     elevenlabs_phone_number_id: str = ""
     paul_phone_number: str = ""
 
-    # Keep-alive for the dedicated WhatsApp SIM: UK PAYG numbers are
-    # reclaimed after ~90 inactive days — Jarvis nags in good time.
-    sim_keepalive_days: int = 60
-
     # --- Day rhythm (Master Update §§4-6) ---
     water_target_ml: int = 2500
     # Twilio voice-call wake channel — placeholders only, the seam exists but
@@ -121,13 +117,6 @@ class Settings(BaseSettings):
         import hashlib
 
         return hashlib.sha256(f"jarvis-cockpit:{self.telegram_bot_token}".encode()).hexdigest()[:24]
-
-    @property
-    def effective_whatsapp_secret(self) -> str:
-        """Auth token for the read-only WhatsApp bridge's ingest webhook."""
-        import hashlib
-
-        return hashlib.sha256(f"jarvis-whatsapp:{self.telegram_bot_token}".encode()).hexdigest()[:32]
 
     @property
     def effective_voice_tool_secret(self) -> str:

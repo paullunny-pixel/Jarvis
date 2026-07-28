@@ -32,6 +32,9 @@ class IncomingMessage:
     chat_id: int
     message_id: int
     from_name: str
+    chat_type: str = "private"     # private | group | supergroup | channel
+    chat_title: str = ""           # group/channel title (empty for DMs)
+    sender_id: int = 0             # Telegram user id of the sender
     text: str = ""
     voice_file_id: str = ""
     voice_duration: int = 0
@@ -53,6 +56,10 @@ class IncomingMessage:
     def is_photo(self) -> bool:
         return bool(self.photo_file_id)
 
+    @property
+    def is_group(self) -> bool:
+        return self.chat_type in ("group", "supergroup")
+
 
 def parse_update(update: dict[str, Any]) -> IncomingMessage | None:
     """Extract the message from a webhook update. Returns None for updates we
@@ -69,6 +76,9 @@ def parse_update(update: dict[str, Any]) -> IncomingMessage | None:
         chat_id=message["chat"]["id"],
         message_id=message.get("message_id", 0),
         from_name=name,
+        chat_type=message["chat"].get("type", "private"),
+        chat_title=message["chat"].get("title", ""),
+        sender_id=sender.get("id", 0),
         text=(message.get("text") or message.get("caption") or "").strip(),
         voice_file_id=voice.get("file_id", ""),
         voice_duration=voice.get("duration", 0),

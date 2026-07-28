@@ -362,12 +362,17 @@ class MailService:
             samples["voice notes (Paul speaking, transcribed)"] = spoken
         if typed:
             samples["typed Telegram messages"] = typed
-        wa_rows = await self._db.fetch_all(
-            "SELECT message FROM whatsapp_ingest WHERE LOWER(sender) LIKE 'paul%'"
-            " AND LENGTH(message) > 30 ORDER BY id DESC LIMIT 60"
+        # Paul's own messages in the work groups — attributed by his Telegram
+        # user id (exact), with a name match as fallback.
+        owner = await self._settings.get("owner_chat_id", "0")
+        group_rows = await self._db.fetch_all(
+            "SELECT message FROM telegram_ingest WHERE kind IN ('text', 'voice')"
+            " AND (sender_id = ? OR LOWER(sender) LIKE 'paul%')"
+            " AND LENGTH(message) > 30 ORDER BY id DESC LIMIT 60",
+            (int(owner or 0),),
         )
-        if wa_rows:
-            samples["WhatsApp messages Paul wrote"] = [r["message"] for r in wa_rows]
+        if group_rows:
+            samples["work-group messages Paul wrote"] = [r["message"] for r in group_rows]
         if not samples:
             return (
                 "I've not got enough of your own words yet to learn from — a few days "

@@ -518,33 +518,6 @@ class TestDayRhythmRouter(unittest.IsolatedAsyncioTestCase):
         await self.jobs.lights_out_chaser()
         self.assertEqual(self.h_jobs_texts(), [])
 
-    async def test_sim_keepalive_nags_from_day_60_until_confirmed(self):
-        # First run just starts the clock.
-        await self.jobs.sim_keepalive(at_local("10:15"))
-        self.assertEqual(self.h_jobs_texts(), [])
-        # 59 idle days: silence. 61: one nag per day.
-        await self.jobs.store.set(self.jobs.SIM_KEY, "2026-05-26")
-        await self.jobs.sim_keepalive(at_local("10:15"))  # 60 days later
-        self.assertEqual(len(self.h_jobs_texts()), 1)
-        self.assertIn("WhatsApp SIM", self.h_jobs_texts()[0])
-        await self.jobs.sim_keepalive(at_local("11:15"))
-        self.assertEqual(len(self.h_jobs_texts()), 1)     # once per day
-        # 'SIM done' resets the clock — silence resumes.
-        await self.jobs.sim_keepalive_confirmed(at_local("12:00").date())
-        await self.db.execute("DELETE FROM nudge_state")
-        await self.jobs.sim_keepalive(at_local("13:15"))
-        self.assertEqual(len(self.h_jobs_texts()), 1)
-
-    async def test_sim_done_by_voice_resets_the_clock(self):
-        from tests.test_router import OWNER
-        from tests.test_telegram_client import text_update
-
-        await self.jobs.store.set(self.jobs.SIM_KEY, "2026-01-01")
-        await self.h.router.handle_update(text_update("SIM done, text sent", OWNER))
-        self.assertIn("clock reset", " ".join(self.texts()))
-        last = await self.jobs.store.get(self.jobs.SIM_KEY)
-        self.assertNotEqual(last, "2026-01-01")
-
     async def test_evening_review_leads_with_wins(self):
         today = await self.jobs._today()
         await self.jobs.log_water(today, 1200)
@@ -573,7 +546,55 @@ class TestDayRhythmRouter(unittest.IsolatedAsyncioTestCase):
         await self.h.router.handle_update(text_update("refresh the board", OWNER))
         self.assertIn("isn't connected", " ".join(self.texts()))
 
-    async def test_whatsapp_catchup_summarises_recent_traffic(self):
+    async def test_group_message_is_ingested_read_only(self):
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        update = text_update("Pallet has cleared customs, delivering Thursday", chat_id=-100500)
+        update["message"]["chat"]["type"] = "supergroup"
+        update["message"]["chat"]["title"] = "Derma Direct UK Ops"
+        update["message"]["from"] = {"id": 777, "first_name": "Harry"}
+        before = len(self.h.telegram_calls)
+        await self.h.router.handle_update(update)
+        row = await self.db.fetch_one("SELECT * FROM telegram_ingest")
+        self.assertEqual(row["company_tag"], "derma_uk")
+        self.assertEqual(row["sender"], "Harry")
+        self.assertIn("customs", row["message"])
+        # READ-ONLY: the bot never replies in a group (and no stranger brush-off).
+        self.assertEqual(len(self.h.telegram_calls), before)
+
+    async def test_group_voice_note_is_transcribed_then_ingested(self):
+        from tests.test_telegram_client import voice_update
+
+        update = voice_update(chat_id=-100501)
+        update["message"]["chat"]["type"] = "group"
+        update["message"]["chat"]["title"] = "Prodermis 2.0"
+        update["message"]["from"] = {"id": 778, "first_name": "Alicia"}
+        await self.h.router.handle_update(update)
+        row = await self.db.fetch_one("SELECT * FROM telegram_ingest")
+        self.assertEqual(row["kind"], "voice")
+        self.assertEqual(row["company_tag"], "prodermis")
+        self.assertEqual(row["message"], "voice words here")  # Deepgram mock
+
+    async def test_map_group_command_overrides_heuristics(self):
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        await self.h.router.handle_update(
+            text_update("map the Warehouse group to Derma EU", OWNER)
+        )
+        self.assertIn("Mapped", " ".join(self.texts()))
+        update = text_update("racking arrives Friday", chat_id=-100502)
+        update["message"]["chat"]["type"] = "group"
+        update["message"]["chat"]["title"] = "Warehouse"
+        update["message"]["from"] = {"id": 779, "first_name": "Kenny"}
+        await self.h.router.handle_update(update)
+        row = await self.db.fetch_one(
+            "SELECT company_tag FROM telegram_ingest WHERE chat_title = 'Warehouse'"
+        )
+        self.assertEqual(row["company_tag"], "derma_eu")
+
+    async def test_group_catchup_summarises_recent_traffic(self):
         from datetime import datetime as dt, timezone as tz
 
         from tests.test_router import OWNER
@@ -581,21 +602,22 @@ class TestDayRhythmRouter(unittest.IsolatedAsyncioTestCase):
 
         now = dt.now(tz.utc).isoformat(timespec="seconds")
         await self.db.execute(
-            "INSERT INTO whatsapp_ingest (ts, group_id, group_name, company_tag, sender, message)"
-            " VALUES (?, 'g1', 'Prodermis Ops', 'prodermis', 'Alicia', 'MOH registration approved!')",
+            "INSERT INTO telegram_ingest (ts, chat_id, chat_title, company_tag, sender,"
+            " sender_id, kind, message)"
+            " VALUES (?, -1, 'Prodermis Ops', 'prodermis', 'Alicia', 778, 'text',"
+            " 'MOH registration approved!')",
             (now,),
         )
         await self.h.router.handle_update(text_update("catch me up on prodermis", OWNER))
-        # The harness Claude echoes its stock line as the summary — what
-        # matters is the pipeline ran and answered from stored traffic.
         self.assertIn("Short answer. Go run.", " ".join(self.texts()))
 
-    async def test_whatsapp_catchup_honest_when_bridge_unlinked(self):
+    async def test_group_catchup_honest_when_no_groups_yet(self):
         from tests.test_router import OWNER
         from tests.test_telegram_client import text_update
 
-        await self.h.router.handle_update(text_update("catch me up on whatsapp", OWNER))
-        self.assertIn("bridge", " ".join(self.texts()).lower())
+        await self.h.router.handle_update(text_update("catch me up", OWNER))
+        combined = " ".join(self.texts()).lower()
+        self.assertIn("privacy mode", combined)
 
     async def test_water_and_movement_logged_by_voice(self):
         from tests.test_router import OWNER

@@ -338,9 +338,10 @@ class TestWritingStyle(unittest.IsolatedAsyncioTestCase):
             " VALUES ('2026-07-27T11:00:00+00:00', 'in', 1, 'text', '[private exchange]', '{}')"
         )
         await self.db.execute(
-            "INSERT INTO whatsapp_ingest (ts, group_id, group_name, company_tag, sender, message)"
-            " VALUES ('2026-07-27T09:00:00+00:00', 'g1', 'Derma UK', 'derma_uk', 'Paul Lunny',"
-            " 'Lads the new labels look class, get them ordered today please')"
+            "INSERT INTO telegram_ingest (ts, chat_id, chat_title, company_tag, sender,"
+            " sender_id, kind, message)"
+            " VALUES ('2026-07-27T09:00:00+00:00', -1, 'Derma UK', 'derma_uk', 'Paul Lunny',"
+            " 111, 'text', 'Lads the new labels look class, get them ordered today please')"
         )
         claude = ClaudeClient("K", transport=httpx.MockTransport(claude_handler))
         result = await self.service.learn_style(claude)
@@ -348,7 +349,7 @@ class TestWritingStyle(unittest.IsolatedAsyncioTestCase):
         self.assertIn("punchy", await self.service.style_profile())
         corpus = captured["messages"][0]["content"]
         self.assertIn("smash the surveys", corpus)        # voice notes in
-        self.assertIn("labels look class", corpus)        # his WhatsApp lines in
+        self.assertIn("labels look class", corpus)        # his group lines in
         self.assertNotIn("[private exchange]", corpus)    # the wall holds
 
     async def test_person_style_kiefer_is_not_generic_paul(self):
