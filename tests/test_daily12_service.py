@@ -531,6 +531,82 @@ class TestCommands(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(relative_due(base, "2026-08-03")[0], "2026-08-03")
 
 
+class TestCardMatching(unittest.IsolatedAsyncioTestCase):
+    """The Eva-lunch bug (28 Jul): 'archive the lunch card' binned 'Confirm
+    with Eva lunch time' instead of the card called 'Lunch'. Exact titles win;
+    a destructive dead heat asks instead of guessing."""
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = SqliteDatabase(os.path.join(self._dir.name, "t.db"))
+        await self.db.init()
+        self.h = MultiBoardHarness(self.db)
+        self.service = self.h.service
+        await self.service.sync()
+        # The production board: three lunch-flavoured cards, oldest first.
+        for i, title in enumerate(
+            ["Confirm with Eva lunch time", "Make reservation for Prodermis management lunch", "Lunch"]
+        ):
+            await self.db.execute(
+                "INSERT INTO tasks (trello_id, title, list_name, board_id, board_name,"
+                " actionable, score, synced_at) VALUES (?, ?, 'Paul Today', 'B1',"
+                " 'Master Board', 1, 0, '2026-07-28T10:00:00')",
+                (f"LUNCH{i}", title),
+            )
+
+    async def asyncTearDown(self):
+        await self.db.close()
+        self._dir.cleanup()
+
+    def test_exact_title_beats_a_longer_match(self):
+        from app.daily12.service import best_title_match
+
+        rows = [
+            {"title": "Confirm with Eva lunch time"},
+            {"title": "Make reservation for Prodermis management lunch"},
+            {"title": "Lunch"},
+        ]
+        match, ties = best_title_match("the lunch card", rows)
+        self.assertIsNotNone(match)
+        self.assertEqual(match["title"], "Lunch")
+        self.assertEqual(ties, [])
+
+    def test_dead_heat_returns_candidates_not_a_guess(self):
+        from app.daily12.service import best_title_match
+
+        rows = [{"title": "Email supplier list"}, {"title": "Supplier email chase"}]
+        match, ties = best_title_match("supplier email", rows)
+        self.assertIsNone(match)
+        self.assertEqual(len(ties), 2)
+
+    async def test_archive_the_lunch_card_hits_lunch_exactly(self):
+        result = await self.service.archive("the lunch card")
+        self.assertIn("Archived 'Lunch'", result)
+        self.assertNotIn("Eva", result)
+        archived = [w for w in self.h.trello_writes if "/cards/LUNCH2" in w[1]]
+        self.assertTrue(any(w[2].get("closed") == "true" for w in archived))
+        row = await self.db.fetch_one(
+            "SELECT actionable FROM tasks WHERE title = 'Confirm with Eva lunch time'"
+        )
+        self.assertEqual(row["actionable"], 1)  # the bystander survives
+
+    async def test_ambiguous_archive_asks_instead_of_binning(self):
+        await self.db.execute("UPDATE tasks SET actionable = 0 WHERE title = 'Lunch'")
+        for i, title in enumerate(["Lunch with Kiefer", "Lunch with Harry"]):
+            await self.db.execute(
+                "INSERT INTO tasks (trello_id, title, list_name, board_id, board_name,"
+                " actionable, score, synced_at) VALUES (?, ?, 'Paul Today', 'B1',"
+                " 'Master Board', 1, 0, '2026-07-28T10:00:00')",
+                (f"AMBIG{i}", title),
+            )
+        result = await self.service.archive("lunch")
+        self.assertIn("more than one card", result)
+        self.assertIn("Kiefer", result)
+        self.assertIn("Harry", result)
+        archived = [w for w in self.h.trello_writes if "closed" in w[2]]
+        self.assertEqual(archived, [])  # nothing was binned on a guess
+
+
 class TestCalendarHonesty(unittest.IsolatedAsyncioTestCase):
     """Calendar write-back isn't built yet — a calendar ask must be parked
     honestly, never silently dropped (28 Jul: only the Trello half of a

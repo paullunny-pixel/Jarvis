@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -434,11 +435,8 @@ class Daily12Service:
         if reference.isdigit():
             n = int(reference)
             return next((r for r in rows if r["position"] == n), None)
-        scored = [
-            (sum(1 for w in reference.split() if w in r["title"].lower()), r) for r in rows
-        ]
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return scored[0][1] if scored and scored[0][0] > 0 else None
+        match, ties = best_title_match(reference, rows)
+        return match or (ties[0] if ties else None)
 
     async def _done_list_id(self, board_id: str) -> str:
         """The Done list on the given board — cards move within their own board."""
@@ -496,11 +494,8 @@ class Daily12Service:
             "SELECT * FROM tasks WHERE actionable = 1 AND LOWER(list_name) = ?",
             (list_name,),
         )
-        scored = [
-            (sum(1 for w in reference.split() if w in r["title"].lower()), r) for r in rows
-        ]
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return scored[0][1] if scored and scored[0][0] > 0 else None
+        match, ties = best_title_match(reference, rows)
+        return match or (ties[0] if ties else None)
 
     async def _target_list_id(self, board_id: str, list_name: str) -> str:
         for l in await self._trello.board_lists(board_id):
@@ -682,13 +677,16 @@ class Daily12Service:
     async def archive(self, reference: str) -> str:
         """Really remove a card (archive on Trello) — the capability behind
         'delete the test order', so it can never again be claimed unperformed."""
-        reference_l = reference.strip().lower()
         rows = await self._db.fetch_all("SELECT * FROM tasks WHERE actionable = 1")
-        scored = [
-            (sum(1 for w in reference_l.split() if w in r["title"].lower()), r) for r in rows
-        ]
-        scored.sort(key=lambda x: x[0], reverse=True)
-        task = scored[0][1] if scored and scored[0][0] > 0 else None
+        task, ties = best_title_match(reference, rows)
+        if task is None and ties:
+            # Archiving is permanent — a dead heat never gets guessed at
+            # (the Eva-lunch bug: 'the lunch card' must not bin a bystander).
+            names = "' and '".join(t["title"] for t in ties[:3])
+            return (
+                f"Hold on — more than one card matches '{reference}': '{names}'. "
+                "Archiving is permanent, so give me the exact title and I'll do it."
+            )
         if task is None:
             return f"Couldn't find '{reference}' on the board to archive."
         try:
@@ -713,6 +711,48 @@ class Daily12Service:
             logger.exception("Trello comment failed")
             return "Couldn't reach Trello for the comment — try again shortly."
         return f"Noted on '{task['title']}'."
+
+
+_FILLER_WORDS = {
+    "the", "a", "an", "that", "this", "it", "my", "our", "card", "task", "one", "please",
+}
+
+
+def best_title_match(reference: str, rows: list[dict]) -> tuple[dict | None, list[dict]]:
+    """Resolve a spoken reference to ONE card. An exact title wins outright —
+    'the Lunch card' must hit 'Lunch', never a longer title that merely
+    contains the word. Otherwise: most reference words hit, then how much of
+    the title they cover. A dead heat returns (None, candidates) so the
+    caller can ask instead of guessing."""
+    words = re.findall(r"[\w£']+", reference.lower())
+    ref_words = [w for w in words if w not in _FILLER_WORDS] or words
+    if not ref_words:
+        return None, []
+    ref_key = " ".join(ref_words)
+    scored: list[tuple[tuple[int, float], dict]] = []
+    for row in rows:
+        title_words = re.findall(r"[\w£']+", row["title"].lower())
+        meaningful = [w for w in title_words if w not in _FILLER_WORDS] or title_words
+        if " ".join(meaningful) == ref_key:
+            return row, []
+        hits = sum(
+            1
+            for w in ref_words
+            if any(
+                t == w
+                or (len(w) >= 4 and t.startswith(w))
+                or (len(t) >= 4 and w.startswith(t))
+                for t in title_words
+            )
+        )
+        if hits:
+            scored.append(((hits, hits / max(len(title_words), 1)), row))
+    if not scored:
+        return None, []
+    scored.sort(key=lambda x: x[0], reverse=True)
+    if len(scored) > 1 and scored[0][0] == scored[1][0]:
+        return None, [row for score, row in scored if score == scored[0][0]]
+    return scored[0][1], []
 
 
 def _money_from_labels(labels: list[str]) -> int:
