@@ -611,6 +611,36 @@ class TestDayRhythmRouter(unittest.IsolatedAsyncioTestCase):
         await self.h.router.handle_update(text_update("catch me up on prodermis", OWNER))
         self.assertIn("Short answer. Go run.", " ".join(self.texts()))
 
+    async def test_last_message_query_quotes_the_actual_messages(self):
+        from datetime import datetime as dt, timezone as tz
+
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        now = dt.now(tz.utc).isoformat(timespec="seconds")
+        await self.db.execute(
+            "INSERT INTO telegram_ingest (ts, chat_id, chat_title, company_tag, sender,"
+            " sender_id, kind, message)"
+            " VALUES (?, -2, 'Prodermis Registration', 'prodermis', 'Adriana', 779, 'text',"
+            " 'Docs are with the ministry now')",
+            (now,),
+        )
+        await self.h.router.handle_update(
+            text_update("what was the last message in the Prodermis Registration group", OWNER)
+        )
+        combined = " ".join(self.texts())
+        self.assertIn("Docs are with the ministry now", combined)
+        self.assertIn("Adriana", combined)
+
+    async def test_last_message_query_explains_the_rejoin_catch_when_empty(self):
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        await self.h.router.handle_update(
+            text_update("what was the latest message from the Warehouse group", OWNER)
+        )
+        self.assertIn("re-add me", " ".join(self.texts()))
+
     async def test_group_catchup_honest_when_no_groups_yet(self):
         from tests.test_router import OWNER
         from tests.test_telegram_client import text_update

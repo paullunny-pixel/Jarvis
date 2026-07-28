@@ -762,12 +762,24 @@ class JarvisRouter:
             await self.telegram.send_text(message.chat_id, reply)
             return True
 
-        # "Catch me up on <company/group>" — summarise work-group traffic.
+        # "Catch me up on <company/group>" / "last message in the X group" —
+        # anything asking about group traffic answers FROM THE DATA, never
+        # from the blind conversational brain.
+        latest = re.search(
+            r"\b(?:last|latest|most recent|newest)\b.{0,16}\bmessages?\b.{0,30}?"
+            r"\b(?:in|from)\s+(?:the\s+)?(.+?)\s*(?:group|chat)\b",
+            lowered,
+        )
         catch = re.search(
             r"\bcatch me up\b(?:\s+on\s+(.+))?"
             r"|\bwhat'?s (?:been )?(?:happening|going on)\b.{0,12}\b(?:in|with|on)\s+(.+?)\s*(?:group|chat|$)",
             lowered,
         )
+        if latest:
+            reply = await self._group_catchup(latest.group(1).strip(), latest_only=True)
+            await self.log.log("out", reply, chat_id=message.chat_id)
+            await self.telegram.send_text(message.chat_id, reply)
+            return True
         if catch and ("catch me up" in lowered or "group" in lowered):
             topic = (catch.group(1) or catch.group(2) or "").strip()
             reply = await self._group_catchup(topic)
@@ -1054,10 +1066,28 @@ class JarvisRouter:
             return False
         return False
 
-    async def _group_catchup(self, topic: str) -> str:
-        """Summarise the last 48h of ingested work-group Telegram traffic."""
+    async def _group_catchup(self, topic: str, latest_only: bool = False) -> str:
+        """Summarise (or quote, for 'last message' asks) ingested group traffic."""
         from datetime import timedelta as _td
         from datetime import timezone as _tz
+
+        if latest_only:
+            rows = await self.db.fetch_all(
+                "SELECT ts, chat_title, sender, message FROM telegram_ingest"
+                " WHERE LOWER(chat_title) LIKE ? ORDER BY id DESC LIMIT 3",
+                (f"%{topic.lower()}%",),
+            )
+            if not rows:
+                return (
+                    f"I've got nothing from a group matching '{topic}', sir. Likeliest "
+                    "causes: I'm not a member of that group, or I was added BEFORE privacy "
+                    "mode was switched off — remove me from the group and re-add me, then "
+                    "any new message there lands in my ears. 'Status' shows my group counts."
+                )
+            lines = [f"Latest from {rows[0]['chat_title']}:"]
+            for r in reversed(rows):
+                lines.append(f"{r['ts'][11:16]} {r['sender']}: {r['message'][:300]}")
+            return "\n".join(lines)
 
         since = (datetime.now(_tz.utc) - _td(hours=48)).isoformat(timespec="seconds")
         slug_hints = {
