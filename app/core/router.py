@@ -1268,7 +1268,17 @@ class JarvisRouter:
                 return True
 
             plan_text = await self.daily12.format_plan(plan_date)
-            actions = await parse_actions(self.claude, transcript, plan_text)
+            # The parser sees the last few exchanges — Paul answers digests and
+            # briefs by voice, and 'those', 'the first one', 'Jack's email'
+            # only mean anything against what Jarvis just said.
+            recent_rows = await self.log.recent(limit=7)
+            if recent_rows and recent_rows[-1]["direction"] == "in":
+                recent_rows = recent_rows[:-1]  # the current message, already the prompt
+            recent = "\n\n".join(
+                f"{'Paul' if r['direction'] == 'in' else 'Jarvis'}: {r['transcript'][:2000]}"
+                for r in recent_rows
+            )[-6000:]
+            actions = await parse_actions(self.claude, transcript, plan_text, recent=recent)
             if not actions:
                 return False  # ordinary conversation after all
             results, show = await execute_actions(self.daily12, actions)

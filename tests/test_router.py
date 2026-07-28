@@ -107,6 +107,37 @@ class TestRouter(unittest.IsolatedAsyncioTestCase):
         self.assertIn("BMI doctor surveys — DONE", system)
         self.assertIn("STALENESS RULE", system)
 
+    async def test_task_parser_sees_the_conversation_it_is_replying_to(self):
+        # The digest-reply bug: Paul answers a digest by voice ('add those
+        # Trello candidates, I've replied to Jack's email') and the parser,
+        # blind to the digest, hunted board cards and invented vague titles.
+        from tests.test_daily12_service import MultiBoardHarness
+
+        h = RouterHarness(self.db)
+        h.router.daily12 = MultiBoardHarness(self.db).service
+        digest = (
+            "ACTION NEEDED FROM YOU\n"
+            "- Reply today to Jack's birthday party reservation email.\n"
+            "TRELLO CANDIDATES\n"
+            "- Adriana: complete meso packaging check and IFU (priority one)."
+        )
+        await h.router.log.log("out", digest, chat_id=OWNER, meta={"heartbeat": True})
+        await h.router.handle_update(
+            text_update("add those trello candidates to the board", OWNER)
+        )
+        parser_calls = [
+            r for r in h.claude_requests
+            if str(r.get("system", "")).startswith("You convert Paul's message")
+        ]
+        self.assertEqual(len(parser_calls), 1)
+        system = parser_calls[0]["system"]
+        self.assertIn("RECENT CONVERSATION", system)
+        self.assertIn("Jack's birthday party reservation email", system)
+        self.assertIn("meso packaging check", system)
+        # The message being parsed rides as the prompt, not duplicated in
+        # the recent block.
+        self.assertNotIn("add those trello candidates", system)
+
     async def test_text_in_short_reply_comes_back_as_voice(self):
         h = RouterHarness(self.db)
         await h.router.handle_update(text_update("what's first today?", OWNER))

@@ -37,6 +37,10 @@ PARSER_SYSTEM = """\
 You convert Paul's message into Trello task actions. Today's Focus list is:
 {plan}
 
+RECENT CONVERSATION (oldest first) — Paul is usually replying to Jarvis's
+last message; resolve "that one", "those", names and list items against it:
+{recent}
+
 Reply ONLY a JSON array of actions (empty if the message contains none):
 - {{"action":"done","target":"<position number or title words>"}}
 - {{"action":"defer","target":"...","when":"friday|tomorrow|next week|YYYY-MM-DD"}}
@@ -47,9 +51,17 @@ Reply ONLY a JSON array of actions (empty if the message contains none):
 - {{"action":"archive","target":"..."}}   (delete/remove/bin a card — archives it on Trello)
 - {{"action":"show"}}   (he wants to see/hear the list)
 - {{"action":"calendar_event","title":"...","when":"<the date/time words he said, or empty>"}}   (he asked to put something in his CALENDAR or diary — never turn this into a plain create)
-Only include actions he clearly asked for — and cover EVERY instruction in the
-message: two asks means two actions, never just the first. "Put X on <person>"
-= create + assignee.\
+Rules:
+- Only include actions he clearly asked for — and cover EVERY instruction in
+  the message: two asks means two actions, never just the first.
+- "done" ONLY ticks a card on Today's Focus above. When Paul reports finishing
+  something that is NOT one of those cards (an email he replied to, an action
+  item from a digest or brief, life admin), that is NOT an action — leave it
+  out; never emit a "done" that has no matching card.
+- Creating cards from items in the recent conversation ("add those Trello
+  candidates"): one create per item, using the item's REAL wording as the
+  title — never invent vague titles like "Sarah task".
+- "Put X on <person>" = create + assignee.\
 """
 
 
@@ -61,10 +73,17 @@ def wants_plan(text: str) -> bool:
     return bool(SHOW_PLAN.search(text))
 
 
-async def parse_actions(claude: ClaudeClient, text: str, plan_text: str) -> list[dict[str, Any]]:
+async def parse_actions(
+    claude: ClaudeClient, text: str, plan_text: str, recent: str = ""
+) -> list[dict[str, Any]]:
     try:
         raw = await claude.quick(
-            text, system=PARSER_SYSTEM.format(plan=plan_text or "(no plan yet)"), max_tokens=600
+            text,
+            system=PARSER_SYSTEM.format(
+                plan=plan_text or "(no plan yet)",
+                recent=recent or "(nothing recent)",
+            ),
+            max_tokens=800,
         )
         start, end = raw.find("["), raw.rfind("]")
         if start < 0:
