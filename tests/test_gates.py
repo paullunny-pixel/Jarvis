@@ -345,16 +345,52 @@ class TestGatedRequestReplay(unittest.IsolatedAsyncioTestCase):
         self.assertIn("back to what you asked", combined)
         self.assertEqual(await self.store.get("gated_request", ""), "")
 
-    async def test_replay_holds_until_every_gate_is_open(self):
+    async def test_replay_holds_until_every_gate_is_open_and_says_so(self):
+        # The 30 Jul repeat: rest day opened the run gate, meds stayed shut,
+        # and the queue held SILENTLY — indistinguishable from losing it.
         h = GatedHarness(self.db)
         await self.store.set("gates_config", ALWAYS_BLOCKED)
         await h.router.handle_update(
             text_update("put a card on the board for the VAT return", OWNER)
         )
         await h.router.handle_update(text_update("meds and vitamins taken", OWNER))
-        # The run gate is still shut — the queue holds rather than half-fires.
-        self.assertNotIn("back to what you asked", " ".join(h.texts()))
+        combined = " ".join(h.texts())
+        # The run gate is still shut — the queue holds rather than half-fires...
+        self.assertNotIn("back to what you asked", combined)
         self.assertTrue(await self.store.get("gated_request", ""))
+        # ...but the hold is SPOKEN, naming what still blocks it.
+        self.assertIn("queued instructions are safe", combined)
+        self.assertIn("5km run", combined)
+
+    async def test_carry_on_replays_when_the_gates_are_open(self):
+        h = GatedHarness(self.db)
+        await self.store.set("gates_config", ALWAYS_BLOCKED)
+        await h.router.handle_update(
+            text_update("put a card on the board for the VAT return", OWNER)
+        )
+        await self.store.set("gates_config", NEVER_BLOCKED)  # gates now clear
+        await h.router.handle_update(text_update("carry on", OWNER))
+        self.assertIn("back to what you asked", " ".join(h.texts()))
+        self.assertEqual(await self.store.get("gated_request", ""), "")
+
+    async def test_carry_on_while_still_gated_explains_the_hold(self):
+        h = GatedHarness(self.db)
+        await self.store.set("gates_config", ALWAYS_BLOCKED)
+        await h.router.handle_update(
+            text_update("put a card on the board for the VAT return", OWNER)
+        )
+        await h.router.handle_update(text_update("carry on then", OWNER))
+        combined = " ".join(h.texts())
+        self.assertIn("queued instructions are safe", combined)
+        self.assertTrue(await self.store.get("gated_request", ""))  # still queued
+
+    async def test_carry_on_with_no_queue_is_ordinary_conversation(self):
+        h = GatedHarness(self.db)
+        await self.store.set("gates_config", NEVER_BLOCKED)
+        await h.router.handle_update(text_update("carry on with the story", OWNER))
+        combined = " ".join(h.texts())
+        self.assertNotIn("queued instructions", combined)
+        self.assertIn("Very good, sir.", combined)  # fell through to the brain
 
     async def test_yesterdays_stash_never_replays(self):
         h = GatedHarness(self.db)

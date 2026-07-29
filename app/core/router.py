@@ -873,6 +873,18 @@ class JarvisRouter:
             await self.telegram.send_text(message.chat_id, reply)
             return True
 
+        # 'Carry on' after a gate event — run the queued instructions now, or
+        # say exactly what still blocks them. Only fires when a queue exists,
+        # so conversational 'carry on' is never hijacked.
+        if re.search(
+            r"\b(carry on|crack on|as you were|continue|run (them|it|my instructions)"
+            r"|do (it|them) now)\b",
+            lowered,
+        ):
+            if await self.store.get("gated_request", ""):
+                if await self._replay_gated_request(message):
+                    return True
+
         # §4 wake-up controls + §10 goodnight (all in Paul's current timezone)
         if self.heartbeat is not None:
             tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
@@ -1408,26 +1420,39 @@ class JarvisRouter:
         await self.telegram.send_text(message.chat_id, reply_text)
         return True
 
-    async def _replay_gated_request(self, message: IncomingMessage) -> None:
+    async def _replay_gated_request(self, message: IncomingMessage) -> bool:
         """A request the gate blocked earlier today gets actioned the moment
-        the gates open — instructions must never die at the gate."""
+        the gates open — instructions must never die at the gate. Returns True
+        when it said anything (replay or a hold explanation)."""
         import json as _json
 
         raw = await self.store.get("gated_request", "")
         if not raw:
-            return
+            return False
         try:
             state = _json.loads(raw)
         except Exception:
             await self.store.set("gated_request", "")
-            return
+            return False
         tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
         now_local = datetime.now(ZoneInfo(tz_name))
         if state.get("date") != now_local.date().isoformat() or not state.get("text"):
             await self.store.set("gated_request", "")
-            return
-        if self.gates is not None and await self.gates.outstanding(now_local):
-            return  # another gate still shut — keep holding
+            return False
+        if self.gates is not None:
+            outstanding = await self.gates.outstanding(now_local)
+            if outstanding:
+                # A silent hold looks exactly like a lost instruction (the
+                # 30 Jul rest-day repeat) — say what still stands in the way.
+                labels = " and ".join(g["label"] for g in outstanding)
+                note = (
+                    f"Your queued instructions are safe, sir — {labels} still "
+                    "gating the board. Clear that (or say 'override') and I'll "
+                    "run them that instant."
+                )
+                await self.log.log("out", note, chat_id=message.chat_id)
+                await self.telegram.send_text(message.chat_id, note)
+                return True
         await self.store.set("gated_request", "")
         intro = "Now — back to what you asked before the gate, sir:"
         await self.log.log("out", intro, chat_id=message.chat_id)
@@ -1447,6 +1472,7 @@ class JarvisRouter:
             )
             await self.log.log("out", fallback, chat_id=message.chat_id)
             await self.telegram.send_text(message.chat_id, fallback)
+        return True
 
     async def _handle_document_request(self, chat_id: int, transcript: str) -> bool:
         """Try to serve a 'show me the X' request from the library. Returns True
