@@ -40,7 +40,12 @@ recall_memory before answering anything factual about his life or companies;
 the action tools to actually do things when he asks. Only log an activity,
 water, or a done task when Paul EXPLICITLY says it happened — "I have NOT
 done my run" must never log a run. If a tool fails, say so plainly and carry
-on. Same Jarvis, same humour, same warmth — just live.\
+on. Same Jarvis, same humour, same warmth — just live.
+
+Silence is Paul THINKING, never absence. Do not fill it: no "are you
+there?", no "hello?", no repeating yourself, no checking in. When a pause
+forces your turn and there is nothing new to say, use skip_turn and wait —
+he will speak when he is ready.\
 """
 
 
@@ -66,7 +71,10 @@ no lists, no [TEXT] tag.
    briefly in the language you were addressed in — recall_memory first if
    it's about Paul's life or companies — then resume interpreting.
 5. Names, numbers, dates, amounts: render them precisely. If you didn't
-   catch one, ask that speaker to repeat it rather than guess.\
+   catch one, ask that speaker to repeat it rather than guess.
+6. Silence means they're thinking, reading or deciding. NEVER fill it —
+   no 'are you there?', no prompting, no small talk. When a pause forces
+   your turn and there is nothing to interpret, use skip_turn and wait.\
 """
 
 
@@ -115,6 +123,11 @@ def build_agent_config(
             _tool("log_movement", "Log a movement break Paul just did. Only when he explicitly says he moved.", f"{base}/log_movement", {}, []),
             _tool("inbox_overview", "Unread email counts and headlines across all of Paul's inboxes.", f"{base}/inbox_overview", {}, []),
         ]
+    # Silence discipline, both modes: wait the maximum before the platform
+    # forces a turn (cap is 30s), and give the agent skip_turn so a forced
+    # turn can be a deliberate quiet one — Paul thinking is not absence.
+    turn = {"turn_timeout": 30}
+    built_in = {"skip_turn": {}}
     if mode == "interpreter":
         return {
             "name": "Jarvis (interpreter)",
@@ -123,12 +136,14 @@ def build_agent_config(
                     "prompt": {
                         "prompt": JARVIS_SYSTEM_PROMPT + LIVE_INTERPRETER_ADDENDUM,
                         "tools": [recall] if recall else [],
+                        "built_in_tools": dict(built_in),
                     },
                     "first_message": (
                         "Interpreter on, sir. Fale à vontade — I'll carry it both ways."
                     ),
                     "language": "en",
                 },
+                "turn": dict(turn),
                 "tts": {"voice_id": voice_id},
             },
         }
@@ -139,10 +154,12 @@ def build_agent_config(
                 "prompt": {
                     "prompt": JARVIS_SYSTEM_PROMPT + LIVE_CALL_ADDENDUM,
                     "tools": tools,
+                    "built_in_tools": dict(built_in),
                 },
                 "first_message": "Sir. You rang?",
                 "language": "en",
             },
+            "turn": dict(turn),
             "tts": {"voice_id": voice_id},
         },
     }
@@ -191,6 +208,15 @@ class VoiceEngine:
             except Exception:
                 logger.exception("Agent refresh errored — recreating")
         response = await self._client.post(f"{API_BASE}/convai/agents/create", json=config)
+        if response.status_code != 200 and "built_in_tools" in config["conversation_config"]["agent"]["prompt"]:
+            # Schema drift on the optional silence tool must never kill the
+            # button — retry once without it (the prompt rules still apply).
+            logger.warning(
+                "Agent create rejected (%s) — retrying without built_in_tools: %s",
+                response.status_code, response.text[:200],
+            )
+            config["conversation_config"]["agent"]["prompt"].pop("built_in_tools")
+            response = await self._client.post(f"{API_BASE}/convai/agents/create", json=config)
         if response.status_code != 200:
             raise RuntimeError(
                 f"Could not create the live voice agent: {response.status_code} {response.text[:300]}"
