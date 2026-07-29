@@ -131,6 +131,8 @@ COCKPIT_HTML = """<!DOCTYPE html>
     <span class="pill"><span class="dot"></span> <span id="pill-day">Day — with Jarvis</span></span>
     <button class="pill" id="talk-btn" style="cursor:pointer;border:none;font:inherit"
       title="Live, interruptible conversation — headphones recommended">🎙 Talk to Jarvis</button>
+    <button class="pill" id="interpret-btn" style="cursor:pointer;border:none;font:inherit"
+      title="Live interpreter — speak English or Portuguese, Jarvis carries it both ways and can explain concepts">🌐 Interpret EN⇄PT</button>
   </div>
 
   <div class="sec">Streaks · consecutive days</div>
@@ -278,14 +280,15 @@ setInterval(() => fetch('DATA_URL').then(r => r.json()).then(render).catch(()=>{
 
 // Live voice (Build Slice: Voice Access): open a realtime, interruptible
 // session with Jarvis in the browser — his real voice, barge-in and all.
-document.getElementById('talk-btn').addEventListener('click', async () => {
-  const btn = document.getElementById('talk-btn');
+// Two modes share the plumbing: assistant (Talk) and EN⇄PT interpreter.
+async function openLive(btnId, mode, idle, live) {
+  const btn = document.getElementById(btnId);
   if (document.querySelector('elevenlabs-convai')) { return; }  // already live
-  btn.textContent = '🎙 Connecting…';
+  btn.textContent = 'Connecting…';
   try {
-    const res = await fetch('DATA_URL'.replace(/\/data$/, '/voice-url'), {method:'POST'});
+    const res = await fetch('DATA_URL'.replace(/\/data$/, '/voice-url') + '?mode=' + mode, {method:'POST'});
     const body = await res.json();
-    if (body.error) { btn.textContent = '🎙 Talk to Jarvis'; alert(body.error); return; }
+    if (body.error) { btn.textContent = idle; alert(body.error); return; }
     if (!window.customElements.get('elevenlabs-convai')) {
       await new Promise((ok, err) => {
         const s = document.createElement('script');
@@ -297,12 +300,16 @@ document.getElementById('talk-btn').addEventListener('click', async () => {
     const widget = document.createElement('elevenlabs-convai');
     widget.setAttribute('signed-url', body.url);
     document.body.appendChild(widget);
-    btn.textContent = '🎙 Live — talk away';
+    btn.textContent = live;
   } catch (e) {
-    btn.textContent = '🎙 Talk to Jarvis';
+    btn.textContent = idle;
     alert('Could not open the live session — try again in a moment.');
   }
-});
+}
+document.getElementById('talk-btn').addEventListener('click',
+  () => openLive('talk-btn', 'assistant', '🎙 Talk to Jarvis', '🎙 Live — talk away'));
+document.getElementById('interpret-btn').addEventListener('click',
+  () => openLive('interpret-btn', 'interpreter', '🌐 Interpret EN⇄PT', '🌐 Interpreting — falem à vontade'));
 </script>
 </body>
 </html>"""

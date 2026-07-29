@@ -43,6 +43,24 @@ class TestAgentConfig(unittest.TestCase):
         config = build_agent_config("", "V", "S")
         self.assertEqual(config["conversation_config"]["agent"]["prompt"]["tools"], [])
 
+    def test_interpreter_mode_config(self):
+        config = build_agent_config("https://jarvis.example", "VOICE123", "S9", mode="interpreter")
+        self.assertEqual(config["name"], "Jarvis (interpreter)")
+        prompt = config["conversation_config"]["agent"]["prompt"]["prompt"]
+        self.assertIn("INTERPRETER", prompt)
+        self.assertIn("Portuguese rendition", prompt)
+        self.assertIn("Jarvis here", prompt)              # marked context additions
+        self.assertIn("don't take actions", prompt.lower().replace("’", "'"))
+        # A stranger's Portuguese must never reach the action tools —
+        # the interpreter carries memory recall ONLY.
+        tools = config["conversation_config"]["agent"]["prompt"]["tools"]
+        self.assertEqual([t["name"] for t in tools], ["recall_memory"])
+        self.assertEqual(config["conversation_config"]["tts"]["voice_id"], "VOICE123")
+
+    def test_interpreter_without_public_url_has_no_tools(self):
+        config = build_agent_config("", "V", "S", mode="interpreter")
+        self.assertEqual(config["conversation_config"]["agent"]["prompt"]["tools"], [])
+
 
 class TestVoiceEngine(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -50,14 +68,16 @@ class TestVoiceEngine(unittest.IsolatedAsyncioTestCase):
         self.db = SqliteDatabase(os.path.join(self._dir.name, "t.db"))
         await self.db.init()
         self.calls = []
+        self.created = 0
 
         def handler(request: httpx.Request) -> httpx.Response:
             path = request.url.path
             self.calls.append((request.method, path))
             if path.endswith("/convai/agents/create"):
-                return httpx.Response(200, json={"agent_id": "AG1"})
-            if "/convai/agents/AG1" in path:
-                return httpx.Response(200, json={"agent_id": "AG1"})
+                self.created += 1
+                return httpx.Response(200, json={"agent_id": f"AG{self.created}"})
+            if request.method == "PATCH" and "/convai/agents/" in path:
+                return httpx.Response(200, json={})
             if path.endswith("/convai/conversation/get_signed_url"):
                 return httpx.Response(200, json={"signed_url": "wss://live/session?token=T"})
             if path.endswith("/convai/twilio/outbound-call"):
@@ -90,6 +110,21 @@ class TestVoiceEngine(unittest.IsolatedAsyncioTestCase):
     async def test_signed_session_url(self):
         url = await self.engine.signed_session_url()
         self.assertTrue(url.startswith("wss://live/session"))
+
+    async def test_interpreter_is_its_own_agent(self):
+        from app.core.store import SettingsStore
+
+        assistant = await self.engine.ensure_agent()
+        interpreter = await self.engine.ensure_agent("interpreter")
+        self.assertNotEqual(assistant, interpreter)
+        store = SettingsStore(self.db)
+        self.assertEqual(await store.get(AGENT_ID_KEY), assistant)
+        self.assertEqual(await store.get("voice_interpreter_agent_id"), interpreter)
+        # Both modes mint signed URLs; the interpreter refreshes, not recreates.
+        url = await self.engine.signed_session_url(mode="interpreter")
+        self.assertTrue(url.startswith("wss://live/session"))
+        creates = [c for c in self.calls if c[1].endswith("/agents/create")]
+        self.assertEqual(len(creates), 2)
 
     async def test_outbound_call(self):
         self.assertTrue(await self.engine.outbound_call("PN1", "+447700900000"))
@@ -161,6 +196,14 @@ class TestCockpitSurface(unittest.TestCase):
         self.assertIn("Talk to Jarvis", html)
         self.assertIn("/voice-url", html)
         self.assertIn("elevenlabs-convai", html)
+
+    def test_page_carries_the_interpreter_button(self):
+        from app.cockpit.page import render_page
+
+        html = render_page("/cockpit/S/data")
+        self.assertIn("interpret-btn", html)
+        self.assertIn("Interpret EN⇄PT", html)
+        self.assertIn("mode=", html)   # the mode rides the voice-url request
 
 
 if __name__ == "__main__":

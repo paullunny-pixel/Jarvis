@@ -16,7 +16,7 @@ non-skippable gates (run + meds).
 
 ## Commands
 
-- Tests: `python -m unittest discover -s tests` (338 tests; stdlib unittest,
+- Tests: `python -m unittest discover -s tests` (342 tests; stdlib unittest,
   NOT pytest — keep it that way. Only `requirements.txt` is needed; two PDF
   tests also use `reportlab` and skip automatically when it isn't installed)
 - No local run needed for most work; local dev uses SQLite automatically
@@ -61,7 +61,10 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
 - `app/voice/` — live voice engine (ElevenLabs Conversational AI agent:
   Paul's Jarvis voice, persona-primed, barge-in; cockpit 'Talk' button via
   signed URL; webhook tools back into memory/Trello/mail/rhythm; Twilio
-  phone surface + wake-call channel once the number is registered)
+  phone surface + wake-call channel once the number is registered; second
+  'Interpret EN⇄PT' agent — live interpreter mode, faithful both-ways
+  renditions with marked 'Jarvis here—' context, recall_memory only so a
+  stranger's speech can never trigger actions)
 - `app/private/` — sobriety track (walled off)
 - `app/cockpit/` — dashboard (design source: `docs/prototype-progress-cockpit.html`)
 

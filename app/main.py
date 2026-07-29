@@ -301,8 +301,11 @@ async def cockpit_voice_url(secret: str, request: Request) -> dict:
     engine = getattr(router, "voice_engine", None)
     if engine is None:
         return {"error": "Live voice needs the ElevenLabs key — it's not set."}
+    mode = request.query_params.get("mode", "assistant")
+    if mode not in ("assistant", "interpreter"):
+        mode = "assistant"
     try:
-        return {"url": await engine.signed_session_url()}
+        return {"url": await engine.signed_session_url(mode=mode)}
     except Exception as exc:
         logging.getLogger("jarvis").exception("Live voice session failed")
         detail = str(exc)

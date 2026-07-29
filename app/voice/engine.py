@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 
 API_BASE = "https://api.elevenlabs.io/v1"
 AGENT_ID_KEY = "voice_agent_id"
+# One live agent per mode, each with its own persisted id.
+AGENT_KEYS = {"assistant": AGENT_ID_KEY, "interpreter": "voice_interpreter_agent_id"}
 
 LIVE_CALL_ADDENDUM = """
 
@@ -39,6 +41,32 @@ the action tools to actually do things when he asks. Only log an activity,
 water, or a done task when Paul EXPLICITLY says it happened — "I have NOT
 done my run" must never log a run. If a tool fails, say so plainly and carry
 on. Same Jarvis, same humour, same warmth — just live.\
+"""
+
+
+LIVE_INTERPRETER_ADDENDUM = """
+
+---
+**You are on a LIVE CALL as INTERPRETER between two people in the room:**
+Paul (English) and a Portuguese speaker. Everything is spoken — no markdown,
+no lists, no [TEXT] tag.
+
+1. Hear English → immediately give the Portuguese rendition. Hear Portuguese
+   → immediately give the English rendition. FIRST person, faithful to
+   meaning and tone; never summarise away detail, never soften or sharpen
+   what was said. Match the speaker's variety of Portuguese (European or
+   Brazilian) from how they speak.
+2. The conversation belongs to THEM. Don't answer questions on either side's
+   behalf, don't add opinions, don't take actions — interpret.
+3. When a term, idiom or concept won't land in the other language — or the
+   listener is plainly confused — render it first, then add ONE short
+   explanation opened with 'Jarvis here —' (or 'Aqui é o Jarvis —') so both
+   know it's you and not the speaker, then hand straight back.
+4. If either person addresses YOU directly ('Jarvis, ...'), step out, answer
+   briefly in the language you were addressed in — recall_memory first if
+   it's about Paul's life or companies — then resume interpreting.
+5. Names, numbers, dates, amounts: render them precisely. If you didn't
+   catch one, ask that speaker to repeat it rather than guess.\
 """
 
 
@@ -66,14 +94,20 @@ def _tool(name: str, description: str, url: str, properties: dict, required: lis
     }
 
 
-def build_agent_config(public_url: str, voice_id: str, tool_secret: str) -> dict:
-    """The full agent definition: persona + Jarvis voice + backend tools."""
-    tools = []
+def build_agent_config(
+    public_url: str, voice_id: str, tool_secret: str, mode: str = "assistant"
+) -> dict:
+    """The full agent definition: persona + Jarvis voice + backend tools.
+    'interpreter' mode is the EN⇄PT live interpreter — memory recall only
+    (a stranger's Portuguese must never trigger board/logging actions)."""
+    recall = None
+    tools: list = []
     if public_url:
         base = f"{public_url.rstrip('/')}/voice/tools/{tool_secret}"
         query = {"query": {"type": "string", "description": "What to look up about Paul's life, companies, people or plans"}}
+        recall = _tool("recall_memory", "Search Jarvis's second brain (Paul's knowledge base) for relevant facts before answering.", f"{base}/recall_memory", query, ["query"])
         tools = [
-            _tool("recall_memory", "Search Jarvis's second brain (Paul's knowledge base) for relevant facts before answering.", f"{base}/recall_memory", query, ["query"]),
+            recall,
             _tool("todays_focus", "Get Paul's Today's Focus task list with done/undone state.", f"{base}/todays_focus", {}, []),
             _tool("mark_done", "Mark a task on Today's Focus as done (moves the Trello card). Only when Paul explicitly says it's done.", f"{base}/mark_done", {"reference": {"type": "string", "description": "Position number or title words"}}, ["reference"]),
             _tool("create_task", "Create a new Trello card for Paul or a teammate.", f"{base}/create_task", {"title": {"type": "string", "description": "The card title, short and clear"}, "assignee": {"type": "string", "description": "Teammate name, or empty for unassigned"}}, ["title"]),
@@ -81,6 +115,23 @@ def build_agent_config(public_url: str, voice_id: str, tool_secret: str) -> dict
             _tool("log_movement", "Log a movement break Paul just did. Only when he explicitly says he moved.", f"{base}/log_movement", {}, []),
             _tool("inbox_overview", "Unread email counts and headlines across all of Paul's inboxes.", f"{base}/inbox_overview", {}, []),
         ]
+    if mode == "interpreter":
+        return {
+            "name": "Jarvis (interpreter)",
+            "conversation_config": {
+                "agent": {
+                    "prompt": {
+                        "prompt": JARVIS_SYSTEM_PROMPT + LIVE_INTERPRETER_ADDENDUM,
+                        "tools": [recall] if recall else [],
+                    },
+                    "first_message": (
+                        "Interpreter on, sir. Fale à vontade — I'll carry it both ways."
+                    ),
+                    "language": "en",
+                },
+                "tts": {"voice_id": voice_id},
+            },
+        }
     return {
         "name": "Jarvis (live voice)",
         "conversation_config": {
@@ -118,11 +169,14 @@ class VoiceEngine:
     async def close(self) -> None:
         await self._client.aclose()
 
-    async def ensure_agent(self) -> str:
+    async def ensure_agent(self, mode: str = "assistant") -> str:
         """Create the live agent on first use (persist its id); refresh the
         persona/tools on later calls so prompt edits reach the live Jarvis."""
-        config = build_agent_config(self._public_url, self._voice_id, self._tool_secret)
-        agent_id = await self._settings.get(AGENT_ID_KEY)
+        key = AGENT_KEYS.get(mode, AGENT_ID_KEY)
+        config = build_agent_config(
+            self._public_url, self._voice_id, self._tool_secret, mode=mode
+        )
+        agent_id = await self._settings.get(key)
         if agent_id:
             try:
                 response = await self._client.patch(
@@ -142,14 +196,14 @@ class VoiceEngine:
                 f"Could not create the live voice agent: {response.status_code} {response.text[:300]}"
             )
         agent_id = response.json()["agent_id"]
-        await self._settings.set(AGENT_ID_KEY, agent_id)
-        logger.info("Live voice agent created: %s", agent_id)
+        await self._settings.set(key, agent_id)
+        logger.info("Live voice agent created (%s): %s", mode, agent_id)
         return agent_id
 
-    async def signed_session_url(self) -> str:
+    async def signed_session_url(self, mode: str = "assistant") -> str:
         """A short-lived URL the cockpit's browser widget uses to open the
         live WebRTC session (the agent stays private — owner-gated upstream)."""
-        agent_id = await self.ensure_agent()
+        agent_id = await self.ensure_agent(mode)
         response = await self._client.get(
             f"{API_BASE}/convai/conversation/get_signed_url",
             params={"agent_id": agent_id},
