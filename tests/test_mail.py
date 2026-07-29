@@ -74,8 +74,19 @@ class FakeIMAP:
                 if addr in raw.split(b"\n\n", 1)[0].lower()
             ]
         elif term_match:
-            term = term_match.group(1).lower().encode()
-            matches = [i + 1 for i, raw in enumerate(self._messages) if term in raw.lower()]
+            # Match decoded content like real Gmail search — utf-8 MIME bodies
+            # are base64 on the wire, so raw-byte matching would miss them.
+            import email as _email
+
+            from app.mail.client import _plaintext
+
+            term = term_match.group(1).lower()
+            matches = []
+            for i, raw in enumerate(self._messages):
+                msg = _email.message_from_bytes(raw)
+                hay = f"{msg.get('From', '')} {msg.get('Subject', '')} {_plaintext(msg)}".lower()
+                if term in hay:
+                    matches.append(i + 1)
         ids = b" ".join(str(i).encode() for i in matches)
         return "OK", [ids]
 
@@ -179,6 +190,12 @@ BMI_INBOX = [
         "<html><head><title>x</title></head><body><p>Prosculpt EUDAMED status:"
         " <b>UNDER REVIEW</b></p></body></html>",
     ),
+    # The bug: this thread never says 'BMI' — a BMI-only search missed it.
+    raw_email(
+        "juliana@mednet.example", "MedNet EC-REP Website Follow up",
+        "EUDAMED actor registration guides attached; UDI/device registration next.",
+        "Juliana",
+    ),
 ]
 
 
@@ -230,6 +247,45 @@ class TestEmailResearch(unittest.IsolatedAsyncioTestCase):
         system = self.claude_requests[-1]["system"]
         self.assertIn("country by country registration update", system)
         self.assertIn("never invent", system)
+
+    async def test_multi_term_query_covers_every_topic(self):
+        # 'BMI' alone missed the MedNet EUDAMED thread — each named topic gets
+        # its own search, overlapping emails counted once.
+        out = await self.service.research(
+            self.claude, "BMI, EUDAMED", "registration update", "prodermis"
+        )
+        self.assertIn("Read 4 emails", out)
+        corpus = self.claude_requests[-1]["messages"][0]["content"]
+        self.assertIn("EUDAMED actor registration guides", corpus)   # the MedNet thread
+        self.assertEqual(corpus.count("SFDA dossier accepted"), 1)   # deduped
+
+    async def test_oversized_email_is_flagged_as_a_gap_not_blanked(self):
+        big = raw_email(
+            "regulatory@bmi-group.com", "BMI master tracking file",
+            "x" * 4_100_000, "BMI Regulatory",
+        )
+        client = self.service.match("prodermis")[0]
+        client._imap = lambda: FakeIMAP([*BMI_INBOX, big])
+        await self.service.research(self.claude, "BMI", "update", "prodermis")
+        corpus = self.claude_requests[-1]["messages"][0]["content"]
+        self.assertIn("BMI master tracking file", corpus)     # subject still present
+        self.assertIn("(body not read", corpus)               # honestly marked
+        system = self.claude_requests[-1]["system"]
+        self.assertIn("gaps", system)
+
+    async def test_truncated_search_is_declared_never_silent(self):
+        self.service.RESEARCH_LIMIT = 2
+        out = await self.service.research(self.claude, "BMI", "update", "prodermis")
+        self.assertIn("Read 2 emails", out)
+        self.assertIn("3 matches", out)
+        self.assertIn("older matches weren't read", out.lower())
+
+    async def test_go_deeper_widens_the_read(self):
+        self.service.RESEARCH_LIMIT = 2
+        out = await self.service.research(
+            self.claude, "BMI", "go deeper — the full history", "prodermis"
+        )
+        self.assertIn("Read 3 emails", out)   # the cap lifted, all matches read
 
     async def test_research_result_is_remembered_for_the_draft(self):
         await self.service.research(self.claude, "BMI", "summary", "prodermis")

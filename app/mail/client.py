@@ -151,16 +151,22 @@ class MailClient:
                 )
             return {"unread": len(ids), "messages": messages}
 
-    async def search_messages(self, query: str, limit: int = 25) -> list[dict]:
-        """ALL mail matching a query — read or unread, the whole inbox. Uses
-        Gmail's native search (X-GM-RAW) since every account is Google-hosted,
-        with a plain FROM/SUBJECT fallback for anything that isn't."""
+    # Research reads real correspondence, and Paul's business email is heavy
+    # with PDFs and images — a 200KB ceiling would blank exactly the emails
+    # that matter. Fetch up to 4MB each (one at a time), flag anything bigger.
+    RESEARCH_FETCH_CEILING_BYTES = 4_000_000
+
+    async def search_messages(self, query: str, limit: int = 60) -> tuple[list[dict], int]:
+        """ALL mail matching a query — read or unread, the whole account (All
+        Mail covers Paul's own replies). Gmail's native search (X-GM-RAW) with
+        a plain FROM/SUBJECT fallback. Returns (newest `limit` messages, total
+        match count) so the caller can be honest about truncation."""
         return await asyncio.to_thread(self._search_sync, query, limit)
 
-    def _search_sync(self, query: str, limit: int) -> list[dict]:
+    def _search_sync(self, query: str, limit: int) -> tuple[list[dict], int]:
         query = query.replace('"', "").strip()
         if not query:
-            return []
+            return [], 0
         with self._imap() as imap:
             imap.login(self.account.address, self.account.app_password)
             # All Mail covers Paul's own replies too — 'all communication with
@@ -184,27 +190,33 @@ class MailClient:
             messages = []
             for msg_id in reversed(ids[-limit:]):
                 size = self._message_size(imap, msg_id)
-                spec = (
-                    "(BODY.PEEK[HEADER])"
-                    if size > self.FULL_FETCH_CEILING_BYTES
-                    else "(BODY.PEEK[])"
-                )
+                too_big = size > self.RESEARCH_FETCH_CEILING_BYTES
+                spec = "(BODY.PEEK[HEADER])" if too_big else "(BODY.PEEK[])"
                 _, fetched = imap.fetch(msg_id, spec)
                 raw = next((part[1] for part in fetched if isinstance(part, tuple)), None)
                 if not raw:
                     continue
                 msg = email.message_from_bytes(raw)
                 from_name, from_addr = email.utils.parseaddr(_decode(msg.get("From")))
+                if too_big:
+                    snippet = (
+                        "(body not read — message too large to fetch, likely heavy "
+                        "attachments; treat as a gap)"
+                    )
+                else:
+                    snippet = " ".join(_plaintext(msg).split())[:3000] or (
+                        "(no readable text in this email — treat as a gap)"
+                    )
                 messages.append(
                     {
                         "from": from_name or from_addr,
                         "from_address": from_addr,
                         "subject": _decode(msg.get("Subject")) or "(no subject)",
                         "date": _decode(msg.get("Date")),
-                        "snippet": " ".join(_plaintext(msg).split())[:3000],
+                        "snippet": snippet,
                     }
                 )
-            return messages
+            return messages, len(ids)
 
     SENT_FOLDERS = ('"[Gmail]/Sent Mail"', "Sent", '"Sent Items"')
 

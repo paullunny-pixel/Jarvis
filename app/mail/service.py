@@ -252,48 +252,91 @@ class MailService:
 
     # ---------------------------------------------------- research (real work)
 
+    RESEARCH_LIMIT = 60  # newest matches read per search term, per account
+
     async def research(
         self, claude, query: str, instruction: str, account_hint: str = ""
     ) -> str:
         """'Read all my emails from BMI and summarise where we're up to' —
         search the WHOLE mailbox (read and unread), then produce exactly what
-        Paul asked for from what was actually found. The output is remembered
-        so 'now draft that to Sarah' has real substance behind it."""
+        Paul asked for from what was actually found. Multiple comma-separated
+        terms each get their own search (BMI-only queries missed the EUDAMED
+        threads that never say 'BMI'); any truncation is declared, never
+        silent. The output is remembered so 'draft that to Sarah' has real
+        substance behind it."""
         clients = self.match(account_hint)
-        results = await asyncio.gather(
-            *(c.search_messages(query, limit=25) for c in clients), return_exceptions=True
-        )
-        parts, count = [], 0
-        for client, result in zip(clients, results):
-            if isinstance(result, Exception):
-                logger.warning("Search failed for %s: %s", client.account.label, result)
-                continue
-            for m in result:
-                count += 1
-                parts.append(
-                    f"[{client.account.label}] {m['date']} — {m['from']} "
-                    f"({m['from_address']}) — {m['subject']}\n{m['snippet']}"
-                )
+        terms = [t.strip() for t in re.split(r"[,;/]", query) if t.strip()][:5] or [query]
+        limit = self.RESEARCH_LIMIT
+        if re.search(
+            r"\b(deeper|everything|entire|full history|all of it|the lot)\b",
+            f"{query} {instruction}", re.IGNORECASE,
+        ):
+            limit = 200  # 'go deeper' widens the read, it isn't a platitude
+        seen: set = set()
+        found: list[tuple[str, dict]] = []
+        term_notes, truncated = [], False
+        for term in terms:
+            results = await asyncio.gather(
+                *(c.search_messages(term, limit=limit) for c in clients),
+                return_exceptions=True,
+            )
+            fresh, matches = 0, 0
+            for client, result in zip(clients, results):
+                if isinstance(result, Exception):
+                    logger.warning("Search failed for %s: %s", client.account.label, result)
+                    continue
+                messages, total = result
+                matches += total
+                if total > len(messages):
+                    truncated = True
+                for m in messages:
+                    key = (m["from_address"], m["subject"], m["date"])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    fresh += 1
+                    found.append((client.account.label, m))
+            note = f"'{term}': {matches} matches"
+            if matches > fresh:
+                note += f", {fresh} new"
+            term_notes.append(note)
         searched = ", ".join(c.account.label for c in clients)
-        if not count:
+        if not found:
             return (
-                f"I searched {searched} end to end for '{query}' and found nothing. "
+                f"I searched {searched} end to end for {query!r} and found nothing. "
                 "Different search words might do it — what would the sender's "
                 "address or a subject line contain?"
             )
-        corpus = "\n\n---\n\n".join(parts)[:60000]
+
+        def _stamp(entry) -> float:
+            try:
+                from email.utils import parsedate_to_datetime
+
+                return parsedate_to_datetime(entry[1]["date"]).timestamp()
+            except Exception:
+                return 0.0
+
+        found.sort(key=_stamp)  # chronological — 'where are we up to' reads forward
+        parts = [
+            f"[{label}] {m['date']} — {m['from']} ({m['from_address']}) — "
+            f"{m['subject']}\n{m['snippet']}"
+            for label, m in found
+        ]
+        corpus = "\n\n---\n\n".join(parts)[:100000]
         system = (
             "You are Jarvis, Paul's aide. Below are real emails found by searching "
-            "his mailbox. Produce EXACTLY what Paul asked for:\n"
+            "his mailbox, oldest first. Produce EXACTLY what Paul asked for:\n"
             f"{instruction or 'a tight summary of these emails'}\n\n"
             "Work ONLY from these emails. Where they don't answer something, say "
-            "so plainly — never invent, pad, or promise content 'to follow'. "
-            "British, structured, ready to forward."
+            "so plainly — never invent, pad, or promise content 'to follow'. Some "
+            "may be marked '(body not read ...)': list those as gaps at the end "
+            "rather than guessing their contents. British, structured, ready to "
+            "forward."
         )
         try:
             summary = (
                 await claude.converse(
-                    system, [{"role": "user", "content": corpus}], max_tokens=2000
+                    system, [{"role": "user", "content": corpus}], max_tokens=2500
                 )
             ).strip()
         except Exception:
@@ -301,10 +344,16 @@ class MailService:
             summary = ""
         if not summary:
             return (
-                f"Found {count} matching emails on {searched} but the write-up "
+                f"Found {len(found)} matching emails on {searched} but the write-up "
                 "failed mid-flight — ask me again in a minute."
             )
-        out = f"Read {count} emails matching '{query}' across {searched}.\n\n{summary}"
+        header = f"Read {len(found)} emails across {searched} ({' · '.join(term_notes)})."
+        if truncated:
+            header += (
+                " That's the newest slice of a bigger archive — older matches "
+                "weren't read; say 'go deeper on <term>' for another pass."
+            )
+        out = f"{header}\n\n{summary}"
         await self._settings.set(RESEARCH_KEY, out[:12000])
         return out
 
