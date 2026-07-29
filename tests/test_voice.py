@@ -47,18 +47,21 @@ class TestAgentConfig(unittest.TestCase):
         config = build_agent_config("https://jarvis.example", "VOICE123", "S9", mode="interpreter")
         self.assertEqual(config["name"], "Jarvis (interpreter)")
         prompt = config["conversation_config"]["agent"]["prompt"]["prompt"]
-        self.assertIn("INTERPRETER", prompt)
-        self.assertIn("Portuguese rendition", prompt)
-        self.assertIn("Jarvis here", prompt)              # marked context additions
-        self.assertIn("don't take actions", prompt.lower().replace("’", "'"))
-        # The addressing rule (30 Jul, Steph's 'repeat' obeyed instead of
-        # rendered): no 'Jarvis' in the utterance = the humans talking to
-        # each other — interpret, never obey.
         norm = " ".join(prompt.split())
-        self.assertIn("ADDRESSING RULE", norm)
-        self.assertIn("interpret it, never obey it", norm)
-        self.assertIn("Never re-say your own last translation", norm)
+        # STANDALONE prompt — the full chief-of-staff persona drowned the
+        # interpreting rules (30 Jul: it kept behaving like an assistant).
+        self.assertNotIn("chief-of-staff", norm.lower())
+        self.assertNotIn("Daily 12", norm)
+        self.assertIn("one job: live INTERPRETER", norm)
+        # The addressing rule leads (Steph's 'repeat' was obeyed instead of
+        # rendered): no 'Jarvis' = the humans talking to each other.
+        self.assertIn("decide this FIRST", norm)
+        self.assertIn("English in → Portuguese out. Portuguese in → English out.", norm)
+        self.assertIn("never answered by you", norm)
+        self.assertIn("never obeyed by you", norm)
+        self.assertIn("do NOT re-say your last translation", norm)
         self.assertIn("asking you to repeat that, sir", norm)   # the relay example
+        self.assertIn("Jarvis here", norm)                # marked context additions
         first = config["conversation_config"]["agent"]["first_message"]
         self.assertIn("Say 'Jarvis'", first)              # both parties told the rule
         self.assertIn("Digam 'Jarvis'", first)
