@@ -22,6 +22,9 @@ class ClaudeError(RuntimeError):
 
 
 class ClaudeClient:
+    RETRY_WAIT = 1.5   # transient 5xx — quick retry
+    RATE_WAIT = 20.0   # 429/529 clear on the provider's clock, not ours
+
     def __init__(
         self,
         api_key: str,
@@ -45,11 +48,14 @@ class ClaudeClient:
     async def close(self) -> None:
         await self._client.aclose()
 
-    async def _call(self, payload: dict[str, Any], retries: int = 2) -> dict[str, Any]:
+    async def _call(
+        self, payload: dict[str, Any], retries: int = 2, timeout: float | None = None
+    ) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {"timeout": timeout} if timeout else {}
         last_error: Exception | None = None
         for attempt in range(retries + 1):
             try:
-                response = await self._client.post(API_URL, json=payload)
+                response = await self._client.post(API_URL, json=payload, **kwargs)
                 if response.status_code in (429, 500, 502, 503, 529):
                     raise ClaudeError(f"retryable status {response.status_code}: {response.text[:200]}")
                 response.raise_for_status()
@@ -57,7 +63,12 @@ class ClaudeClient:
             except (httpx.HTTPError, ClaudeError) as exc:  # noqa: PERF203
                 last_error = exc
                 if attempt < retries:
-                    await asyncio.sleep(1.5 * (attempt + 1))
+                    # A rate limit retried after 1.5s just burns the attempt —
+                    # it needs the provider's window to pass.
+                    wait = self.RETRY_WAIT * (attempt + 1)
+                    if "429" in str(exc) or "529" in str(exc):
+                        wait = self.RATE_WAIT * (attempt + 1)
+                    await asyncio.sleep(wait)
         raise ClaudeError(f"Claude API failed after {retries + 1} attempts: {last_error}")
 
     @staticmethod
@@ -71,6 +82,7 @@ class ClaudeClient:
         system: str,
         messages: list[dict[str, Any]],  # content may be text or vision blocks
         max_tokens: int = 1024,
+        timeout: float | None = None,  # long-corpus jobs (email research) need more than chat
     ) -> str:
         """Full-quality Jarvis reply (brain model)."""
         data = await self._call(
@@ -79,7 +91,8 @@ class ClaudeClient:
                 "max_tokens": max_tokens,
                 "system": system,
                 "messages": messages,
-            }
+            },
+            timeout=timeout,
         )
         return self._text_of(data)
 

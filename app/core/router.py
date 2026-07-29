@@ -1378,6 +1378,11 @@ class JarvisRouter:
             )
             if not actions:
                 return False  # ordinary conversation after all
+            if any(a.get("action") == "research" for a in actions):
+                # Reading a whole archive takes minutes — silence reads as death.
+                note = "On it — reading the archive now. Give me a couple of minutes for a proper answer."
+                await self.log.log("out", note, chat_id=message.chat_id)
+                await self.telegram.send_text(message.chat_id, note)
             results = await mail_commands.execute_actions(self.mail, actions, claude=self.claude)
             if not results:
                 return False

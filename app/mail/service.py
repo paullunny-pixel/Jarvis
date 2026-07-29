@@ -317,9 +317,12 @@ class MailService:
                 return 0.0
 
         found.sort(key=_stamp)  # chronological — 'where are we up to' reads forward
+        # Adaptive slice: 200 emails at full snippet length would balloon the
+        # request (slow, rate-limit bait) — share a fixed budget across them.
+        slice_len = max(600, min(3000, 60000 // len(found)))
         parts = [
             f"[{label}] {m['date']} — {m['from']} ({m['from_address']}) — "
-            f"{m['subject']}\n{m['snippet']}"
+            f"{m['subject']}\n{m['snippet'][:slice_len]}"
             for label, m in found
         ]
         corpus = "\n\n---\n\n".join(parts)[:100000]
@@ -336,7 +339,8 @@ class MailService:
         try:
             summary = (
                 await claude.converse(
-                    system, [{"role": "user", "content": corpus}], max_tokens=2500
+                    system, [{"role": "user", "content": corpus}],
+                    max_tokens=2500, timeout=300.0,
                 )
             ).strip()
         except Exception:

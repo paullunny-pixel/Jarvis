@@ -219,8 +219,11 @@ class TestEmailResearch(unittest.IsolatedAsyncioTestCase):
         self.service = MailService(clients, self.db)
         self.claude_requests: list = []
 
+        self.claude_timeouts: list = []
+
         def claude_handler(request: httpx.Request) -> httpx.Response:
             self.claude_requests.append(json.loads(request.content))
+            self.claude_timeouts.append(request.extensions.get("timeout"))
             return httpx.Response(
                 200,
                 json={"content": [{"type": "text", "text": "COUNTRY-BY-COUNTRY SUMMARY OK"}]},
@@ -286,6 +289,12 @@ class TestEmailResearch(unittest.IsolatedAsyncioTestCase):
             self.claude, "BMI", "go deeper — the full history", "prodermis"
         )
         self.assertIn("Read 3 emails", out)   # the cap lifted, all matches read
+
+    async def test_write_up_gets_the_long_timeout(self):
+        # The 227-email failure: a big corpus on the brain model needs far
+        # more than the 120s chat default.
+        await self.service.research(self.claude, "BMI", "update", "prodermis")
+        self.assertEqual(self.claude_timeouts[-1]["read"], 300.0)
 
     async def test_research_result_is_remembered_for_the_draft(self):
         await self.service.research(self.claude, "BMI", "summary", "prodermis")
@@ -708,6 +717,28 @@ class TestRouterEmailFlow(unittest.IsolatedAsyncioTestCase):
 
         payload = unquote_plus(dict(h.telegram_calls)["sendMessage"].decode())
         self.assertIn("Personal: 2 unread", payload)
+
+    async def test_research_sends_a_heads_up_before_the_long_read(self):
+        h = RouterHarness(
+            self.db,
+            claude_json={
+                "content": [{"type": "text", "text":
+                    '[{"action":"research","account":"prodermis","query":"BMI","instruction":"summary"}]'}]
+            },
+        )
+        h.router.mail = build_service(self.db, self.sent)
+        await h.router.handle_update(
+            text_update("read all my emails from BMI and summarise where we are", OWNER)
+        )
+        from urllib.parse import unquote_plus
+
+        texts = [
+            unquote_plus(body.decode())
+            for method, body in h.telegram_calls
+            if method == "sendMessage"
+        ]
+        self.assertTrue(any("reading the archive now" in t for t in texts))
+        self.assertTrue(len(texts) >= 2)  # heads-up first, then the result
 
     async def test_send_it_without_a_draft_never_reaches_email(self):
         h = RouterHarness(self.db)  # ordinary conversation mock
