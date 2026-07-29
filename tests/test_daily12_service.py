@@ -494,6 +494,174 @@ class TestBoardScope(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(health["cached_cards"], len(CARDS) - 2)
 
 
+MASTER_LISTS = [
+    {"id": "ML1", "name": "Paul Personal"},
+    {"id": "ML2", "name": "Brain Dump"},
+    {"id": "ML3", "name": "This Week"},
+    {"id": "ML4", "name": "Paul Today"},
+    {"id": "ML5", "name": "Kiefer Today"},
+    {"id": "ML6", "name": "Blocked / Waiting on"},
+    {"id": "ML7", "name": "Done Week 27th July"},
+    {"id": "ML8", "name": "Done Week 20th July"},
+    {"id": "ML9", "name": "Done!"},
+]
+# The audited label state: only Urgent named; five blank colour slots.
+MASTER_LABELS = [
+    {"id": "LB-red", "name": "Urgent", "color": "red"},
+    {"id": "LB-yellow", "name": "", "color": "yellow"},
+    {"id": "LB-green", "name": "", "color": "green"},
+    {"id": "LB-orange", "name": "", "color": "orange"},
+    {"id": "LB-purple", "name": "", "color": "purple"},
+    {"id": "LB-blue", "name": "", "color": "blue"},
+]
+
+
+class MasterBoardHarness:
+    """The real Master Board shape (Trello System Brief): brief lists, blank
+    label slots, Paul + Kiefer as members. Label writes mutate state so
+    ensure_labels can be proven idempotent."""
+
+    def __init__(self, db):
+        self.trello_writes = []
+        self.labels = [dict(l) for l in MASTER_LABELS]
+        self._label_seq = 0
+
+        def trello_handler(request: httpx.Request) -> httpx.Response:
+            path = urlparse(str(request.url)).path
+            params = dict(request.url.params)
+            if request.method in ("PUT", "POST"):
+                self.trello_writes.append((request.method, path, params))
+                if path == "/1/cards":
+                    return httpx.Response(200, json={"id": "CNEW", "name": "created"})
+                if path.startswith("/1/labels/"):
+                    label_id = path.rsplit("/", 1)[1]
+                    for label in self.labels:
+                        if label["id"] == label_id:
+                            label["name"] = params.get("name", label["name"])
+                    return httpx.Response(200, json={})
+                if path.endswith("/labels"):
+                    self._label_seq += 1
+                    new = {
+                        "id": f"LB-new{self._label_seq}",
+                        "name": params.get("name", ""),
+                        "color": params.get("color", ""),
+                    }
+                    self.labels.append(new)
+                    return httpx.Response(200, json=new)
+                return httpx.Response(200, json={})
+            if path.endswith("/members/me/boards"):
+                return httpx.Response(200, json=[BOARD])
+            if path.endswith("/labels"):
+                return httpx.Response(200, json=self.labels)
+            if path.endswith("/lists"):
+                return httpx.Response(200, json=MASTER_LISTS)
+            if path.endswith("/cards"):
+                return httpx.Response(200, json=[])
+            if path.endswith("/members"):
+                return httpx.Response(200, json=[
+                    {"id": "M-P", "fullName": "Paul Lunny", "username": "paullunny"},
+                    {"id": "M-K", "fullName": "Kiefer Brindle", "username": "kiefer"},
+                ])
+            return httpx.Response(404, text=path)
+
+        from app.daily12.trello import TrelloClient
+
+        self.service = Daily12Service(
+            db,
+            TrelloClient("K", "T", transport=httpx.MockTransport(trello_handler)),
+            ClaudeClient("K", transport=httpx.MockTransport(
+                lambda r: httpx.Response(200, json={"content": [{"type": "text", "text": "[]"}]})
+            )),
+        )
+
+
+class TestMasterBoardSystem(unittest.IsolatedAsyncioTestCase):
+    """Trello System Brief: the two-axis label system, member assignment,
+    Done Week routing, and the never-duplicate rule."""
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = SqliteDatabase(os.path.join(self._dir.name, "t.db"))
+        await self.db.init()
+        self.h = MasterBoardHarness(self.db)
+        self.service = self.h.service
+
+    async def asyncTearDown(self):
+        await self.db.close()
+        self._dir.cleanup()
+
+    async def test_ensure_labels_builds_the_brief_system(self):
+        ids = await self.service.ensure_labels()
+        self.assertEqual(ids["urgent"], "LB-red")            # existing label kept
+        self.assertEqual(ids["personal"], "LB-green")        # blank slots renamed
+        self.assertEqual(ids["prodermis"], "LB-purple")
+        self.assertEqual(ids["business_ops"], "LB-blue")
+        self.assertEqual(ids["money"], "LB-orange")
+        self.assertEqual(ids["waiting"], "LB-yellow")
+        self.assertTrue(ids["derma"].startswith("LB-new"))   # sky + pink created
+        self.assertTrue(ids["delegate"].startswith("LB-new"))
+        renames = [w for w in self.h.trello_writes if w[0] == "PUT" and "/labels/" in w[1]]
+        creates = [w for w in self.h.trello_writes if w[0] == "POST" and w[1].endswith("/labels")]
+        self.assertEqual(len(renames), 5)
+        self.assertEqual({w[2]["color"] for w in creates}, {"sky", "pink"})
+        # Second run: everything already named — zero label writes.
+        before = len(self.h.trello_writes)
+        again = await self.service.ensure_labels()
+        self.assertEqual(again, ids)
+        self.assertEqual(len(self.h.trello_writes), before)
+
+    async def test_create_carries_domain_flags_member_and_description(self):
+        await self.service.ensure_labels()
+        reply = await self.service.create(
+            "Pay BMI invoice — £480", assignee="paul", list_name="Paul Today",
+            domain="business_ops", flags=["urgent", "money"],
+            description="Invoice arrived by email; BMI chasing.",
+        )
+        card_posts = [w for w in self.h.trello_writes if w[1] == "/1/cards"]
+        self.assertEqual(card_posts[0][2]["idList"], "ML4")            # Paul Today
+        self.assertIn("desc", card_posts[0][2])
+        label_adds = [w for w in self.h.trello_writes if w[1].endswith("/idLabels")]
+        self.assertEqual(
+            {w[2]["value"] for w in label_adds}, {"LB-blue", "LB-red", "LB-orange"}
+        )
+        member_adds = [w for w in self.h.trello_writes if w[1].endswith("/idMembers")]
+        self.assertEqual(member_adds[0][2]["value"], "M-P")            # Paul as member
+        self.assertIn("Business Ops", reply)
+        self.assertIn("£ Money", reply)
+        self.assertNotIn("on Paul", reply)                             # silently his
+
+    async def test_exact_duplicate_is_never_created(self):
+        await self.db.execute(
+            "INSERT INTO tasks (trello_id, title, list_name, board_id, board_name,"
+            " actionable, score, synced_at) VALUES ('TDUP', 'Pay BMI invoice — £480',"
+            " 'This Week', 'B1', 'Master Board', 1, 0, '2026-07-30T10:00:00')",
+        )
+        reply = await self.service.create("pay bmi invoice £480", domain="business_ops")
+        self.assertIn("already on the board", reply)
+        self.assertIn("This Week", reply)
+        self.assertEqual([w for w in self.h.trello_writes if w[1] == "/1/cards"], [])
+
+    async def test_done_goes_to_the_current_week_not_the_legacy_pile(self):
+        self.assertEqual(await self.service._done_list_id("B1"), "ML7")
+
+    def test_board_shapes_are_out_of_play(self):
+        from app.daily12.scoring import is_actionable_list
+
+        for name in ("Done Week 27th July", "Done!", "Blocked / Waiting on", "Waiting on Sarah"):
+            self.assertFalse(is_actionable_list(name), name)
+        for name in ("Paul Today", "Kiefer Today", "In Progress", "Brain Dump", "This Week"):
+            self.assertTrue(is_actionable_list(name), name)
+
+    def test_parser_teaches_the_card_rules(self):
+        from app.daily12.commands import PARSER_SYSTEM
+
+        self.assertIn("CARD RULES", PARSER_SYSTEM)
+        self.assertIn("business_ops", PARSER_SYSTEM)
+        self.assertIn("£480", PARSER_SYSTEM)              # the money convention
+        self.assertIn("Blocked / Waiting on", PARSER_SYSTEM)
+        self.assertIn("Genuinely unsure → empty, never guess", PARSER_SYSTEM)
+
+
 class TestCommands(unittest.IsolatedAsyncioTestCase):
     def test_task_hint_gate(self):
         self.assertTrue(mentions_tasks("number three is done"))

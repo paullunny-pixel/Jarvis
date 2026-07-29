@@ -44,13 +44,28 @@ last message; resolve "that one", "those", names and list items against it:
 Reply ONLY a JSON array of actions (empty if the message contains none):
 - {{"action":"done","target":"<position number or title words>"}}
 - {{"action":"defer","target":"...","when":"friday|tomorrow|next week|YYYY-MM-DD"}}
-- {{"action":"create","title":"...","assignee":"<name or empty>","when":"<optional>","list":"<the exact column/list name he said (e.g. 'Paul Today', 'This Week', 'Brain Dump'), or empty if he didn't name one>"}}
+- {{"action":"create","title":"...","assignee":"<paul|kiefer|other name, or empty if unclear>","when":"<optional>","list":"<column name — see CARD RULES>","domain":"<personal|prodermis|derma|business_ops, or empty if genuinely unsure>","flags":["urgent","money","waiting","delegate" — only those that apply],"description":"<extra context from the conversation worth keeping on the card, or empty>"}}
 - {{"action":"comment","target":"...","text":"..."}}
 - {{"action":"queue","target":"<number from the This Week listing, or title words>"}}   (move a card into Paul Today for tomorrow)
 - {{"action":"promote","target":"..."}}   (Sunday grooming: Brain Dump → This Week)
 - {{"action":"archive","target":"..."}}   (delete/remove/bin a card — archives it on Trello)
 - {{"action":"show"}}   (he wants to see/hear the list)
 - {{"action":"calendar_event","title":"...","when":"<the date/time words he said, or empty>"}}   (he asked to put something in his CALENDAR or diary — never turn this into a plain create)
+CARD RULES (the Master Board system — every new card gets these):
+- domain, exactly one: personal (life admin — health, family, travel, home);
+  prodermis (Prodermis brand); derma (Derma UK/EU, Prime Derm, Derma Direct,
+  Sculptide); business_ops (cross-brand — finance, HR, wages, contracts,
+  company admin). Genuinely unsure → empty, never guess.
+- list: 'today' → 'Paul Today' ('Kiefer Today' when it's Kiefer's); 'this
+  week' or a date within ~7 days → 'This Week'; concrete task with no
+  urgency → 'Paul Personal'; loose idea / thinking out loud → 'Brain Dump';
+  waiting on someone → 'Blocked / Waiting on'.
+- flags, stack all that apply: urgent ('urgent'/'asap'/'now'); money
+  (invoices, payments, wages, prices — AND put the figure in the title,
+  e.g. 'Pay BMI invoice — £480'); waiting (blocked on someone); delegate
+  (handing it off to someone else).
+- assignee: kiefer for Kiefer's tasks, paul for Paul's own, empty if unclear.
+
 Rules:
 - Only include actions he clearly asked for — and cover EVERY instruction in
   the message: two asks means two actions, never just the first.
@@ -123,6 +138,12 @@ async def execute_actions(
                         assignee=str(action.get("assignee", "") or ""),
                         due_iso=due_iso,
                         list_name=str(action.get("list", "") or ""),
+                        domain=str(action.get("domain", "") or ""),
+                        flags=[
+                            f for f in (action.get("flags") or [])
+                            if isinstance(f, str) and f
+                        ],
+                        description=str(action.get("description", "") or ""),
                     )
                 )
             elif kind == "comment":

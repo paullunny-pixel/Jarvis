@@ -24,6 +24,22 @@ from app.db.base import Database
 
 logger = logging.getLogger(__name__)
 
+# Trello System Brief §3 — the Master Board label system, two axes.
+# Domain (exactly one per card) + Flags (stack as many as apply).
+DOMAIN_LABELS = {
+    "personal": ("Personal", "green"),
+    "prodermis": ("Prodermis", "purple"),
+    "derma": ("Derma", "sky"),
+    "business_ops": ("Business Ops", "blue"),
+}
+FLAG_LABELS = {
+    "urgent": ("Urgent", "red"),
+    "money": ("£ Money", "orange"),
+    "waiting": ("Waiting On", "yellow"),
+    "delegate": ("Delegate", "pink"),
+}
+LABEL_IDS_KEY = "trello_label_ids"
+
 TAGGING_SYSTEM = """\
 You classify Trello cards for Paul's four companies. Companies (use these slugs):
 - derma_uk: Derma Direct UK — UK online wholesaler (fillers, boosters, gloves), Harry ops, website relaunch, retention marketing.
@@ -156,19 +172,75 @@ class Daily12Service:
             (*ids, run_started),
         )
 
-        # Cards Paul ticked off IN TRELLO (moved to a done-ish list) count on
-        # today's plan too — the board and the plan must agree by the hour.
+        # Cards Paul ticked off IN TRELLO (moved to any done-ish list — 'Done',
+        # 'Done!', 'Done Week 27th July') count on today's plan too.
         await self._db.execute(
             "UPDATE daily_12 SET done = 1, done_at = ? WHERE plan_date = ? AND done = 0"
-            " AND task_id IN (SELECT id FROM tasks WHERE LOWER(list_name)"
-            " IN ('done', 'complete', 'completed'))",
+            " AND task_id IN (SELECT id FROM tasks WHERE LOWER(list_name) LIKE 'done%'"
+            " OR LOWER(list_name) IN ('complete', 'completed'))",
             (utc_now_iso(), (await self.paul_today()).isoformat()),
         )
+
+        # Label system (Trello System Brief §3): self-heal once a day so the
+        # 8 Domain/Flag labels always exist and their ids stay cached.
+        today_key = (await self.paul_today()).isoformat()
+        if await self._settings.get("labels_ensured_day") != today_key:
+            try:
+                await self.ensure_labels()
+                await self._settings.set("labels_ensured_day", today_key)
+            except Exception:
+                logger.exception("Label setup failed — will retry next sync")
 
         await self._tag_untagged()
         await self._refresh_project_activity()
         await self._settings.set("trello_last_sync", utc_now_iso())
         return total
+
+    async def ensure_labels(self, board_id: str = "") -> dict[str, str]:
+        """Make the Master Board label system real (Brief §3/§5): keep named
+        labels as-is, rename blank slots of the right colour, create what's
+        missing. Idempotent; returns and caches {key: label_id}."""
+        board_id = board_id or await self.resolve_board()
+        existing = await self._trello.board_labels(board_id)
+        by_name = {
+            (l.get("name") or "").strip().lower(): l for l in existing if (l.get("name") or "").strip()
+        }
+        blanks: dict[str, list] = {}
+        for label in existing:
+            if not (label.get("name") or "").strip():
+                blanks.setdefault(label.get("color") or "", []).append(label)
+        ids: dict[str, str] = {}
+        for key, (name, color) in {**DOMAIN_LABELS, **FLAG_LABELS}.items():
+            hit = by_name.get(name.lower())
+            if hit:
+                ids[key] = hit["id"]
+                continue
+            try:
+                if blanks.get(color):
+                    blank = blanks[color].pop(0)
+                    await self._trello.rename_label(blank["id"], name)
+                    ids[key] = blank["id"]
+                else:
+                    created = await self._trello.create_label(board_id, name, color)
+                    if created.get("id"):
+                        ids[key] = created["id"]
+            except Exception:
+                logger.exception("Label setup failed for '%s'", name)
+        await self._settings.set(LABEL_IDS_KEY, json.dumps({"board": board_id, "ids": ids}))
+        return ids
+
+    async def _label_ids(self) -> dict[str, str]:
+        try:
+            cached = json.loads(await self._settings.get(LABEL_IDS_KEY, "{}"))
+            if cached.get("ids"):
+                return cached["ids"]
+        except Exception:
+            pass
+        try:
+            return await self.ensure_labels()
+        except Exception:
+            logger.exception("Couldn't resolve board labels")
+            return {}
 
     async def _upsert_task(
         self, card: dict, board: dict, list_name: str, money: int, waiting: bool
@@ -429,9 +501,12 @@ class Daily12Service:
         ]
         for r in rows:
             list_name = (r["list_name"] or "").strip().lower()
-            if list_name in self.DONE_LISTS:
+            if list_name.startswith("done") or list_name in self.DONE_LISTS:
                 state = "DONE — completed on the board"
-            elif list_name in self.PARKED_LISTS:
+            elif (
+                "blocked" in list_name or list_name.startswith("waiting")
+                or list_name in self.PARKED_LISTS
+            ):
                 state = f"parked in {r['list_name']} (deliberately not active)"
             else:
                 state = "gone from the board (archived or removed)"
@@ -472,9 +547,16 @@ class Daily12Service:
         return match or (ties[0] if ties else None)
 
     async def _done_list_id(self, board_id: str) -> str:
-        """The Done list on the given board — cards move within their own board."""
-        for l in await self._trello.board_lists(board_id):
-            if l["name"].strip().lower() in ("done", "complete", "completed"):
+        """The Done list on the given board — cards move within their own
+        board. The Master Board keeps a rolling weekly archive ('Done Week
+        27th July', newest first in board order) — completions go to the
+        CURRENT week's list, never the legacy 'Done!' pile (Brief §3.3)."""
+        lists = await self._trello.board_lists(board_id)
+        for l in lists:
+            if l["name"].strip().lower().startswith("done week"):
+                return l["id"]
+        for l in lists:
+            if l["name"].strip().lower().rstrip("!") in ("done", "complete", "completed"):
                 return l["id"]
         return ""
 
@@ -673,11 +755,30 @@ class Daily12Service:
         return f"'{task['title']}' pushed to {human_when}.{nudge}"
 
     async def create(
-        self, title: str, assignee: str = "", due_iso: str = "", list_name: str = ""
+        self, title: str, assignee: str = "", due_iso: str = "", list_name: str = "",
+        domain: str = "", flags: list[str] | None = None, description: str = "",
     ) -> str:
-        """New card — in the column Paul NAMED when he named one (the old
-        behaviour silently dumped everything in the first list)."""
+        """New card — in the column Paul NAMED when he named one, carrying the
+        Brief §3 label system (one Domain + stacked Flags) and the member.
+        An exact-title twin already in play is never duplicated (Brief §4.1)."""
         try:
+            def _norm(text: str) -> str:
+                return " ".join(re.findall(r"[\w£']+", text.lower()))
+
+            twin = next(
+                (
+                    r for r in await self._db.fetch_all(
+                        "SELECT title, list_name FROM tasks WHERE actionable = 1"
+                    )
+                    if _norm(r["title"]) == _norm(title)
+                ),
+                None,
+            )
+            if twin is not None:
+                return (
+                    f"'{twin['title']}' is already on the board (in {twin['list_name']}) "
+                    "— not duplicating it. Say 'update' or 'archive' it if you want changes."
+                )
             list_label = ""
             list_id = ""
             if list_name:
@@ -685,16 +786,34 @@ class Daily12Service:
                 list_id, list_label = await self._fuzzy_list_id(board_id, list_name)
             if not list_id:
                 list_id, list_label = await self._inbox_list_id()
-            card = await self._trello.create_card(list_id, title, due_iso=due_iso)
+            card = await self._trello.create_card(
+                list_id, title, desc=description, due_iso=due_iso
+            )
+            applied: list[str] = []
+            wanted = ([domain] if domain else []) + [f for f in (flags or []) if f]
+            if wanted:
+                label_ids = await self._label_ids()
+                spec = {**DOMAIN_LABELS, **FLAG_LABELS}
+                for key in wanted:
+                    label_id = label_ids.get(key)
+                    if not label_id or key not in spec:
+                        continue
+                    try:
+                        await self._trello.add_label(card["id"], label_id)
+                        applied.append(spec[key][0])
+                    except Exception:
+                        logger.exception("Label '%s' failed on new card", key)
             if assignee:
                 member_id = await self._member_id(assignee)
                 if member_id:
                     await self._trello.assign_member(card["id"], member_id)
                 else:
                     await self._trello.comment(card["id"], f"For {assignee} (from Paul, via Jarvis)")
-            who = f" on {assignee.title()}" if assignee else ""
+            # Paul as member is set silently — 'on Paul' is noise to Paul.
+            who = f" on {assignee.title()}" if assignee and assignee.lower() != "paul" else ""
             where = f" in {list_label}" if list_label else ""
-            return f"Created '{title}'{who}{where}."
+            labelled = f" · {', '.join(applied)}" if applied else ""
+            return f"Created '{title}'{who}{where}{labelled}."
         except Exception:
             logger.exception("Trello create failed")
             return f"Couldn't reach Trello to create '{title}' — I'll keep it noted; try again shortly."

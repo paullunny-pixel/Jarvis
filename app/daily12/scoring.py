@@ -53,7 +53,13 @@ class Card:
 
 
 def is_actionable_list(list_name: str) -> bool:
-    return list_name.strip().lower() not in EXCLUDED_LISTS
+    """Out of play: any Done pile ('Done', 'Done!', 'Done Week 27th July'),
+    and anything blocked/waiting ('Blocked / Waiting on') — the real board's
+    names vary, so match by shape, not exact string."""
+    name = list_name.strip().lower()
+    if name in EXCLUDED_LISTS:
+        return False
+    return not (name.startswith("done") or "blocked" in name or name.startswith("waiting"))
 
 
 def deadline_score(due: date | None, today: date) -> float:

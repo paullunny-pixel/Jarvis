@@ -16,7 +16,7 @@ non-skippable gates (run + meds).
 
 ## Commands
 
-- Tests: `python -m unittest discover -s tests` (344 tests; stdlib unittest,
+- Tests: `python -m unittest discover -s tests` (350 tests; stdlib unittest,
   NOT pytest — keep it that way. Only `requirements.txt` is needed; two PDF
   tests also use `reportlab` and skip automatically when it isn't installed)
 - No local run needed for most work; local dev uses SQLite automatically
@@ -45,7 +45,12 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
 - `app/memory/` — second brain: chunks (pgvector), living facts, seed +
   versioned migrations, Fernet encryption for private content
 - `app/daily12/` — Trello sync, §16 scoring (pure functions in `scoring.py`),
-  voice-command parsing, board write-back
+  voice-command parsing, board write-back. Master Board system (Trello brief,
+  30 Jul): two-axis labels (Domain: Personal/Prodermis/Derma/Business Ops ·
+  Flags: Urgent/£ Money/Waiting On/Delegate) self-healed daily by
+  `ensure_labels`; new cards get domain+flags+member+description; exact-title
+  duplicates refused; done cards route to the newest 'Done Week …' list;
+  done/blocked/waiting lists matched by shape, not exact name
 - `app/mail/` — Paul's inboxes (IMAP/SMTP, Google app passwords, no OAuth):
   triage/read across all accounts, whole-mailbox research ('read all my
   emails from BMI and summarise...' — Gmail X-GM-RAW search + brain-model

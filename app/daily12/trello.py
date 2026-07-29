@@ -54,6 +54,9 @@ class TrelloClient:
     async def board_members(self, board_id: str) -> list[dict]:
         return await self._call("GET", f"/boards/{board_id}/members", fields="fullName,username")
 
+    async def board_labels(self, board_id: str) -> list[dict]:
+        return await self._call("GET", f"/boards/{board_id}/labels", fields="name,color")
+
     # --- Writing (Paul's voice feedback → the board) ---
 
     async def move_card(self, card_id: str, list_id: str) -> None:
@@ -78,3 +81,12 @@ class TrelloClient:
 
     async def assign_member(self, card_id: str, member_id: str) -> None:
         await self._call("POST", f"/cards/{card_id}/idMembers", value=member_id)
+
+    async def rename_label(self, label_id: str, name: str) -> None:
+        await self._call("PUT", f"/labels/{label_id}", name=name)
+
+    async def create_label(self, board_id: str, name: str, color: str) -> dict:
+        return await self._call("POST", f"/boards/{board_id}/labels", name=name, color=color)
+
+    async def add_label(self, card_id: str, label_id: str) -> None:
+        await self._call("POST", f"/cards/{card_id}/idLabels", value=label_id)
