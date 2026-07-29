@@ -59,11 +59,18 @@ Messages he has recently been shown (1-indexed; may be empty):
 
 Reply ONLY a JSON array (empty if the message contains no email actions):
 - {{"action":"check","account":"<inbox words or 'all'>"}}   (how's my email / anything new)
-- {{"action":"read","account":"<inbox words or 'all'>","count":5}}  (read them to me)
+- {{"action":"read","account":"<inbox words or 'all'>","count":5}}  (read them to me — NEW mail only)
+- {{"action":"research","account":"<inbox words or 'all'>","query":"<the 1-3 words to search the WHOLE mailbox for, e.g. a sender or company name like 'BMI'>","instruction":"<what Paul wants produced from those emails, restated in full>"}}   (read/summarise/dig through ALL email about a sender or topic — 'read all my emails from X and...', 'where are we up to with...', anything needing old mail. Emit research ALONE, never with a draft — Paul reviews the result first)
 - {{"action":"draft","reply_index":<number from the list, or 0>,"to":"<address if he gave one, else empty>","account":"<sending inbox words or empty>","subject":"<subject, or empty>","body":"<the email text, written out properly>"}}
 - {{"action":"update","to":"","subject":"","body":"","account":""}}  (he's changing the draft he already has — fill ONLY what changes, leave the rest empty)
 - {{"action":"cancel"}}   (he wants to scrap the current draft)
 For drafts: write the body COMPLETE and ready to send, signed off 'Paul'.
+A body must be FINISHED words only — NEVER a placeholder like '[summary to
+follow]'. If the content requires reading emails first, that is research, not
+a draft. When Paul asks to send/forward the research he was just shown, use
+its text as the body.
+LAST RESEARCH RESULT Paul has seen (may be empty):
+{research}
 {style_block}
 NEVER invent a recipient address — if he named a
 person from the shown list use reply_index; otherwise leave "to" empty. A
@@ -89,6 +96,7 @@ def cancels_send(text: str) -> bool:
 async def parse_actions(
     claude: ClaudeClient, text: str, labels: list[str], listing: list[dict],
     style: str = "", person_styles: dict[str, dict] | None = None,
+    research: str = "",
 ) -> list[dict[str, Any]]:
     shown = "\n".join(
         f"{i}. [{m['account']}] {m['from']} — {m['subject']}" for i, m in enumerate(listing, 1)
@@ -113,7 +121,8 @@ async def parse_actions(
         raw = await claude.quick(
             text,
             system=PARSER_SYSTEM.format(
-                labels=", ".join(labels), listing=shown or "(none)", style_block=style_block
+                labels=", ".join(labels), listing=shown or "(none)",
+                style_block=style_block, research=research or "(none)",
             ),
             max_tokens=800,
         )
@@ -127,13 +136,24 @@ async def parse_actions(
         return []
 
 
-async def execute_actions(service: MailService, actions: list[dict[str, Any]]) -> list[str]:
+async def execute_actions(
+    service: MailService, actions: list[dict[str, Any]], claude: ClaudeClient | None = None
+) -> list[str]:
     results: list[str] = []
     for action in actions[:4]:
         kind = action.get("action")
         try:
             if kind == "check":
                 results.append(await service.overview())
+            elif kind == "research" and claude is not None:
+                results.append(
+                    await service.research(
+                        claude,
+                        str(action.get("query", "") or ""),
+                        str(action.get("instruction", "") or ""),
+                        account_hint=str(action.get("account", "") or ""),
+                    )
+                )
             elif kind == "read":
                 results.append(
                     await service.read(

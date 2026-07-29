@@ -1374,10 +1374,11 @@ class JarvisRouter:
                 self.claude, transcript, self.mail.labels, await self.mail.last_listing(),
                 style=await self.mail.style_profile(),
                 person_styles=await self.mail.person_styles(),
+                research=await self.mail.last_research(),
             )
             if not actions:
                 return False  # ordinary conversation after all
-            results = await mail_commands.execute_actions(self.mail, actions)
+            results = await mail_commands.execute_actions(self.mail, actions, claude=self.claude)
             if not results:
                 return False
             reply = "\n\n".join(results)

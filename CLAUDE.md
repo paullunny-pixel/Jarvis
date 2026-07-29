@@ -16,7 +16,7 @@ non-skippable gates (run + meds).
 
 ## Commands
 
-- Tests: `python -m unittest discover -s tests` (320 tests; stdlib unittest,
+- Tests: `python -m unittest discover -s tests` (327 tests; stdlib unittest,
   NOT pytest — keep it that way. Only `requirements.txt` is needed; two PDF
   tests also use `reportlab` and skip automatically when it isn't installed)
 - No local run needed for most work; local dev uses SQLite automatically
@@ -46,7 +46,10 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
 - `app/daily12/` — Trello sync, §16 scoring (pure functions in `scoring.py`),
   voice-command parsing, board write-back
 - `app/mail/` — Paul's inboxes (IMAP/SMTP, Google app passwords, no OAuth):
-  triage/read across all accounts, drafts by voice IN PAUL'S OWN STYLE
+  triage/read across all accounts, whole-mailbox research ('read all my
+  emails from BMI and summarise...' — Gmail X-GM-RAW search + brain-model
+  write-up; drafts must be finished words, placeholder bodies refused),
+  drafts by voice IN PAUL'S OWN STYLE
   ('learn my style' distills it from his voice-note transcripts, Telegram
   messages and his own work-group lines — NOT his emails, many AI-written;
   private-exchange markers are excluded); a send fires

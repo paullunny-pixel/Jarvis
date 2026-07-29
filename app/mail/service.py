@@ -23,7 +23,16 @@ logger = logging.getLogger(__name__)
 
 DRAFT_KEY = "pending_email_draft"
 LISTING_KEY = "last_inbox_listing"
+RESEARCH_KEY = "last_email_research"
 DRAFT_TTL_MINUTES = 45
+
+# A draft must be finished words, never a promise of words — '[SUMMARY TO
+# FOLLOW]' presented as a deliverable is a lie with a signature on it.
+PLACEHOLDER = re.compile(
+    r"\[[^\]\n]{0,80}(to follow|tbc|tbd|to come|placeholder|insert|awaiting|pending)"
+    r"[^\]\n]{0,80}\]",
+    re.IGNORECASE,
+)
 
 
 class MailService:
@@ -135,6 +144,13 @@ class MailService:
             )
         if not body.strip():
             return "Nothing drafted yet — give me the words and I'll read them back."
+        if PLACEHOLDER.search(body):
+            return (
+                "I stopped that draft — it had a placeholder where the substance "
+                "should be, and I don't hand you hollow emails. Ask me to do the "
+                "reading first ('summarise everything from X about Y'), review "
+                "what I find, then we'll draft it properly."
+            )
         client = self.match(account_hint or account_label)[0]
         draft = {
             "from": client.account.address,
@@ -159,6 +175,12 @@ class MailService:
         if subject:
             draft["subject"] = subject
         if body.strip():
+            if PLACEHOLDER.search(body):
+                return (
+                    "Not putting a placeholder into the draft — the words have to "
+                    "be real before I'll hold them. Give me the substance (or ask "
+                    "me to research the emails first) and I'll drop it in."
+                )
             draft["body"] = body.strip()
         if account_hint:
             client = self.match(account_hint)[0]
@@ -227,6 +249,67 @@ class MailService:
             )
         await self._settings.set(DRAFT_KEY, "")
         return f"Sent — '{draft['subject']}' to {draft['to']} from {draft['from_label']}."
+
+    # ---------------------------------------------------- research (real work)
+
+    async def research(
+        self, claude, query: str, instruction: str, account_hint: str = ""
+    ) -> str:
+        """'Read all my emails from BMI and summarise where we're up to' —
+        search the WHOLE mailbox (read and unread), then produce exactly what
+        Paul asked for from what was actually found. The output is remembered
+        so 'now draft that to Sarah' has real substance behind it."""
+        clients = self.match(account_hint)
+        results = await asyncio.gather(
+            *(c.search_messages(query, limit=25) for c in clients), return_exceptions=True
+        )
+        parts, count = [], 0
+        for client, result in zip(clients, results):
+            if isinstance(result, Exception):
+                logger.warning("Search failed for %s: %s", client.account.label, result)
+                continue
+            for m in result:
+                count += 1
+                parts.append(
+                    f"[{client.account.label}] {m['date']} — {m['from']} "
+                    f"({m['from_address']}) — {m['subject']}\n{m['snippet']}"
+                )
+        searched = ", ".join(c.account.label for c in clients)
+        if not count:
+            return (
+                f"I searched {searched} end to end for '{query}' and found nothing. "
+                "Different search words might do it — what would the sender's "
+                "address or a subject line contain?"
+            )
+        corpus = "\n\n---\n\n".join(parts)[:60000]
+        system = (
+            "You are Jarvis, Paul's aide. Below are real emails found by searching "
+            "his mailbox. Produce EXACTLY what Paul asked for:\n"
+            f"{instruction or 'a tight summary of these emails'}\n\n"
+            "Work ONLY from these emails. Where they don't answer something, say "
+            "so plainly — never invent, pad, or promise content 'to follow'. "
+            "British, structured, ready to forward."
+        )
+        try:
+            summary = (
+                await claude.converse(
+                    system, [{"role": "user", "content": corpus}], max_tokens=2000
+                )
+            ).strip()
+        except Exception:
+            logger.exception("Research summarisation failed")
+            summary = ""
+        if not summary:
+            return (
+                f"Found {count} matching emails on {searched} but the write-up "
+                "failed mid-flight — ask me again in a minute."
+            )
+        out = f"Read {count} emails matching '{query}' across {searched}.\n\n{summary}"
+        await self._settings.set(RESEARCH_KEY, out[:12000])
+        return out
+
+    async def last_research(self) -> str:
+        return await self._settings.get(RESEARCH_KEY, "")
 
     async def cancel_draft(self) -> str:
         if await self.pending_draft() is None:

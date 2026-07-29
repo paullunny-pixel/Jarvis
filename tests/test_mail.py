@@ -57,11 +57,15 @@ class FakeIMAP:
         self._messages = self._inbox
         return "OK", []
 
-    def search(self, charset, criterion):
+    def search(self, charset, *criteria):
         import re as _re
 
-        matches = range(1, len(self._messages) + 1)
-        to_filter = _re.search(r'TO "([^"]+)"', str(criterion))
+        crit = " ".join(
+            c.decode() if isinstance(c, (bytes, bytearray)) else str(c) for c in criteria
+        )
+        matches = list(range(1, len(self._messages) + 1))
+        to_filter = _re.search(r'TO "([^"]+)"', crit)
+        term_match = _re.search(r'(?:X-GM-RAW|FROM|SUBJECT) "([^"]+)"', crit)
         if to_filter:
             addr = to_filter.group(1).lower().encode()
             matches = [
@@ -69,6 +73,9 @@ class FakeIMAP:
                 for i, raw in enumerate(self._messages)
                 if addr in raw.split(b"\n\n", 1)[0].lower()
             ]
+        elif term_match:
+            term = term_match.group(1).lower().encode()
+            matches = [i + 1 for i, raw in enumerate(self._messages) if term in raw.lower()]
         ids = b" ".join(str(i).encode() for i in matches)
         return "OK", [ids]
 
@@ -145,6 +152,109 @@ def build_service(db, sent: list, fail_login: set | None = None) -> MailService:
     return MailService(clients, db)
 
 
+def raw_html_email(from_addr: str, subject: str, html: str) -> bytes:
+    msg = MIMEText(html, "html", "utf-8")
+    msg["From"] = from_addr
+    msg["Subject"] = subject
+    msg["Date"] = "Fri, 24 Jul 2026 10:00:00 +0000"
+    return msg.as_bytes()
+
+
+BMI_INBOX = [
+    raw_email(
+        "regulatory@bmi-group.com", "Prosculpt registration — Saudi Arabia",
+        "SFDA dossier accepted; EUDAMED submission for Prosculpt pending your ISO cert.",
+        "BMI Regulatory",
+    ),
+    raw_email(
+        "kenny@example.com", "Padel rematch", "Sunday work for you?", "Kenny"
+    ),
+    raw_email(
+        "regulatory@bmi-group.com", "Prosculpt — UAE production registration",
+        "Production registration filed with MOHAP; document request: latest IFU.",
+        "BMI Regulatory",
+    ),
+    raw_html_email(
+        "noreply@bmi-group.com", "BMI portal update",
+        "<html><head><title>x</title></head><body><p>Prosculpt EUDAMED status:"
+        " <b>UNDER REVIEW</b></p></body></html>",
+    ),
+]
+
+
+class TestEmailResearch(unittest.IsolatedAsyncioTestCase):
+    """The BMI-summary bug (29 Jul): 'read all my emails from BMI and summarise
+    where we're up to' produced an unread listing and a placeholder draft.
+    Research now searches the whole mailbox and writes from what it found."""
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = SqliteDatabase(os.path.join(self._dir.name, "t.db"))
+        await self.db.init()
+        self.sent: list = []
+        clients = [
+            MailClient(
+                MailAccount("info@prodermis.com", "app-pass"),
+                imap_factory=lambda: FakeIMAP(BMI_INBOX),
+                smtp_factory=lambda: FakeSMTP(self.sent),
+            )
+        ]
+        self.service = MailService(clients, self.db)
+        self.claude_requests: list = []
+
+        def claude_handler(request: httpx.Request) -> httpx.Response:
+            self.claude_requests.append(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={"content": [{"type": "text", "text": "COUNTRY-BY-COUNTRY SUMMARY OK"}]},
+            )
+
+        self.claude = ClaudeClient("K", transport=httpx.MockTransport(claude_handler))
+
+    async def asyncTearDown(self):
+        await self.db.close()
+        self._dir.cleanup()
+
+    async def test_research_reads_the_whole_mailbox_and_summarises(self):
+        out = await self.service.research(
+            self.claude, "BMI", "country by country registration update", "prodermis"
+        )
+        self.assertIn("Read 3 emails", out)          # both BMI plains + the HTML one
+        self.assertIn("COUNTRY-BY-COUNTRY SUMMARY OK", out)
+        corpus = self.claude_requests[-1]["messages"][0]["content"]
+        self.assertIn("EUDAMED submission for Prosculpt", corpus)
+        self.assertIn("MOHAP", corpus)
+        self.assertIn("UNDER REVIEW", corpus)        # HTML read as text...
+        self.assertNotIn("<html", corpus)            # ...never as raw tags
+        self.assertNotIn("Padel", corpus)            # unrelated mail excluded
+        system = self.claude_requests[-1]["system"]
+        self.assertIn("country by country registration update", system)
+        self.assertIn("never invent", system)
+
+    async def test_research_result_is_remembered_for_the_draft(self):
+        await self.service.research(self.claude, "BMI", "summary", "prodermis")
+        self.assertIn("COUNTRY-BY-COUNTRY SUMMARY OK", await self.service.last_research())
+
+    async def test_research_with_no_matches_says_so(self):
+        out = await self.service.research(self.claude, "zzzznothing", "summary", "prodermis")
+        self.assertIn("found nothing", out)
+        self.assertEqual(self.claude_requests, [])   # no fake write-up attempted
+
+    def test_parser_knows_research_and_bans_placeholders(self):
+        self.assertIn('"action":"research"', commands.PARSER_SYSTEM.replace(" ", "").replace("{{", "{"))
+        self.assertIn("FINISHED words", commands.PARSER_SYSTEM)
+
+    async def test_execute_actions_runs_research(self):
+        results = await commands.execute_actions(
+            self.service,
+            [{"action": "research", "account": "prodermis", "query": "BMI",
+              "instruction": "where are we up to"}],
+            claude=self.claude,
+        )
+        self.assertEqual(len(results), 1)
+        self.assertIn("COUNTRY-BY-COUNTRY SUMMARY OK", results[0])
+
+
 class TestLabels(unittest.TestCase):
     def test_known_domains(self):
         self.assertEqual(label_for("paullunny@gmail.com"), "Personal")
@@ -201,6 +311,22 @@ class TestMailService(unittest.IsolatedAsyncioTestCase):
         text = await service.overview()
         self.assertIn("Personal: 2 unread", text)
         self.assertIn("Prodermis: couldn't reach it just now", text)
+
+    async def test_placeholder_draft_is_refused(self):
+        # The BMI-summary bug: Jarvis 'delivered' a draft whose body was
+        # '[SUMMARY TO FOLLOW — awaiting email review]'. Hollow drafts die here.
+        reply = await self.service.draft(
+            "Hi Sarah,\n\n[SUMMARY TO FOLLOW — awaiting email review]\n\nKind regards,\nPaul"
+        )
+        self.assertIn("placeholder", reply.lower())
+        self.assertIsNone(await self.service.pending_draft())
+
+    async def test_placeholder_update_is_refused(self):
+        await self.service.draft("Real words here.\n\nPaul", to="x@y.com")
+        reply = await self.service.update_draft(body="[TBC — insert numbers]")
+        self.assertIn("placeholder", reply.lower())
+        draft = await self.service.pending_draft()
+        self.assertEqual(draft["body"], "Real words here.\n\nPaul")
 
     async def test_reply_draft_then_confirmed_send(self):
         await self.service.read("derma")  # Paul was shown Harry's email (index 1)

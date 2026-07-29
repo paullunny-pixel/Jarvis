@@ -52,6 +52,18 @@ def _decode(value: str | None) -> str:
     return out.strip()
 
 
+def _strip_html(html: str) -> str:
+    """HTML-only emails (form submissions, newsletters) must never leak raw
+    tags into what Jarvis reads out."""
+    import html as _html
+    import re as _re
+
+    text = _re.sub(r"(?is)<(style|script|head)[^>]*>.*?</\1>", " ", html)
+    text = _re.sub(r"(?i)<br\s*/?>|</p>|</tr>|</div>", "\n", text)
+    text = _re.sub(r"<[^>]+>", " ", text)
+    return " ".join(_html.unescape(text).split())
+
+
 def _plaintext(msg: email.message.Message) -> str:
     try:
         if msg.is_multipart():
@@ -59,9 +71,18 @@ def _plaintext(msg: email.message.Message) -> str:
                 if part.get_content_type() == "text/plain" and not part.get("Content-Disposition"):
                     payload = part.get_payload(decode=True) or b""
                     return payload.decode(part.get_content_charset() or "utf-8", "replace")
+            for part in msg.walk():
+                if part.get_content_type() == "text/html":
+                    payload = part.get_payload(decode=True) or b""
+                    return _strip_html(
+                        payload.decode(part.get_content_charset() or "utf-8", "replace")
+                    )
             return ""
         payload = msg.get_payload(decode=True) or b""
-        return payload.decode(msg.get_content_charset() or "utf-8", "replace")
+        text = payload.decode(msg.get_content_charset() or "utf-8", "replace")
+        if msg.get_content_type() == "text/html" or "<html" in text[:200].lower():
+            return _strip_html(text)
+        return text
     except Exception:
         return ""
 
@@ -129,6 +150,61 @@ class MailClient:
                     }
                 )
             return {"unread": len(ids), "messages": messages}
+
+    async def search_messages(self, query: str, limit: int = 25) -> list[dict]:
+        """ALL mail matching a query — read or unread, the whole inbox. Uses
+        Gmail's native search (X-GM-RAW) since every account is Google-hosted,
+        with a plain FROM/SUBJECT fallback for anything that isn't."""
+        return await asyncio.to_thread(self._search_sync, query, limit)
+
+    def _search_sync(self, query: str, limit: int) -> list[dict]:
+        query = query.replace('"', "").strip()
+        if not query:
+            return []
+        with self._imap() as imap:
+            imap.login(self.account.address, self.account.app_password)
+            # All Mail covers Paul's own replies too — 'all communication with
+            # BMI' means both directions, not just what landed in the inbox.
+            for folder in ('"[Gmail]/All Mail"', "INBOX"):
+                status, _ = imap.select(folder, readonly=True)
+                if status == "OK":
+                    break
+            ids: list[bytes] = []
+            try:
+                _, data = imap.search(None, "X-GM-RAW", f'"{query}"')
+                ids = data[0].split() if data and data[0] else []
+            except Exception:
+                ids = []
+            if not ids:
+                try:
+                    _, data = imap.search(None, f'(OR FROM "{query}" SUBJECT "{query}")')
+                    ids = data[0].split() if data and data[0] else []
+                except Exception:
+                    ids = []
+            messages = []
+            for msg_id in reversed(ids[-limit:]):
+                size = self._message_size(imap, msg_id)
+                spec = (
+                    "(BODY.PEEK[HEADER])"
+                    if size > self.FULL_FETCH_CEILING_BYTES
+                    else "(BODY.PEEK[])"
+                )
+                _, fetched = imap.fetch(msg_id, spec)
+                raw = next((part[1] for part in fetched if isinstance(part, tuple)), None)
+                if not raw:
+                    continue
+                msg = email.message_from_bytes(raw)
+                from_name, from_addr = email.utils.parseaddr(_decode(msg.get("From")))
+                messages.append(
+                    {
+                        "from": from_name or from_addr,
+                        "from_address": from_addr,
+                        "subject": _decode(msg.get("Subject")) or "(no subject)",
+                        "date": _decode(msg.get("Date")),
+                        "snippet": " ".join(_plaintext(msg).split())[:3000],
+                    }
+                )
+            return messages
 
     SENT_FOLDERS = ('"[Gmail]/Sent Mail"', "Sent", '"Sent Items"')
 
