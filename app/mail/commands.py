@@ -77,6 +77,9 @@ person from the shown list use reply_index; otherwise leave "to" empty. A
 draft with no recipient is fine: it's held until he gives the address ("leave
 it in draft" / "no address yet" = exactly that — use update with all fields
 empty if a draft already exists, never ask for the address).
+One message may mix domains: Trello/board/task instructions are handled by a
+separate pipeline — output ONLY the email actions, and never fold the board
+half into a draft.
 Only include actions he clearly asked for.\
 """
 

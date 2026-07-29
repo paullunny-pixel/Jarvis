@@ -35,7 +35,8 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
 - `app/core/router.py` — the message pipeline. ORDER MATTERS: owner check →
   documents → photos (vision + run-proof) → voice STT → PRIVATE ROOM (before
   general logging!) → life signals (status/timezone/hound/streaks/meds) →
-  document requests → gated task-talk → brain conversation → memory writer
+  document requests → email talk (never swallows a mixed message's board
+  half) → gated task-talk → brain conversation → memory writer
 - `app/clients/` — thin httpx clients (Anthropic, Deepgram, ElevenLabs,
   Telegram). Deliberately no SDKs; keep them thin and MockTransport-testable
 - `app/db/` — dual-dialect layer: SQLite (dev/tests) + Postgres/asyncpg (prod).

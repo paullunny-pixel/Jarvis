@@ -54,6 +54,9 @@ Reply ONLY a JSON array of actions (empty if the message contains none):
 Rules:
 - Only include actions he clearly asked for — and cover EVERY instruction in
   the message: two asks means two actions, never just the first.
+- One message may mix domains: EMAIL work (reading, drafting, replying,
+  sending) is handled by a separate email pipeline — never turn the email
+  half into cards; output only the BOARD actions.
 - "done" ONLY ticks a card on Today's Focus above. When Paul reports finishing
   something that is NOT one of those cards (an email he replied to, an action
   item from a digest or brief, life admin), that is NOT an action — leave it

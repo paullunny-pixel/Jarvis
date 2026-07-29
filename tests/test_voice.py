@@ -67,10 +67,10 @@ class TestAgentConfig(unittest.TestCase):
             config = build_agent_config("https://j.example", "V", "S", mode=mode)
             cc = config["conversation_config"]
             self.assertEqual(cc["turn"]["turn_timeout"], 30)          # max patience
-            self.assertIn("skip_turn", cc["agent"]["prompt"]["built_in_tools"])
+            # NO built_in_tools — the undocumented shape closed live sessions.
+            self.assertNotIn("built_in_tools", cc["agent"]["prompt"])
             prompt = " ".join(cc["agent"]["prompt"]["prompt"].lower().split())
             self.assertIn("are you there", prompt)                    # named and banned
-            self.assertIn("skip_turn", prompt)
 
 
 class TestVoiceEngine(unittest.IsolatedAsyncioTestCase):
@@ -136,31 +136,6 @@ class TestVoiceEngine(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(url.startswith("wss://live/session"))
         creates = [c for c in self.calls if c[1].endswith("/agents/create")]
         self.assertEqual(len(creates), 2)
-
-    async def test_built_in_tools_rejection_falls_back_cleanly(self):
-        # If ElevenLabs' schema shifts under skip_turn, the button must
-        # still work — one retry without the optional field.
-        attempts = []
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            if request.url.path.endswith("/convai/agents/create"):
-                payload = json.loads(request.content)
-                has_built_in = "built_in_tools" in payload["conversation_config"]["agent"]["prompt"]
-                attempts.append(has_built_in)
-                if has_built_in:
-                    return httpx.Response(422, text="unknown field built_in_tools")
-                return httpx.Response(200, json={"agent_id": "AGX"})
-            return httpx.Response(404)
-
-        engine = VoiceEngine(
-            "KEY", "V", self.db, public_url="https://j.example", tool_secret="S",
-            transport=httpx.MockTransport(handler),
-        )
-        try:
-            self.assertEqual(await engine.ensure_agent(), "AGX")
-            self.assertEqual(attempts, [True, False])
-        finally:
-            await engine.close()
 
     async def test_outbound_call(self):
         self.assertTrue(await self.engine.outbound_call("PN1", "+447700900000"))

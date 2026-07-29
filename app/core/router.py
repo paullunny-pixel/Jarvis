@@ -246,9 +246,12 @@ class JarvisRouter:
                 return
 
         # 2c. Email talk → inbox triage, drafts, and confirmed sends (Phase 2).
+        # One voice note can carry TWO domains ('draft the reply AND stick a
+        # card on the board') — handling the email half must never swallow
+        # the Trello half, so task talk still gets its look below.
+        email_handled = False
         if self.mail is not None:
-            if await self._handle_email_talk(message, transcript):
-                return
+            email_handled = await self._handle_email_talk(message, transcript)
 
         # 2d. Task talk → the Daily 12 + Trello write-back (Milestone 3).
         # THE GATES: past their deadline, an unconfirmed run/meds blocks the
@@ -293,6 +296,9 @@ class JarvisRouter:
                     return
             if await self._handle_task_talk(message, transcript):
                 return
+
+        if email_handled:
+            return  # the email half answered; no brain turn on top
 
         # 3. Think (with the second brain's recalled knowledge, Milestone 2).
         timezone = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)

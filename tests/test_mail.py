@@ -692,6 +692,74 @@ class TestCommandParsing(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(actions, [{"action": "check", "account": "all"}])
 
 
+class TestMixedInstructionMessage(unittest.IsolatedAsyncioTestCase):
+    """One voice note, two domains (30 Jul): an email ask AND a Trello ask.
+    The email pipeline must answer its half without swallowing the board's."""
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = SqliteDatabase(os.path.join(self._dir.name, "t.db"))
+        await self.db.init()
+        self.sent: list = []
+
+    async def asyncTearDown(self):
+        await self.db.close()
+        self._dir.cleanup()
+
+    async def test_email_and_trello_halves_both_execute(self):
+        import httpx as _httpx
+
+        from app.clients.deepgram_client import DeepgramClient
+        from app.clients.elevenlabs_client import ElevenLabsClient
+        from app.clients.telegram_client import TelegramClient
+        from app.config import Settings
+        from app.core.router import JarvisRouter
+        from tests.test_daily12_service import MultiBoardHarness
+
+        telegram_calls = []
+
+        def telegram_handler(request: _httpx.Request) -> _httpx.Response:
+            telegram_calls.append((request.url.path.split("/")[-1], request.content))
+            return _httpx.Response(200, json={"ok": True, "result": {}})
+
+        def claude_handler(request: _httpx.Request) -> _httpx.Response:
+            payload = json.loads(request.content)
+            system = str(payload.get("system", ""))
+            if system.startswith("You convert Paul's message into email"):
+                text = '[{"action":"check","account":"all"}]'
+            elif system.startswith("You convert Paul's message into Trello"):
+                text = '[{"action":"create","title":"VAT return card"}]'
+            else:
+                text = "Very good, sir."
+            return _httpx.Response(200, json={"content": [{"type": "text", "text": text}]})
+
+        mbh = MultiBoardHarness(self.db)
+        await mbh.service.sync()
+        router = JarvisRouter(
+            settings=Settings(telegram_bot_token="TOK", telegram_owner_chat_id=OWNER, _env_file=None),
+            db=self.db,
+            telegram=TelegramClient("TOK", transport=_httpx.MockTransport(telegram_handler)),
+            claude=ClaudeClient("K", transport=_httpx.MockTransport(claude_handler)),
+            deepgram=DeepgramClient("K", transport=_httpx.MockTransport(lambda r: _httpx.Response(500))),
+            elevenlabs=ElevenLabsClient("K", voice_id="V", transport=_httpx.MockTransport(lambda r: _httpx.Response(500))),
+            daily12=mbh.service,
+            mail=build_service(self.db, self.sent),
+        )
+        await router.handle_update(
+            text_update("check my email and stick a card on the board for the VAT return", OWNER)
+        )
+        from urllib.parse import unquote_plus
+
+        texts = [
+            unquote_plus(body.decode())
+            for method, body in telegram_calls
+            if method == "sendMessage"
+        ]
+        self.assertTrue(any("unread" in t for t in texts))            # email half answered
+        self.assertTrue(any("VAT return card" in t for t in texts))   # board half executed
+        self.assertFalse(any("Very good, sir." in t for t in texts))  # no stray brain turn
+
+
 class TestRouterEmailFlow(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self._dir = tempfile.TemporaryDirectory()
