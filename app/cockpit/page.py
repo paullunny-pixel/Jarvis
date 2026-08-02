@@ -310,10 +310,61 @@ async function openLive(btnId, mode, idle, live) {
 }
 document.getElementById('talk-btn').addEventListener('click',
   () => openLive('talk-btn', 'assistant', '🎙 Talk to Jarvis', '🎙 Live — talk away'));
-document.getElementById('interpret-btn').addEventListener('click',
-  () => openLive('interpret-btn', 'interpreter', '🌐 Interpret EN⇄PT', '🌐 Interpreting — falem à vontade'));
 document.getElementById('support-btn').addEventListener('click',
   () => openLive('support-btn', 'support', '💙 Support', '💙 Here with you'));
+
+// The interpreter runs PUSH-TO-TALK (Paul's ask, 31 Jul): the mic is dead
+// until the big button is held, so thinking pauses can never be cut off —
+// you finish, you let go, Jarvis translates the whole thought.
+async function openInterpreter() {
+  const btn = document.getElementById('interpret-btn');
+  if (window.__jarvisPtt) { return; }
+  btn.textContent = 'Connecting…';
+  try {
+    const res = await fetch('DATA_URL'.replace(/\/data$/, '/voice-url') + '?mode=interpreter', {method:'POST'});
+    const body = await res.json();
+    if (body.error) { btn.textContent = '🌐 Interpret EN⇄PT'; alert(body.error); return; }
+    const { Conversation } = await import('https://cdn.jsdelivr.net/npm/@elevenlabs/client/+esm');
+    const conv = await Conversation.startSession({ signedUrl: body.url });
+    conv.setMicMuted(true);   // silent until the button is held
+    window.__jarvisPtt = conv;
+
+    const bar = document.createElement('div');
+    bar.id = 'ptt-bar';
+    bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99;display:flex;gap:10px;'
+      + 'align-items:center;padding:14px 16px calc(14px + env(safe-area-inset-bottom));'
+      + 'background:rgba(10,16,24,.96);backdrop-filter:blur(8px);border-top:1px solid #22303f';
+    bar.innerHTML = `
+      <button id="ptt-hold" style="flex:1;padding:20px;border-radius:16px;border:none;font-size:17px;
+        font-weight:600;background:#2f81f7;color:#fff;cursor:pointer;-webkit-user-select:none;user-select:none;
+        touch-action:none">🎙 Hold to speak · segure para falar</button>
+      <button id="ptt-end" style="padding:20px 16px;border-radius:16px;border:1px solid #2a3644;
+        background:transparent;color:#8fa0b3;font-size:15px;cursor:pointer">End</button>`;
+    document.body.appendChild(bar);
+
+    const hold = document.getElementById('ptt-hold');
+    const down = e => { e.preventDefault(); conv.setMicMuted(false);
+      hold.style.background = '#dc2626'; hold.textContent = '🔴 Listening — let go when you’re done'; };
+    const up = e => { e.preventDefault(); conv.setMicMuted(true);
+      hold.style.background = '#2f81f7'; hold.textContent = '🎙 Hold to speak · segure para falar'; };
+    hold.addEventListener('mousedown', down);
+    hold.addEventListener('touchstart', down, {passive:false});
+    hold.addEventListener('mouseup', up);
+    hold.addEventListener('mouseleave', up);
+    hold.addEventListener('touchend', up);
+    hold.addEventListener('touchcancel', up);
+    document.getElementById('ptt-end').addEventListener('click', async () => {
+      try { await conv.endSession(); } catch (e) {}
+      bar.remove(); window.__jarvisPtt = null;
+      btn.textContent = '🌐 Interpret EN⇄PT';
+    });
+    btn.textContent = '🌐 Interpreting';
+  } catch (e) {
+    btn.textContent = '🌐 Interpret EN⇄PT';
+    alert('Could not open the live session — try again in a moment.');
+  }
+}
+document.getElementById('interpret-btn').addEventListener('click', openInterpreter);
 </script>
 </body>
 </html>"""

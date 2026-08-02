@@ -295,6 +295,24 @@ class TestCockpitSurface(unittest.TestCase):
         self.assertIn("Interpret EN⇄PT", html)
         self.assertIn("mode=", html)   # the mode rides the voice-url request
 
+    def test_interpreter_is_push_to_talk(self):
+        from app.cockpit.page import render_page
+
+        html = render_page("/cockpit/S/data")
+        self.assertIn("ptt-hold", html)
+        self.assertIn("setMicMuted", html)                # mic dead unless held
+        self.assertIn("Hold to speak", html)
+        self.assertIn("segure para falar", html)          # Steph's side of the button
+        self.assertIn("openInterpreter", html)
+
+    def test_interpreter_translates_meaning_not_words(self):
+        config = build_agent_config("", "V", "S", mode="interpreter")
+        prompt = " ".join(config["conversation_config"]["agent"]["prompt"]["prompt"].split())
+        self.assertIn("not a dictionary", prompt)
+        self.assertIn("never word-for-word", prompt)
+        self.assertIn("arm and a leg", prompt)            # idioms cross as equivalents
+        self.assertIn("stiff, odd or robotic, it is WRONG", prompt)
+
     def test_page_carries_the_support_button(self):
         from app.cockpit.page import render_page
 
