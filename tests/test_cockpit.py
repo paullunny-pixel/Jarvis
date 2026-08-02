@@ -14,6 +14,109 @@ from app.memory.store import LivingFacts
 from app.db.sqlite import SqliteDatabase
 
 
+class TestCockpitAuth(unittest.IsolatedAsyncioTestCase):
+    """The cockpit lock (31 Jul, Paul's ask): the link alone must show
+    nothing — password + signed session cookie on top of HTTPS."""
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = SqliteDatabase(os.path.join(self._dir.name, "t.db"))
+        await self.db.init()
+        self.store = SettingsStore(self.db)
+
+    async def asyncTearDown(self):
+        await self.db.close()
+        self._dir.cleanup()
+
+    def test_password_hash_roundtrip(self):
+        from app.cockpit import auth
+
+        stored = auth.hash_password("villa-money-2026")
+        self.assertTrue(stored.startswith("pbkdf2$"))
+        self.assertNotIn("villa-money-2026", stored)      # never stored plain
+        self.assertTrue(auth.verify_password("villa-money-2026", stored))
+        self.assertFalse(auth.verify_password("wrong", stored))
+        self.assertFalse(auth.verify_password("villa-money-2026", "garbage"))
+        # Same password, different salt — hashes never repeat.
+        self.assertNotEqual(stored, auth.hash_password("villa-money-2026"))
+
+    def test_session_tokens_sign_and_expire(self):
+        from app.cockpit import auth
+
+        token = auth.mint_session("KEY1", now=1000.0)
+        self.assertTrue(auth.verify_session(token, "KEY1", now=2000.0))
+        self.assertFalse(auth.verify_session(token, "OTHERKEY", now=2000.0))   # wrong key
+        self.assertFalse(auth.verify_session(token + "x", "KEY1", now=2000.0))  # tampered
+        expired = 1000.0 + auth.SESSION_DAYS * 86400 + 1
+        self.assertFalse(auth.verify_session(token, "KEY1", now=expired))
+        self.assertFalse(auth.verify_session("", "KEY1"))
+
+    async def test_gate_is_secure_by_default(self):
+        from app.cockpit import auth
+
+        # No password set → setup, NEVER data — whatever cookie arrives.
+        self.assertEqual(await auth.gate(self.store, ""), "setup")
+        self.assertEqual(await auth.gate(self.store, "1e99.deadbeef"), "setup")
+        await self.store.set(auth.PASSWORD_KEY, auth.hash_password("pw"))
+        await self.store.set(auth.SESSION_KEY, "KEY1")
+        self.assertEqual(await auth.gate(self.store, ""), "login")
+        self.assertEqual(await auth.gate(self.store, auth.mint_session("KEY1")), "ok")
+        # Rotating the session key logs every device out.
+        await self.store.set(auth.SESSION_KEY, "KEY2")
+        self.assertEqual(await auth.gate(self.store, auth.mint_session("KEY1")), "login")
+
+    async def test_set_password_by_telegram_never_logs_the_password(self):
+        from tests.test_router import OWNER, RouterHarness
+        from tests.test_telegram_client import text_update
+
+        from app.cockpit import auth
+
+        h = RouterHarness(self.db)
+        await h.router.handle_update(
+            text_update("set cockpit password hurricane-villa-88", OWNER)
+        )
+        stored = await self.store.get(auth.PASSWORD_KEY, "")
+        self.assertTrue(auth.verify_password("hurricane-villa-88", stored))
+        self.assertTrue(await self.store.get(auth.SESSION_KEY, ""))
+        # The password reached the hash and NOWHERE else.
+        rows = await self.db.fetch_all("SELECT transcript FROM messages")
+        joined = " ".join(r["transcript"] for r in rows)
+        self.assertNotIn("hurricane-villa-88", joined)
+        self.assertIn("[cockpit password updated]", joined)
+
+    async def test_short_password_is_refused(self):
+        from tests.test_router import OWNER, RouterHarness
+        from tests.test_telegram_client import text_update
+
+        from app.cockpit import auth
+
+        h = RouterHarness(self.db)
+        await h.router.handle_update(text_update("set cockpit password abc", OWNER))
+        self.assertEqual(await self.store.get(auth.PASSWORD_KEY, ""), "")
+
+    async def test_logout_everywhere_rotates_the_session_key(self):
+        from tests.test_router import OWNER, RouterHarness
+        from tests.test_telegram_client import text_update
+
+        from app.cockpit import auth
+
+        await self.store.set(auth.SESSION_KEY, "OLDKEY")
+        h = RouterHarness(self.db)
+        await h.router.handle_update(text_update("log out the cockpit everywhere", OWNER))
+        self.assertNotEqual(await self.store.get(auth.SESSION_KEY, ""), "OLDKEY")
+
+    def test_login_and_setup_pages(self):
+        from app.cockpit import auth
+
+        login = auth.login_page("/cockpit/S/login", error="Wrong password.")
+        self.assertIn('action="/cockpit/S/login"', login)
+        self.assertIn("Wrong password.", login)
+        self.assertIn('type="password"', login)
+        setup = auth.setup_page()
+        self.assertIn("set cockpit password", setup)
+        self.assertIn("no data is served", setup.lower())
+
+
 class TestCockpit(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self._dir = tempfile.TemporaryDirectory()

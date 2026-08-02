@@ -16,7 +16,7 @@ non-skippable gates (run + meds).
 
 ## Commands
 
-- Tests: `python -m unittest discover -s tests` (350 tests; stdlib unittest,
+- Tests: `python -m unittest discover -s tests` (357 tests; stdlib unittest,
   NOT pytest — keep it that way. Only `requirements.txt` is needed; two PDF
   tests also use `reportlab` and skip automatically when it isn't installed)
 - No local run needed for most work; local dev uses SQLite automatically
@@ -72,7 +72,11 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
   renditions with marked 'Jarvis here—' context, recall_memory only so a
   stranger's speech can never trigger actions)
 - `app/private/` — sobriety track (walled off)
-- `app/cockpit/` — dashboard (design source: `docs/prototype-progress-cockpit.html`)
+- `app/cockpit/` — dashboard (design source: `docs/prototype-progress-cockpit.html`).
+  Locked (31 Jul): the link alone serves NO data — password set via Telegram
+  ('set cockpit password …', PBKDF2 hash, redacted from the message log),
+  signed 30-day session cookie, 'log out the cockpit everywhere' rotates the
+  session key; page/data/voice-url all gate through `app/cockpit/auth.py`
 
 ## Hard invariants — never break these
 

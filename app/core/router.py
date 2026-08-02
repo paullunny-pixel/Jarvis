@@ -227,6 +227,43 @@ class JarvisRouter:
             await self._handle_private(message, transcript)
             return
 
+        # 1c. Cockpit password — handled BEFORE logging so the password itself
+        # never lands in the message log (which the cockpit could display).
+        import re as _re
+
+        pw_hit = _re.match(
+            r"\s*(?:set|change|update)\s+(?:the\s+)?(?:cockpit|dashboard)\s+password"
+            r"\s*(?:to\s+)?[:\-]?\s*(\S.*)$",
+            transcript,
+            _re.IGNORECASE,
+        )
+        if pw_hit:
+            await self.log.log(
+                "in", "[cockpit password updated]", chat_id=message.chat_id,
+                kind="voice" if message.is_voice else "text",
+            )
+            password = pw_hit.group(1).strip()
+            if len(password) < 6:
+                reply = (
+                    "Too short to guard your life with, sir — six characters minimum. "
+                    "'set cockpit password <something stronger>'."
+                )
+            else:
+                import os as _os
+
+                from app.cockpit import auth as cockpit_auth
+
+                await self.store.set(cockpit_auth.PASSWORD_KEY, cockpit_auth.hash_password(password))
+                await self.store.set(cockpit_auth.SESSION_KEY, _os.urandom(32).hex())
+                reply = (
+                    "Done — the cockpit is locked behind that password now. Each device asks "
+                    "once and stays signed in for 30 days; the link alone shows nothing. "
+                    "'log out the cockpit everywhere' clears every signed-in device."
+                )
+            await self.log.log("out", reply, chat_id=message.chat_id)
+            await self.telegram.send_text(message.chat_id, reply)
+            return
+
         # 2. Log inbound.
         await self.log.log(
             "in",
@@ -804,14 +841,41 @@ class JarvisRouter:
             await self.telegram.send_text(message.chat_id, reply)
             return True
 
+        # "Log out the cockpit everywhere" — rotate the session key so every
+        # signed-in device is thrown back to the password screen.
+        if re.search(
+            r"\b(log\s?out|sign\s?out|kick|lock)\b.{0,30}\b(cockpit|dashboard)\b"
+            r"|\b(cockpit|dashboard)\b.{0,30}\b(log\s?out|sign\s?out)\b",
+            lowered,
+        ):
+            import os as _os
+
+            from app.cockpit import auth as cockpit_auth
+
+            await self.store.set(cockpit_auth.SESSION_KEY, _os.urandom(32).hex())
+            reply = (
+                "Done — every device is signed out of the cockpit. The password "
+                "gets them back in; 'set cockpit password' changes it."
+            )
+            await self.log.log("out", reply, chat_id=message.chat_id)
+            await self.telegram.send_text(message.chat_id, reply)
+            return True
+
         # The cockpit link: "show me the cockpit / dashboard"
         if re.search(r"\b(cockpit|dashboard)\b", lowered):
+            from app.cockpit import auth as cockpit_auth
+
             if self.settings.public_url:
                 url = (
                     f"{self.settings.public_url.rstrip('/')}/cockpit/"
                     f"{self.settings.effective_cockpit_secret}"
                 )
                 reply = f"Your cockpit: {url}\nBookmark it — live streaks, the 12, the villa, the lot."
+                if not await self.store.get(cockpit_auth.PASSWORD_KEY, ""):
+                    reply += (
+                        "\nIt's locked until you set a password — say "
+                        "'set cockpit password <your password>' and it opens only to you."
+                    )
             else:
                 reply = "The cockpit goes live once I'm deployed with a public URL — soon."
             await self.log.log("out", reply, chat_id=message.chat_id)

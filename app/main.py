@@ -267,22 +267,83 @@ async def telegram_webhook(
     return {"ok": True}
 
 
-@app.get("/cockpit/{secret}")
-async def cockpit_page(secret: str, request: Request):
-    """The Progress Cockpit. Jarvis sends Paul this link; the secret is the key."""
-    from fastapi.responses import HTMLResponse
-
-    router: JarvisRouter = request.app.state.router
+def _check_cockpit_secret(router: "JarvisRouter", secret: str) -> None:
     if not hmac.compare_digest(secret, router.settings.effective_cockpit_secret):
         raise HTTPException(status_code=404)
+
+
+async def _cockpit_gate(router: "JarvisRouter", request: Request) -> str:
+    from app.cockpit import auth as cockpit_auth
+
+    return await cockpit_auth.gate(
+        router.store, request.cookies.get(cockpit_auth.COOKIE_NAME, "")
+    )
+
+
+@app.get("/cockpit/{secret}")
+async def cockpit_page(secret: str, request: Request):
+    """The Progress Cockpit. The link finds the door; the password opens it —
+    a leaked/forwarded link alone shows no personal data."""
+    from fastapi.responses import HTMLResponse
+
+    from app.cockpit import auth as cockpit_auth
+
+    router: JarvisRouter = request.app.state.router
+    _check_cockpit_secret(router, secret)
+    state = await _cockpit_gate(router, request)
+    if state == "setup":
+        return HTMLResponse(cockpit_auth.setup_page())
+    if state == "login":
+        return HTMLResponse(cockpit_auth.login_page(f"/cockpit/{secret}/login"))
     return HTMLResponse(render_page(f"/cockpit/{secret}/data"))
+
+
+@app.post("/cockpit/{secret}/login")
+async def cockpit_login(secret: str, request: Request):
+    from urllib.parse import parse_qs
+
+    from fastapi.responses import HTMLResponse, RedirectResponse
+
+    from app.cockpit import auth as cockpit_auth
+
+    router: JarvisRouter = request.app.state.router
+    _check_cockpit_secret(router, secret)
+    stored = await router.store.get(cockpit_auth.PASSWORD_KEY, "")
+    if not stored:
+        return HTMLResponse(cockpit_auth.setup_page())
+    body = (await request.body()).decode("utf-8", "replace")
+    password = parse_qs(body).get("password", [""])[0]
+    if not cockpit_auth.verify_password(password, stored):
+        await asyncio.sleep(1.0)  # blunt the brute force
+        return HTMLResponse(
+            cockpit_auth.login_page(f"/cockpit/{secret}/login", error="Wrong password."),
+            status_code=401,
+        )
+    key = await router.store.get(cockpit_auth.SESSION_KEY, "")
+    if not key:
+        import os as _os
+
+        key = _os.urandom(32).hex()
+        await router.store.set(cockpit_auth.SESSION_KEY, key)
+    response = RedirectResponse(url=f"/cockpit/{secret}", status_code=303)
+    response.set_cookie(
+        cockpit_auth.COOKIE_NAME,
+        cockpit_auth.mint_session(key),
+        max_age=cockpit_auth.SESSION_DAYS * 86400,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/cockpit",
+    )
+    return response
 
 
 @app.get("/cockpit/{secret}/data")
 async def cockpit_data(secret: str, request: Request) -> dict:
     router: JarvisRouter = request.app.state.router
-    if not hmac.compare_digest(secret, router.settings.effective_cockpit_secret):
-        raise HTTPException(status_code=404)
+    _check_cockpit_secret(router, secret)
+    if await _cockpit_gate(router, request) != "ok":
+        raise HTTPException(status_code=401, detail="cockpit locked")
     service = CockpitService(
         router.db,
         living=router.living,
@@ -296,8 +357,9 @@ async def cockpit_data(secret: str, request: Request) -> dict:
 async def cockpit_voice_url(secret: str, request: Request) -> dict:
     """Mint a short-lived live-session URL for the cockpit's Talk button."""
     router: JarvisRouter = request.app.state.router
-    if not hmac.compare_digest(secret, router.settings.effective_cockpit_secret):
-        raise HTTPException(status_code=404)
+    _check_cockpit_secret(router, secret)
+    if await _cockpit_gate(router, request) != "ok":
+        raise HTTPException(status_code=401, detail="cockpit locked")
     engine = getattr(router, "voice_engine", None)
     if engine is None:
         return {"error": "Live voice needs the ElevenLabs key — it's not set."}
