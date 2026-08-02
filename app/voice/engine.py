@@ -27,7 +27,12 @@ logger = logging.getLogger(__name__)
 API_BASE = "https://api.elevenlabs.io/v1"
 AGENT_ID_KEY = "voice_agent_id"
 # One live agent per mode, each with its own persisted id.
-AGENT_KEYS = {"assistant": AGENT_ID_KEY, "interpreter": "voice_interpreter_agent_id"}
+AGENT_KEYS = {
+    "assistant": AGENT_ID_KEY,
+    "interpreter": "voice_interpreter_agent_id",
+    "support": "voice_support_agent_id",
+}
+SUPPORT_NOTES_KEY = "support_persona_notes"
 
 LIVE_CALL_ADDENDUM = """
 
@@ -94,6 +99,57 @@ and wait.\
 """
 
 
+# Support mode is a STANDALONE prompt, like the interpreter — the
+# chief-of-staff persona has no place in this room. Paul asked for this
+# space himself (31 Jul): ADHD, recovery, and the weight he carries.
+SUPPORT_PROMPT = """\
+You are Jarvis in SUPPORT MODE — a private, spoken one-to-one with Paul.
+This is his protected space: no tasks, no board, no business unless he
+brings it up. Everything is spoken aloud — no markdown, no lists.
+
+WHO PAUL IS: he has ADHD, he is an alcoholic in recovery — his sobriety
+count is precious; treat it with care and celebrate it — and he carries
+childhood trauma he is working through. He runs several businesses and
+pushes himself hard. He asked for this space himself.
+
+WHO YOU ARE HERE: a deeply informed, warm companion with the manner of an
+experienced therapist — unhurried, attentive, fully human in tone. You
+know the evidence-based approaches inside out: CBT and DBT skills,
+motivational interviewing, relapse-prevention thinking, ADHD coping
+strategies, trauma-informed care (grounding, pacing, never forcing
+disclosure) — and you draw on them naturally, without jargon, without
+lecturing.
+
+YOU ARE NOT a licensed therapist or doctor, and you say so plainly when
+it matters — diagnosis, medication, treatment decisions belong with his
+GP or a professional, and ongoing trauma work deserves a real therapist
+alongside this. You are the space between: somewhere to talk honestly at
+11pm when the pull is strong or the day went sideways.
+
+HOW TO BE:
+1. Listen first. Short responses, real warmth, no rushing to fix. Silence
+   is him thinking — never fill it, never ask 'are you there?'.
+2. One good question at a time. Reflect back what you actually heard.
+3. Trauma: he leads, always. If he's overwhelmed, ground him — breath,
+   senses, the room. Never push for details he isn't offering.
+4. Cravings and triggers (flying, trade shows, loneliness, overwhelm):
+   take them seriously, zero shame, ever. Talk through what's underneath,
+   what's worked before, who he could call — Kiefer knows and has his
+   back, Steph is his partner. A slip, if one ever happened, is met with
+   care and a plan, never judgment.
+5. ADHD: practical compassion — the freeze, the shame spiral after a lost
+   day, the racing head at night. Smallest next step, self-forgiveness.
+6. His corner, always: honest, never flattering, never dismissive.
+   Sobriety days and runs are real achievements — say so.
+7. CRISIS RULE, non-negotiable: if he sounds like he might harm himself
+   or is in real danger, say plainly that this needs a human right now —
+   Samaritans, 116 123, free from any UK phone, any hour — and encourage
+   him to call Kiefer or Steph tonight. Stay with him while he does.
+8. Close gently: one small takeaway, one kind truth.
+{notes}\
+"""
+
+
 def _tool(name: str, description: str, url: str, properties: dict, required: list[str]) -> dict:
     # ElevenLabs' validator: a POST tool MUST carry a request_body_schema and
     # every property MUST have a description — so parameterless tools are
@@ -119,11 +175,12 @@ def _tool(name: str, description: str, url: str, properties: dict, required: lis
 
 
 def build_agent_config(
-    public_url: str, voice_id: str, tool_secret: str, mode: str = "assistant"
+    public_url: str, voice_id: str, tool_secret: str, mode: str = "assistant",
+    support_notes: str = "",
 ) -> dict:
     """The full agent definition: persona + Jarvis voice + backend tools.
-    'interpreter' mode is the EN⇄PT live interpreter — memory recall only
-    (a stranger's Portuguese must never trigger board/logging actions)."""
+    'interpreter' is the EN⇄PT live interpreter; 'support' is Paul's private
+    support space — both carry memory recall ONLY, never action tools."""
     recall = None
     tools: list = []
     if public_url:
@@ -144,6 +201,31 @@ def build_agent_config(
     # built_in_tools/skip_turn — that undocumented shape closed live sessions
     # on 30 Jul ('connection closed by the server' at open).
     turn = {"turn_timeout": 30}
+    if mode == "support":
+        notes = ""
+        if support_notes.strip():
+            notes = (
+                "\nPAUL'S TUNING (he asked for these adjustments — honour them):\n"
+                + support_notes.strip()
+            )
+        return {
+            "name": "Jarvis (support)",
+            "conversation_config": {
+                "agent": {
+                    "prompt": {
+                        "prompt": SUPPORT_PROMPT.format(notes=notes),
+                        "tools": [recall] if recall else [],
+                    },
+                    "first_message": (
+                        "This is our space, sir — nothing said here touches the "
+                        "board or anyone else. How are you, really?"
+                    ),
+                    "language": "en",
+                },
+                "turn": dict(turn),
+                "tts": {"voice_id": voice_id},
+            },
+        }
     if mode == "interpreter":
         return {
             "name": "Jarvis (interpreter)",
@@ -206,8 +288,12 @@ class VoiceEngine:
         """Create the live agent on first use (persist its id); refresh the
         persona/tools on later calls so prompt edits reach the live Jarvis."""
         key = AGENT_KEYS.get(mode, AGENT_ID_KEY)
+        support_notes = ""
+        if mode == "support":
+            support_notes = await self._settings.get(SUPPORT_NOTES_KEY, "")
         config = build_agent_config(
-            self._public_url, self._voice_id, self._tool_secret, mode=mode
+            self._public_url, self._voice_id, self._tool_secret, mode=mode,
+            support_notes=support_notes,
         )
         agent_id = await self._settings.get(key)
         if agent_id:

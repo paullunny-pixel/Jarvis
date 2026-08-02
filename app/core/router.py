@@ -841,6 +841,39 @@ class JarvisRouter:
             await self.telegram.send_text(message.chat_id, reply)
             return True
 
+        # Tune (or reset) the Support-session persona — Paul shapes how his
+        # private support space talks to him ('tune the support persona: ...').
+        tune_hit = re.search(
+            r"\b(?:tune|set|update|adjust)\s+(?:the\s+)?(?:support|therapy)\s+"
+            r"(?:persona|style|character|voice|ai)\b\s*[:,\-]?\s*(.*)$",
+            transcript, re.IGNORECASE | re.DOTALL,
+        )
+        if tune_hit or re.search(
+            r"\breset\s+(?:the\s+)?(?:support|therapy)\s+(?:persona|style|character|voice|ai)\b",
+            lowered,
+        ):
+            from app.voice.engine import SUPPORT_NOTES_KEY
+
+            wishes = (tune_hit.group(1).strip() if tune_hit else "")
+            if wishes:
+                await self.store.set(SUPPORT_NOTES_KEY, wishes)
+                reply = (
+                    "Done — the support persona now carries that, word for word. "
+                    "It takes effect the next time you open a Support session. "
+                    "'reset the support persona' takes it back to my defaults."
+                )
+            elif tune_hit:
+                reply = (
+                    "Tell me how you want it, sir — e.g. 'tune the support persona: "
+                    "gentler, more silence, ask about my dad only when I bring him up.'"
+                )
+            else:
+                await self.store.set(SUPPORT_NOTES_KEY, "")
+                reply = "Reset — the support persona is back to my defaults."
+            await self.log.log("out", reply, chat_id=message.chat_id)
+            await self.telegram.send_text(message.chat_id, reply)
+            return True
+
         # "Log out the cockpit everywhere" — rotate the session key so every
         # signed-in device is thrown back to the password screen.
         if re.search(

@@ -16,7 +16,7 @@ non-skippable gates (run + meds).
 
 ## Commands
 
-- Tests: `python -m unittest discover -s tests` (357 tests; stdlib unittest,
+- Tests: `python -m unittest discover -s tests` (363 tests; stdlib unittest,
   NOT pytest — keep it that way. Only `requirements.txt` is needed; two PDF
   tests also use `reportlab` and skip automatically when it isn't installed)
 - No local run needed for most work; local dev uses SQLite automatically
@@ -70,7 +70,10 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
   phone surface + wake-call channel once the number is registered; second
   'Interpret EN⇄PT' agent — live interpreter mode, faithful both-ways
   renditions with marked 'Jarvis here—' context, recall_memory only so a
-  stranger's speech can never trigger actions)
+  stranger's speech can never trigger actions; third 'Support' agent —
+  Paul's private support space (standalone trauma-informed persona, honest
+  not-a-therapist boundary, Samaritans 116 123 crisis rule, recall only,
+  tunable via 'tune the support persona: …'))
 - `app/private/` — sobriety track (walled off)
 - `app/cockpit/` — dashboard (design source: `docs/prototype-progress-cockpit.html`).
   Locked (31 Jul): the link alone serves NO data — password set via Telegram

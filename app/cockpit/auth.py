@@ -60,6 +60,44 @@ def verify_session(token: str, session_key: str, now: float | None = None) -> bo
     return hmac.compare_digest(sig, expected)
 
 
+# Brute-force lockout: N wrong guesses inside the window locks the login
+# for LOCKOUT_MINUTES. State lives in the settings table so it survives
+# restarts and Render's multiple workers see the same count.
+ATTEMPTS_KEY = "cockpit_login_attempts"
+MAX_ATTEMPTS = 10
+LOCKOUT_MINUTES = 15
+
+
+async def note_failed_login(store, now: float | None = None) -> None:
+    now = now if now is not None else time.time()
+    try:
+        raw = await store.get(ATTEMPTS_KEY, "")
+        window_start, count = (raw.split(":") + ["0"])[:2] if raw else ("0", "0")
+        if now - float(window_start) > LOCKOUT_MINUTES * 60:
+            window_start, count = str(now), "0"
+        await store.set(ATTEMPTS_KEY, f"{window_start}:{int(count) + 1}")
+    except Exception:
+        await store.set(ATTEMPTS_KEY, f"{now}:1")
+
+
+async def login_locked(store, now: float | None = None) -> bool:
+    now = now if now is not None else time.time()
+    try:
+        raw = await store.get(ATTEMPTS_KEY, "")
+        if not raw:
+            return False
+        window_start, count = raw.split(":")
+        if now - float(window_start) > LOCKOUT_MINUTES * 60:
+            return False
+        return int(count) >= MAX_ATTEMPTS
+    except Exception:
+        return False
+
+
+async def clear_login_failures(store) -> None:
+    await store.set(ATTEMPTS_KEY, "")
+
+
 async def gate(store, cookie: str) -> str:
     """The one decision the endpoints share: 'setup' (no password yet — show
     instructions, serve NO data), 'login' (password set, no valid session),

@@ -75,9 +75,36 @@ class TestAgentConfig(unittest.TestCase):
         config = build_agent_config("", "V", "S", mode="interpreter")
         self.assertEqual(config["conversation_config"]["agent"]["prompt"]["tools"], [])
 
+    def test_support_mode_config(self):
+        config = build_agent_config("https://jarvis.example", "VOICE123", "S9", mode="support")
+        self.assertEqual(config["name"], "Jarvis (support)")
+        prompt = " ".join(config["conversation_config"]["agent"]["prompt"]["prompt"].split())
+        # Standalone persona — no chief-of-staff noise in this room.
+        self.assertNotIn("chief-of-staff", prompt.lower())
+        self.assertIn("SUPPORT MODE", prompt)
+        self.assertIn("NOT a licensed therapist", prompt)     # honest boundary
+        self.assertIn("116 123", prompt)                      # Samaritans, always present
+        self.assertIn("zero shame", prompt)
+        self.assertIn("trauma-informed", prompt)
+        # Memory recall only — no board, logging or email tools in this space.
+        tools = config["conversation_config"]["agent"]["prompt"]["tools"]
+        self.assertEqual([t["name"] for t in tools], ["recall_memory"])
+
+    def test_support_persona_notes_ride_into_the_prompt(self):
+        config = build_agent_config(
+            "", "V", "S", mode="support",
+            support_notes="Gentler. More silence. Never bring up my dad first.",
+        )
+        prompt = config["conversation_config"]["agent"]["prompt"]["prompt"]
+        self.assertIn("PAUL'S TUNING", prompt)
+        self.assertIn("Never bring up my dad first.", prompt)
+        # And without notes, no dangling tuning header.
+        bare = build_agent_config("", "V", "S", mode="support")
+        self.assertNotIn("PAUL'S TUNING", bare["conversation_config"]["agent"]["prompt"]["prompt"])
+
     def test_silence_is_thinking_in_both_modes(self):
         # Paul's rule: quiet on the call means he's THINKING — never fill it.
-        for mode in ("assistant", "interpreter"):
+        for mode in ("assistant", "interpreter", "support"):
             config = build_agent_config("https://j.example", "V", "S", mode=mode)
             cc = config["conversation_config"]
             self.assertEqual(cc["turn"]["turn_timeout"], 30)          # max patience
@@ -141,15 +168,17 @@ class TestVoiceEngine(unittest.IsolatedAsyncioTestCase):
 
         assistant = await self.engine.ensure_agent()
         interpreter = await self.engine.ensure_agent("interpreter")
-        self.assertNotEqual(assistant, interpreter)
+        support = await self.engine.ensure_agent("support")
+        self.assertEqual(len({assistant, interpreter, support}), 3)
         store = SettingsStore(self.db)
         self.assertEqual(await store.get(AGENT_ID_KEY), assistant)
         self.assertEqual(await store.get("voice_interpreter_agent_id"), interpreter)
-        # Both modes mint signed URLs; the interpreter refreshes, not recreates.
+        self.assertEqual(await store.get("voice_support_agent_id"), support)
+        # All modes mint signed URLs; repeat calls refresh, never recreate.
         url = await self.engine.signed_session_url(mode="interpreter")
         self.assertTrue(url.startswith("wss://live/session"))
         creates = [c for c in self.calls if c[1].endswith("/agents/create")]
-        self.assertEqual(len(creates), 2)
+        self.assertEqual(len(creates), 3)
 
     async def test_outbound_call(self):
         self.assertTrue(await self.engine.outbound_call("PN1", "+447700900000"))
@@ -229,6 +258,29 @@ class TestCockpitSurface(unittest.TestCase):
         self.assertIn("interpret-btn", html)
         self.assertIn("Interpret EN⇄PT", html)
         self.assertIn("mode=", html)   # the mode rides the voice-url request
+
+    def test_page_carries_the_support_button(self):
+        from app.cockpit.page import render_page
+
+        html = render_page("/cockpit/S/data")
+        self.assertIn("support-btn", html)
+        self.assertIn("'support'", html)
+
+    async def test_tuning_the_support_persona_by_telegram(self):
+        from app.core.store import SettingsStore
+        from app.voice.engine import SUPPORT_NOTES_KEY
+        from tests.test_router import OWNER, RouterHarness
+        from tests.test_telegram_client import text_update
+
+        h = RouterHarness(self.db)
+        await h.router.handle_update(text_update(
+            "tune the support persona: gentler, more silence, humour only when I start it",
+            OWNER,
+        ))
+        store = SettingsStore(self.db)
+        self.assertIn("more silence", await store.get(SUPPORT_NOTES_KEY, ""))
+        await h.router.handle_update(text_update("reset the support persona", OWNER))
+        self.assertEqual(await store.get(SUPPORT_NOTES_KEY, ""), "")
 
 
 if __name__ == "__main__":

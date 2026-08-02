@@ -105,6 +105,34 @@ class TestCockpitAuth(unittest.IsolatedAsyncioTestCase):
         await h.router.handle_update(text_update("log out the cockpit everywhere", OWNER))
         self.assertNotEqual(await self.store.get(auth.SESSION_KEY, ""), "OLDKEY")
 
+    async def test_lockout_after_repeated_failures(self):
+        from app.cockpit import auth
+
+        t0 = 1000.0
+        for _ in range(auth.MAX_ATTEMPTS - 1):
+            await auth.note_failed_login(self.store, now=t0)
+        self.assertFalse(await auth.login_locked(self.store, now=t0))
+        await auth.note_failed_login(self.store, now=t0)      # the tenth
+        self.assertTrue(await auth.login_locked(self.store, now=t0))
+        # The lock expires with the window...
+        after = t0 + auth.LOCKOUT_MINUTES * 60 + 1
+        self.assertFalse(await auth.login_locked(self.store, now=after))
+        # ...and a correct login clears the slate immediately.
+        await auth.note_failed_login(self.store, now=t0)
+        await auth.clear_login_failures(self.store)
+        self.assertFalse(await auth.login_locked(self.store, now=t0))
+
+    def test_dashboard_escapes_untrusted_text(self):
+        # The injection gap: card titles and calendar text render via
+        # innerHTML — every interpolated data field must pass through esc().
+        from app.cockpit.page import COCKPIT_HTML
+
+        self.assertIn("&#39;", COCKPIT_HTML)                 # esc covers quotes
+        self.assertIn("${esc(s.time)}", COCKPIT_HTML)        # ICS-fed timeline
+        self.assertIn("${esc(s.title)}", COCKPIT_HTML)
+        self.assertIn("${esc(x.title)}", COCKPIT_HTML)       # Trello card titles
+        self.assertNotIn("${s.time}", COCKPIT_HTML)
+
     def test_login_and_setup_pages(self):
         from app.cockpit import auth
 

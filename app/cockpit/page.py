@@ -133,6 +133,8 @@ COCKPIT_HTML = """<!DOCTYPE html>
       title="Live, interruptible conversation — headphones recommended">🎙 Talk to Jarvis</button>
     <button class="pill" id="interpret-btn" style="cursor:pointer;border:none;font:inherit"
       title="Live interpreter — speak English or Portuguese, Jarvis carries it both ways and can explain concepts">🌐 Interpret EN⇄PT</button>
+    <button class="pill" id="support-btn" style="cursor:pointer;border:none;font:inherit"
+      title="A private space to talk — just you and Jarvis, nothing touches the board">💙 Support</button>
   </div>
 
   <div class="sec">Streaks · consecutive days</div>
@@ -185,7 +187,7 @@ COCKPIT_HTML = """<!DOCTYPE html>
 </div>
 <script>
 const TICK = '<svg viewBox="0 0 12 12"><path d="M1 6l3.2 3.2L11 2" fill="none" stroke="#06141d" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 function spark(series, color){
   if(!series || series.length < 2) return '';
@@ -220,7 +222,7 @@ function render(d){
   const rh = d.rhythm || {};
   if (rh.water_target_ml) chips.push(`<div class="sk"><div class="lab">💧 Water · 🚶 Moves</div>
     <div class="big">${((rh.water_ml||0)/1000).toFixed(1)}<small>L / ${(rh.water_target_ml/1000).toFixed(1)}L</small> · ${rh.movements||0}<small> moves</small></div>
-    <div class="sub">${rh.woke_at ? 'up at ' + rh.woke_at : 'wake not logged'}</div></div>`);
+    <div class="sub">${rh.woke_at ? 'up at ' + esc(rh.woke_at) : 'wake not logged'}</div></div>`);
   document.getElementById('streaks').innerHTML = chips.join('');
 
   const t = d.twelve;
@@ -261,7 +263,7 @@ function render(d){
     : '<div class="cap">Villa tracker connects at Milestone 2 data load.</div>';
 
   document.getElementById('timeline').innerHTML = d.today.map(s => `
-    <div class="slot${s.done?' done':''}"><div class="tm">${s.time}</div><div class="b b-${s.type}"></div>
+    <div class="slot${s.done?' done':''}"><div class="tm">${esc(s.time)}</div><div class="b b-${esc(s.type)}"></div>
     <div><div class="nm">${esc(s.title)}</div></div></div>`).join('');
 
   document.getElementById('kiefer-preview').textContent = '"' + d.kiefer.preview + '"';
@@ -310,6 +312,8 @@ document.getElementById('talk-btn').addEventListener('click',
   () => openLive('talk-btn', 'assistant', '🎙 Talk to Jarvis', '🎙 Live — talk away'));
 document.getElementById('interpret-btn').addEventListener('click',
   () => openLive('interpret-btn', 'interpreter', '🌐 Interpret EN⇄PT', '🌐 Interpreting — falem à vontade'));
+document.getElementById('support-btn').addEventListener('click',
+  () => openLive('support-btn', 'support', '💙 Support', '💙 Here with you'));
 </script>
 </body>
 </html>"""

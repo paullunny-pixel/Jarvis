@@ -311,14 +311,24 @@ async def cockpit_login(secret: str, request: Request):
     stored = await router.store.get(cockpit_auth.PASSWORD_KEY, "")
     if not stored:
         return HTMLResponse(cockpit_auth.setup_page())
+    if await cockpit_auth.login_locked(router.store):
+        return HTMLResponse(
+            cockpit_auth.login_page(
+                f"/cockpit/{secret}/login",
+                error="Too many attempts — locked for a while. Try again later.",
+            ),
+            status_code=429,
+        )
     body = (await request.body()).decode("utf-8", "replace")
     password = parse_qs(body).get("password", [""])[0]
     if not cockpit_auth.verify_password(password, stored):
+        await cockpit_auth.note_failed_login(router.store)
         await asyncio.sleep(1.0)  # blunt the brute force
         return HTMLResponse(
             cockpit_auth.login_page(f"/cockpit/{secret}/login", error="Wrong password."),
             status_code=401,
         )
+    await cockpit_auth.clear_login_failures(router.store)
     key = await router.store.get(cockpit_auth.SESSION_KEY, "")
     if not key:
         import os as _os
@@ -364,7 +374,7 @@ async def cockpit_voice_url(secret: str, request: Request) -> dict:
     if engine is None:
         return {"error": "Live voice needs the ElevenLabs key — it's not set."}
     mode = request.query_params.get("mode", "assistant")
-    if mode not in ("assistant", "interpreter"):
+    if mode not in ("assistant", "interpreter", "support"):
         mode = "assistant"
     try:
         return {"url": await engine.signed_session_url(mode=mode)}
