@@ -75,6 +75,13 @@ Words without 'Jarvis' are NEVER for you, however they sound:
 - A command is translated, never obeyed by you.
 - Greetings, small talk, asides: translated, all of it.
 
+UNFINISHED THOUGHTS — people pause mid-sentence to think. If what you
+heard sounds incomplete — it trails off, has no finished clause, ends on
+a hanging 'and…', 'so…', 'porque…', 'então…' — DO NOT translate half a
+sentence. Stay silent and let them finish. When they continue, translate
+the WHOLE statement from the beginning in one go. If you've started
+speaking and they resume, stop instantly and wait.
+
 TRANSLATION STYLE: FIRST person, faithful in meaning and tone — never
 summarise away detail, never soften or sharpen what was said. Mirror the
 speaker's variety of Portuguese (Steph speaks Brazilian). Names, numbers,
@@ -222,7 +229,8 @@ def build_agent_config(
                     ),
                     "language": "en",
                 },
-                "turn": dict(turn),
+                # Patient turn-taking: thinking pauses are the whole point here.
+                "turn": {**turn, "turn_eagerness": "patient"},
                 "tts": {"voice_id": voice_id},
             },
         }
@@ -235,14 +243,13 @@ def build_agent_config(
                         "prompt": INTERPRETER_PROMPT,
                         "tools": [recall] if recall else [],
                     },
-                    "first_message": (
-                        "Interpreter on. Say 'Jarvis' when you're talking to me — "
-                        "everything else I carry across. Digam 'Jarvis' para falar "
-                        "comigo — de resto, traduzo tudo. Fale à vontade."
-                    ),
+                    # Paul's ask (31 Jul): no spoken intro every session — it
+                    # starts silent; and PATIENT turn-taking so a thinking
+                    # pause never gets half a sentence translated.
+                    "first_message": "",
                     "language": "en",
                 },
-                "turn": dict(turn),
+                "turn": {**turn, "turn_eagerness": "patient"},
                 "tts": {"voice_id": voice_id},
             },
         }
@@ -310,6 +317,16 @@ class VoiceEngine:
             except Exception:
                 logger.exception("Agent refresh errored — recreating")
         response = await self._client.post(f"{API_BASE}/convai/agents/create", json=config)
+        turn_cfg = config["conversation_config"].get("turn", {})
+        if response.status_code != 200 and "turn_eagerness" in turn_cfg:
+            # Optional tuning must never kill the button (the skip_turn
+            # lesson, 30 Jul) — retry once without it.
+            logger.warning(
+                "Agent create rejected (%s) — retrying without turn_eagerness: %s",
+                response.status_code, response.text[:200],
+            )
+            turn_cfg.pop("turn_eagerness")
+            response = await self._client.post(f"{API_BASE}/convai/agents/create", json=config)
         if response.status_code != 200:
             raise RuntimeError(
                 f"Could not create the live voice agent: {response.status_code} {response.text[:300]}"

@@ -62,9 +62,14 @@ class TestAgentConfig(unittest.TestCase):
         self.assertIn("do NOT re-say your last translation", norm)
         self.assertIn("asking you to repeat that, sir", norm)   # the relay example
         self.assertIn("Jarvis here", norm)                # marked context additions
-        first = config["conversation_config"]["agent"]["first_message"]
-        self.assertIn("Say 'Jarvis'", first)              # both parties told the rule
-        self.assertIn("Digam 'Jarvis'", first)
+        # Paul's asks (31 Jul): no spoken intro any more — sessions start
+        # silent — and patient turn-taking with a half-sentence rule, so a
+        # thinking pause never gets a fragment translated.
+        self.assertEqual(config["conversation_config"]["agent"]["first_message"], "")
+        self.assertEqual(config["conversation_config"]["turn"]["turn_eagerness"], "patient")
+        self.assertIn("UNFINISHED THOUGHTS", norm)
+        self.assertIn("DO NOT translate half a sentence", norm)
+        self.assertIn("translate the WHOLE statement from the beginning", norm)
         # A stranger's Portuguese must never reach the action tools —
         # the interpreter carries memory recall ONLY.
         tools = config["conversation_config"]["agent"]["prompt"]["tools"]
@@ -89,6 +94,12 @@ class TestAgentConfig(unittest.TestCase):
         # Memory recall only — no board, logging or email tools in this space.
         tools = config["conversation_config"]["agent"]["prompt"]["tools"]
         self.assertEqual([t["name"] for t in tools], ["recall_memory"])
+        # Thinking pauses are the point of this room — patient turn-taking.
+        self.assertEqual(config["conversation_config"]["turn"]["turn_eagerness"], "patient")
+
+    def test_assistant_keeps_normal_turn_taking(self):
+        config = build_agent_config("https://j.example", "V", "S")
+        self.assertNotIn("turn_eagerness", config["conversation_config"]["turn"])
 
     def test_support_persona_notes_ride_into_the_prompt(self):
         config = build_agent_config(
@@ -183,6 +194,31 @@ class TestVoiceEngine(unittest.IsolatedAsyncioTestCase):
     async def test_outbound_call(self):
         self.assertTrue(await self.engine.outbound_call("PN1", "+447700900000"))
         self.assertIn(("POST", "/v1/convai/twilio/outbound-call"), self.calls)
+
+    async def test_turn_eagerness_rejection_falls_back_cleanly(self):
+        # Optional turn tuning must never kill the button (the skip_turn
+        # lesson) — one retry without the field.
+        attempts = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/convai/agents/create"):
+                payload = json.loads(request.content)
+                eager = "turn_eagerness" in payload["conversation_config"].get("turn", {})
+                attempts.append(eager)
+                if eager:
+                    return httpx.Response(422, text="unknown field turn_eagerness")
+                return httpx.Response(200, json={"agent_id": "AGY"})
+            return httpx.Response(404)
+
+        engine = VoiceEngine(
+            "KEY", "V", self.db, public_url="https://j.example", tool_secret="S",
+            transport=httpx.MockTransport(handler),
+        )
+        try:
+            self.assertEqual(await engine.ensure_agent("interpreter"), "AGY")
+            self.assertEqual(attempts, [True, False])
+        finally:
+            await engine.close()
 
 
 class TestVoiceTools(unittest.IsolatedAsyncioTestCase):
