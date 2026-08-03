@@ -123,7 +123,7 @@ class TestStatusAndShow(unittest.IsolatedAsyncioTestCase):
 
     async def test_show_request_builds_the_plan_instead_of_brush_off(self):
         h = StatusHarness(self.db)
-        await h.router.handle_update(text_update("what's my 12?", OWNER))
+        await h.router.handle_update(text_update("jarvis add to trello — what's my 12?", OWNER))
         combined = " ".join(h.texts())
         self.assertIn("TODAY'S FOCUS", combined)
         self.assertNotIn("is clear", combined)

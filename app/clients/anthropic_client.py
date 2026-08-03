@@ -96,6 +96,55 @@ class ClaudeClient:
         )
         return self._text_of(data)
 
+    async def converse_with_tools(
+        self,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        handler,  # async (name: str, input: dict) -> str — executes one tool call
+        max_rounds: int = 6,
+        max_tokens: int = 1024,
+        timeout: float | None = None,
+    ) -> str:
+        """Brain-first (Phase A2): the tool-use loop. The brain model answers
+        with text and/or tool calls; each call runs through `handler` (the
+        deterministic machinery) and its result goes back until the model
+        speaks plain text. The final text is the reply."""
+        convo = list(messages)
+        text = ""
+        for _ in range(max_rounds):
+            data = await self._call(
+                {
+                    "model": self.brain_model,
+                    "max_tokens": max_tokens,
+                    "system": system,
+                    "messages": convo,
+                    "tools": tools,
+                },
+                timeout=timeout,
+            )
+            text = self._text_of(data)
+            tool_uses = [b for b in data.get("content", []) if b.get("type") == "tool_use"]
+            if not tool_uses:
+                return text
+            convo.append({"role": "assistant", "content": data["content"]})
+            results = []
+            for use in tool_uses:
+                try:
+                    out = await handler(use.get("name", ""), use.get("input") or {})
+                except Exception as exc:  # a tool crash must never kill the reply
+                    logger.exception("Tool '%s' failed", use.get("name"))
+                    out = f"TOOL FAILED: {type(exc).__name__} — tell Paul honestly; do not pretend it worked."
+                results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": use.get("id", ""),
+                        "content": str(out)[:4000],
+                    }
+                )
+            convo.append({"role": "user", "content": results})
+        return text  # rounds exhausted — whatever text we have is the reply
+
     async def quick_vision(
         self,
         prompt: str,

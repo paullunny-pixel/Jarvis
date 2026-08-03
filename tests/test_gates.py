@@ -159,9 +159,12 @@ class TestUniversalOverride(unittest.IsolatedAsyncioTestCase):
 class GatedHarness:
     """Router + gates + a minimal Daily12 stub over mocked HTTP."""
 
-    def __init__(self, db, vision_json=None):
+    def __init__(self, db, vision_json=None, opus_responses=None):
         self.telegram_calls = []
         self.claude_requests = []
+        # Scripted brain turns for brain-first tests: each entry is a full
+        # content-block list (tool_use / text); popped per opus call.
+        self.opus_responses = list(opus_responses or [])
 
         def telegram_handler(request: httpx.Request) -> httpx.Response:
             method = request.url.path.split("/")[-1]
@@ -185,6 +188,8 @@ class GatedHarness:
                 return httpx.Response(200, json={"content": [{"type": "text", "text": json.dumps(
                     {"run": "na", "workout": "na", "meals": "na", "medication": "done"}
                 )}]})
+            if self.opus_responses:
+                return httpx.Response(200, json={"content": self.opus_responses.pop(0)})
             return httpx.Response(200, json={"content": [{"type": "text", "text": "Very good, sir."}]})
 
         settings = Settings(telegram_bot_token="TOK", telegram_owner_chat_id=OWNER, _env_file=None)
@@ -258,9 +263,15 @@ class TestGatedRouter(unittest.IsolatedAsyncioTestCase):
         self.assertIn("works best in the evenings", brain[0]["system"])  # page content
 
     async def test_board_blocked_while_gates_outstanding(self):
-        # Assumes tests run at a time past the 09:30 deadline is NOT guaranteed,
-        # so force deadlines that have always passed.
-        h = GatedHarness(self.db)
+        # Brain-first: 'what's my 12?' reaches the brain, whose trello tool
+        # hits the shut gates — the tool result is BLOCKED, the ask is queued,
+        # and the brain relays the block. The gates still guard the board.
+        h = GatedHarness(self.db, opus_responses=[
+            [{"type": "tool_use", "id": "t1", "name": "trello",
+              "input": {"instruction": "show today's focus list"}}],
+            [{"type": "text", "text": "Before we touch the board, sir — the 5km run and "
+              "supplements & medication first. Your instructions are queued, not lost."}],
+        ])
         from app.core.store import SettingsStore
 
         await SettingsStore(self.db).set(
@@ -269,9 +280,19 @@ class TestGatedRouter(unittest.IsolatedAsyncioTestCase):
                         {"id": "meds", "label": "supplements & medication", "by": "00:00"}]),
         )
         await h.router.handle_update(text_update("what's my 12?", OWNER))
+        # The tool result carried the block back to the model…
+        tool_results = [
+            b for r in h.claude_requests for m in r["messages"]
+            if isinstance(m.get("content"), list)
+            for b in m["content"] if isinstance(b, dict) and b.get("type") == "tool_result"
+        ]
+        self.assertTrue(any("BLOCKED" in str(b.get("content")) for b in tool_results))
+        # …and the ask is queued for replay when the gates open.
+        stash = json.loads(await SettingsStore(self.db).get("gated_request"))
+        self.assertIn("show today's focus", stash["text"])
         combined = " ".join(h.texts())
-        self.assertIn("aren't skippable", combined)
-        self.assertNotIn("THE DAILY 12", combined)
+        self.assertIn("queued, not lost", combined)   # the brain relayed the block
+        self.assertNotIn("TODAY'S FOCUS", combined)   # and the board stayed shut
 
     async def test_meds_confirmation_opens_meds_gate(self):
         h = GatedHarness(self.db)
@@ -332,7 +353,7 @@ class TestGatedRequestReplay(unittest.IsolatedAsyncioTestCase):
         h = GatedHarness(self.db)
         await self.store.set("gates_config", ALWAYS_BLOCKED)
         await h.router.handle_update(
-            text_update("stick a card on the board for the VAT return", OWNER)
+            text_update("jarvis add to trello a card for the VAT return", OWNER)
         )
         self.assertIn("queued", " ".join(h.texts()))
         stash = json.loads(await self.store.get("gated_request"))
@@ -342,10 +363,10 @@ class TestGatedRequestReplay(unittest.IsolatedAsyncioTestCase):
         h = GatedHarness(self.db)
         await self.store.set("gates_config", ALWAYS_BLOCKED)
         await h.router.handle_update(
-            text_update("stick a card on the board for the VAT return", OWNER)
+            text_update("jarvis add to trello a card for the VAT return", OWNER)
         )
         await h.router.handle_update(
-            text_update("and a card for the BMI stock order", OWNER)
+            text_update("jarvis add to trello a card for the BMI stock order", OWNER)
         )
         stash = json.loads(await self.store.get("gated_request"))
         self.assertIn("VAT return", stash["text"])
@@ -355,7 +376,7 @@ class TestGatedRequestReplay(unittest.IsolatedAsyncioTestCase):
         h = GatedHarness(self.db)
         await self.store.set("gates_config", MEDS_ONLY_BLOCKED)
         await h.router.handle_update(
-            text_update("put a card on the board for the VAT return", OWNER)
+            text_update("jarvis add to trello a card for the VAT return", OWNER)
         )
         self.assertIn("queued", " ".join(h.texts()))
         await h.router.handle_update(text_update("meds and vitamins taken", OWNER))
@@ -369,7 +390,7 @@ class TestGatedRequestReplay(unittest.IsolatedAsyncioTestCase):
         h.router.heartbeat = JobsHarness(self.db).jobs
         await self.store.set("gates_config", RUN_ONLY_BLOCKED)
         await h.router.handle_update(
-            text_update("add the BMI order to my trello", OWNER)
+            text_update("jarvis add to trello the BMI order", OWNER)
         )
         self.assertIn("queued", " ".join(h.texts()))
         await h.router.handle_update(text_update("I'm having a rest day", OWNER))
@@ -384,7 +405,7 @@ class TestGatedRequestReplay(unittest.IsolatedAsyncioTestCase):
         h = GatedHarness(self.db)
         await self.store.set("gates_config", ALWAYS_BLOCKED)
         await h.router.handle_update(
-            text_update("put a card on the board for the VAT return", OWNER)
+            text_update("jarvis add to trello a card for the VAT return", OWNER)
         )
         await h.router.handle_update(text_update("meds and vitamins taken", OWNER))
         combined = " ".join(h.texts())
@@ -399,7 +420,7 @@ class TestGatedRequestReplay(unittest.IsolatedAsyncioTestCase):
         h = GatedHarness(self.db)
         await self.store.set("gates_config", ALWAYS_BLOCKED)
         await h.router.handle_update(
-            text_update("put a card on the board for the VAT return", OWNER)
+            text_update("jarvis add to trello a card for the VAT return", OWNER)
         )
         await self.store.set("gates_config", NEVER_BLOCKED)  # gates now clear
         await h.router.handle_update(text_update("carry on", OWNER))
@@ -410,7 +431,7 @@ class TestGatedRequestReplay(unittest.IsolatedAsyncioTestCase):
         h = GatedHarness(self.db)
         await self.store.set("gates_config", ALWAYS_BLOCKED)
         await h.router.handle_update(
-            text_update("put a card on the board for the VAT return", OWNER)
+            text_update("jarvis add to trello a card for the VAT return", OWNER)
         )
         await h.router.handle_update(text_update("carry on then", OWNER))
         combined = " ".join(h.texts())

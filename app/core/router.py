@@ -296,46 +296,20 @@ class JarvisRouter:
         if self.mail is not None:
             email_handled = await self._handle_email_talk(message, transcript)
 
-        # 2d. Task talk → the Daily 12 + Trello write-back (Milestone 3).
-        # THE GATES: past their deadline, an unconfirmed run/meds blocks the
-        # working day — Jarvis will not serve the board until they're done.
-        # A message carrying a LINK is reading material, not board work
-        # ('These needs to be done by the brain — read this…' must never be
-        # gate-queued on the word 'done'): it skips task talk and goes to the
-        # brain turn, where the pages are fetched and read.
-        from app.documents.weblinks import extract_urls
-
-        if self.daily12 is not None and not extract_urls(transcript) and mentions_tasks(transcript):
+        # 2d. BRAIN-FIRST (Phase A2, 3 Aug): the deterministic task lane now
+        # answers ONLY to Paul's explicit escape hatch — a message starting
+        # 'Jarvis add to Trello' rides the proven parser rails. Every other
+        # board-ish message goes to the brain, which drives the SAME machinery
+        # through its trello tool (gates enforced inside the tool).
+        prefix_hit = self.TRELLO_PREFIX.match(transcript)
+        if self.daily12 is not None and prefix_hit:
+            task_text = transcript[prefix_hit.end():].strip() or transcript
             if self.gates is not None:
                 tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
                 now_local = datetime.now(ZoneInfo(tz_name))
                 outstanding = await self.gates.outstanding(now_local)
                 if outstanding:
-                    # QUEUE the request — the gate must never eat instructions.
-                    # It replays the moment the gates open (run/rest/meds/override).
-                    # A second blocked ask the same day joins the queue, it
-                    # doesn't replace the first.
-                    import json as _json
-
-                    queued_text = transcript
-                    try:
-                        prev = _json.loads(await self.store.get("gated_request", "") or "null")
-                        if (
-                            isinstance(prev, dict)
-                            and prev.get("date") == now_local.date().isoformat()
-                            and prev.get("text")
-                        ):
-                            queued_text = prev["text"] + "\n" + transcript
-                    except Exception:
-                        pass
-                    await self.store.set(
-                        "gated_request",
-                        _json.dumps({"date": now_local.date().isoformat(), "text": queued_text}),
-                    )
-                    block = self.gates.block_message(outstanding) + (
-                        " Your instructions are queued, not lost — the moment the gate "
-                        "opens I'll action them."
-                    )
+                    block = await self._queue_gated(transcript, now_local, outstanding)
                     await self.log.log("out", block, chat_id=message.chat_id, meta={"gated": True})
                     try:
                         audio = await self.elevenlabs.synthesize(strip_for_speech(block))
@@ -343,10 +317,18 @@ class JarvisRouter:
                     except SynthesisError:
                         await self.telegram.send_text(message.chat_id, block)
                     return
-            if await self._handle_task_talk(message, transcript):
+            if await self._handle_task_talk(message, task_text):
                 return
 
         if email_handled:
+            # A mixed message ('draft the reply AND stick a card on the board'):
+            # the email half is answered, but the board half must still land —
+            # via the deterministic lane, since no brain turn follows.
+            if self.daily12 is not None and mentions_tasks(transcript):
+                try:
+                    await self._handle_task_talk(message, transcript)
+                except Exception:
+                    logger.exception("Board half of a mixed message failed")
             return  # the email half answered; no brain turn on top
 
         # 2f. THE UNDERSTANDING LAYER (3 Aug): nothing deterministic matched.
@@ -419,6 +401,21 @@ class JarvisRouter:
                 "picks these up in build sessions; don't re-offer to add them):\n"
                 + "\n".join(f"- {w['wish']} (asked {w['date']})" for w in wishes[-10:])
             )
+        # BRAIN-FIRST (Phase A2): the brain acts through tools — same
+        # machinery as the old phrase paths, hands now on the brain's side.
+        tools = self._brain_tools()
+        if tools:
+            system_status += (
+                "\n\nYOUR HANDS (brain-first): you act through your tools — use them "
+                "whenever Paul's words ask for action, including board/task talk in any "
+                "spelling (he has dyslexia — read for meaning). NEVER say you'll do "
+                "something, or that something is done, remembered or silenced, without a "
+                "tool result confirming exactly that — tool results are ground truth; "
+                "relay BLOCKED and FAILED results honestly. What the machinery handled "
+                "before you (streak logging, exact command phrases, email) arrives "
+                "already done — don't redo it. If Paul starts a message 'Jarvis add to "
+                "Trello', that lane never reaches you at all."
+            )
         from app.memory.brief import BRIEF_KEY, PERSONA_NOTES_KEY
 
         system = build_system_prompt(
@@ -429,7 +426,13 @@ class JarvisRouter:
             paul_brief=await self.store.get(BRIEF_KEY, ""),
         )
         history = await self.log.as_claude_messages(self.settings.history_messages)
-        raw_reply = await self.claude.converse(system, history)
+        if tools:
+            raw_reply = await self.claude.converse_with_tools(
+                system, history, tools,
+                lambda name, tool_input: self._dispatch_tool(name, tool_input, message),
+            )
+        else:
+            raw_reply = await self.claude.converse(system, history)
         if not raw_reply:
             raw_reply = "I lost my train of thought there — go again."
 
@@ -518,6 +521,12 @@ class JarvisRouter:
         return "\n\n".join(parts)
 
     import re as _re_mod
+
+    # Paul's explicit escape hatch to the deterministic Trello rails (3 Aug):
+    # "Jarvis add to Trello …" — everything else is the brain's to route.
+    TRELLO_PREFIX = _re_mod.compile(
+        r"^\s*jarvis[,.:]?\s+add\s+to\s+trello\b[,.:;\-—]?\s*", _re_mod.IGNORECASE
+    )
 
     BUILD_ADD = _re_mod.compile(
         r"^\s*(?:jarvis[,:]?\s+)?(?:add|put|stick|note)\s+(.+?)\s+(?:on|to)\s+"
@@ -1739,6 +1748,184 @@ class JarvisRouter:
         if looks_negated(transcript):
             return {key: "na" for key in keys}
         return {key: "done" for key in keys}
+
+    async def _queue_gated(self, text: str, now_local, outstanding) -> str:
+        """Stash a request behind the gates (same-day queue, append not
+        replace) and return the spoken block line. The gate never eats
+        instructions — they replay the moment a gate opens."""
+        import json as _json
+
+        queued_text = text
+        try:
+            prev = _json.loads(await self.store.get("gated_request", "") or "null")
+            if (
+                isinstance(prev, dict)
+                and prev.get("date") == now_local.date().isoformat()
+                and prev.get("text")
+            ):
+                queued_text = prev["text"] + "\n" + text
+        except Exception:
+            pass
+        await self.store.set(
+            "gated_request",
+            _json.dumps({"date": now_local.date().isoformat(), "text": queued_text}),
+        )
+        return self.gates.block_message(outstanding) + (
+            " Your instructions are queued, not lost — the moment the gate "
+            "opens I'll action them."
+        )
+
+    # ---------------- Brain-first (Phase A2): the brain's hands ----------------
+
+    def _brain_tools(self) -> list[dict]:
+        """The tool belt for the main brain turn. Every tool executes through
+        the SAME deterministic machinery the old phrase-paths used."""
+        tools = []
+        if self.daily12 is not None:
+            tools.append({
+                "name": "trello",
+                "description": (
+                    "Work Paul's Trello board (Today's Focus / Master Board): create cards, "
+                    "tick things done, defer, queue for tomorrow, archive, comment, calendar "
+                    "cards, or show the list. Pass ONE clear instruction in plain words with "
+                    "Paul's meaning cleaned up — fix his typos, resolve 'those'/'the first one' "
+                    "from the conversation into explicit names. The result says exactly what "
+                    "happened: report THAT, never your intention. A result starting BLOCKED "
+                    "means the day's gates (run/meds) are shut — relay it honestly; his "
+                    "instruction is queued, not lost."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"instruction": {"type": "string"}},
+                    "required": ["instruction"],
+                },
+            })
+        if self.memory is not None and self.living is not None:
+            tools.append({
+                "name": "remember",
+                "description": (
+                    "File durable facts into your permanent memory (second brain). Use when "
+                    "Paul tells you something worth keeping or asks you to remember/learn "
+                    "something. Pass the facts as clear prose. The result says what was "
+                    "filed — only claim remembering when it confirms."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"facts": {"type": "string"}},
+                    "required": ["facts"],
+                },
+            })
+        tools.append({
+            "name": "update_brief",
+            "description": (
+                "Rebuild your living brief of Paul from recent conversation + facts. Use "
+                "after learning something big about him (or when he asks). Slow (~30s)."
+            ),
+            "input_schema": {"type": "object", "properties": {}},
+        })
+        if self.heartbeat is not None:
+            tools.append({
+                "name": "rhythm",
+                "description": (
+                    "The reminder machinery's ONLY levers: quiet_today silences today's "
+                    "non-essential nudges (meds still fire — non-negotiable); "
+                    "wake_skip_tomorrow skips tomorrow's wake sequence; wake_hour_tomorrow "
+                    "(4-11) delays it. Only claim a rhythm change the result confirms."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "quiet_today": {"type": "boolean"},
+                        "wake_skip_tomorrow": {"type": "boolean"},
+                        "wake_hour_tomorrow": {"type": "integer"},
+                    },
+                },
+            })
+        tools.append({
+            "name": "build_list",
+            "description": (
+                "Paul's wish list for abilities you don't have yet — the engineer reads it "
+                "each build session. add: file a wish verbatim. show: read the list back."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {"add": {"type": "string"}, "show": {"type": "boolean"}},
+            },
+        })
+        return tools
+
+    async def _dispatch_tool(self, name: str, tool_input: dict, message: IncomingMessage) -> str:
+        import json as _json
+
+        if name == "trello" and self.daily12 is not None:
+            return await self._tool_trello(str(tool_input.get("instruction") or ""))
+        if name == "remember" and self.memory is not None and self.living is not None:
+            facts = str(tool_input.get("facts") or "").strip()
+            if not facts:
+                return "NOTHING FILED — no facts given."
+            n = await extract_and_file(self.claude, self.memory, self.living, facts, source="brain-tool")
+            return f"Filed {n} fact(s) into permanent memory." if n else (
+                "NOTHING FILED — the memory writer found nothing durable in that."
+            )
+        if name == "update_brief":
+            from app.memory.brief import compose_brief
+
+            brief = await compose_brief(self.claude, self.db, self.store)
+            return "Brief rebuilt — it rides every reply from now." if brief else (
+                "REBUILD FAILED — the previous brief still stands."
+            )
+        if name == "rhythm" and self.heartbeat is not None:
+            done = []
+            tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
+            today_local = datetime.now(ZoneInfo(tz_name)).date()
+            if tool_input.get("quiet_today") is not None:
+                await self.heartbeat.set_quiet_today(bool(tool_input["quiet_today"]))
+                done.append(
+                    "quiet day ON (meds still fire)" if tool_input["quiet_today"] else "nudges back ON"
+                )
+            if tool_input.get("wake_skip_tomorrow"):
+                await self.heartbeat.skip_next_wake(today_local + timedelta(days=1))
+                done.append("tomorrow's wake-up skipped")
+            hour = tool_input.get("wake_hour_tomorrow")
+            if isinstance(hour, int) and 4 <= hour <= 11:
+                await self.heartbeat.delay_wake(today_local + timedelta(days=1), hour)
+                done.append(f"tomorrow's wake-up moved to {hour:02d}:00")
+            return ("Confirmed: " + ", ".join(done) + ".") if done else "NO CHANGE — no valid switch given."
+        if name == "build_list":
+            if (tool_input.get("add") or "").strip():
+                return await self._build_list_add(str(tool_input["add"]).strip())
+            try:
+                wishes = _json.loads(await self.store.get("build_list", "[]"))
+            except Exception:
+                wishes = []
+            return self._build_list_show(wishes)
+        return f"UNKNOWN TOOL '{name}' — tell Paul honestly that this isn't wired in."
+
+    async def _tool_trello(self, instruction: str) -> str:
+        """The brain's hands on the board — same parser, same executor, same
+        gates as the deterministic lane."""
+        if not instruction.strip():
+            return "NO ACTION — empty instruction."
+        if self.gates is not None:
+            tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
+            now_local = datetime.now(ZoneInfo(tz_name))
+            outstanding = await self.gates.outstanding(now_local)
+            if outstanding:
+                return "BLOCKED: " + await self._queue_gated(instruction, now_local, outstanding)
+        plan_date = await self.daily12.paul_today()
+        if wants_plan(instruction):
+            await self.daily12.generate(plan_date)
+            return await self.daily12.format_plan(plan_date)
+        plan_text = await self.daily12.format_plan(plan_date)
+        actions = await parse_actions(self.claude, instruction, plan_text)
+        if not actions:
+            return "NO ACTION RECOGNISED — nothing was changed on the board."
+        results, show = await execute_actions(self.daily12, actions)
+        out = " ".join(results) if results else ""
+        if show or not results:
+            await self.daily12.generate(plan_date)
+            out = (out + "\n\n" if out else "") + await self.daily12.format_plan(plan_date)
+        return out or "Done — nothing to report."
 
     async def _handle_task_talk(self, message: IncomingMessage, transcript: str) -> bool:
         """Daily 12 queries and voice feedback → Trello (Milestone 3). Returns

@@ -16,7 +16,7 @@ non-skippable gates (run + meds).
 
 ## Commands
 
-- Tests: `python -m unittest discover -s tests` (419 tests; stdlib unittest,
+- Tests: `python -m unittest discover -s tests` (427 tests; stdlib unittest,
   NOT pytest — keep it that way. Only `requirements.txt` is needed; two PDF
   tests also use `reportlab` and skip automatically when it isn't installed)
 - No local run needed for most work; local dev uses SQLite automatically
@@ -35,8 +35,17 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
 - `app/core/router.py` — the message pipeline. ORDER MATTERS: owner check →
   documents → photos (vision + run-proof) → voice STT → PRIVATE ROOM (before
   general logging!) → life signals (status/timezone/hound/streaks/meds) →
-  document requests → email talk (never swallows a mixed message's board
-  half) → gated task-talk → INTENT TRIAGE → brain conversation → memory writer
+  document requests → email talk (a mixed message's board half still runs
+  deterministically) → 'Jarvis add to Trello' prefix lane (Paul's explicit
+  escape hatch to the proven parser rails, gated) → INTENT TRIAGE → BRAIN
+  WITH TOOLS → memory writer. BRAIN-FIRST (Phase A2, 3 Aug): all other
+  board/task talk reaches the brain, which acts through its tool belt —
+  trello (instruction → the SAME parse_actions/execute_actions rails; gates
+  enforced INSIDE the tool: BLOCKED result + same-day queue), remember
+  (extract_and_file), update_brief, rhythm (quiet/wake switches), build_list.
+  Tool loop in `ClaudeClient.converse_with_tools` (≤6 rounds, crashes become
+  honest TOOL FAILED results). 'YOUR HANDS' rules ride the system prompt:
+  never claim an outcome without a confirming tool result
 - `app/core/intent.py` — the understanding layer (3 Aug): when no exact
   phrase matched and the message is ≤200 chars, Haiku reads it (dyslexia/
   typo/garble tolerant — Paul has dyslexia, 'quite day' = 'quiet day') with

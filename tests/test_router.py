@@ -123,7 +123,7 @@ class TestRouter(unittest.IsolatedAsyncioTestCase):
         )
         await h.router.log.log("out", digest, chat_id=OWNER, meta={"heartbeat": True})
         await h.router.handle_update(
-            text_update("add those trello candidates to the board", OWNER)
+            text_update("jarvis add to trello those candidates from the digest", OWNER)
         )
         parser_calls = [
             r for r in h.claude_requests
@@ -136,7 +136,7 @@ class TestRouter(unittest.IsolatedAsyncioTestCase):
         self.assertIn("meso packaging check", system)
         # The message being parsed rides as the prompt, not duplicated in
         # the recent block.
-        self.assertNotIn("add those trello candidates", system)
+        self.assertNotIn("those candidates from the digest", system)
 
     async def test_tune_jarvis_rides_the_next_reply(self):
         # Phase A1 (31 Jul): Paul pastes his preferred style and it becomes
@@ -237,6 +237,7 @@ class TestRouter(unittest.IsolatedAsyncioTestCase):
             raise RuntimeError("brain offline")
 
         h.router.claude.converse = broken
+        h.router.claude.converse_with_tools = broken  # brain-first path too
         await h.router.handle_update(text_update("hey", OWNER))
         self.assertIn("sendMessage", h.methods())
         self.assertIn(b"snag", dict(h.telegram_calls)["sendMessage"])
