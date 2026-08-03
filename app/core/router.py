@@ -375,7 +375,14 @@ class JarvisRouter:
         # RHYTHM STATE — live switch truth, so the brain never recites a stale
         # wake hour or denies machinery that exists (both happened 4 Aug 00:40).
         now_local = datetime.now(ZoneInfo(timezone))
-        rhythm_lines = []
+        rhythm_lines = [
+            f"Clocks: {timezone} — local time {now_local.strftime('%H:%M')}. Every "
+            "reminder, brief, bedtime and wake-up follows THESE clocks. If the "
+            "conversation or your brief says Paul is actually somewhere else, the "
+            "clocks are WRONG — fix it via the rhythm tool (timezone_place) before "
+            "anything else. (4 Aug: lights-out hit him at 01:30 in Dubai because "
+            "the clocks sat on London.)"
+        ]
         if await self.store.get("quiet_day", "") == now_local.date().isoformat():
             rhythm_lines.append(
                 "QUIET DAY ACTIVE: Paul silenced today's proactive nudges. Honour the "
@@ -1447,7 +1454,8 @@ class JarvisRouter:
             ):
                 await self.db.execute(
                     "INSERT INTO sleep_log (day, goodnight_time, tz) VALUES (?, ?, ?)",
-                    (today_local.isoformat(), datetime.now(ZoneInfo("UTC")).isoformat(timespec="seconds"), tz_name),
+                    (self._sleep_night_date(tz_name).isoformat(),
+                     datetime.now(ZoneInfo("UTC")).isoformat(timespec="seconds"), tz_name),
                 )
                 if skip_hit or (
                     await self.store.get("wake_skip_date")
@@ -1793,6 +1801,16 @@ class JarvisRouter:
             return now_local.date()
         return now_local.date() + timedelta(days=1)
 
+    @staticmethod
+    def _sleep_night_date(tz_name: str):
+        """The date a goodnight belongs to. Past midnight it closes YESTERDAY
+        evening's night — logging it against the new day would wrongly cancel
+        the NEXT evening's bedtime protection."""
+        now_local = datetime.now(ZoneInfo(tz_name))
+        if now_local.hour < 4:
+            return now_local.date() - timedelta(days=1)
+        return now_local.date()
+
     # ---------------- Brain-first (Phase A2): the brain's hands ----------------
     # (Gates chase, they don't block — Paul, 3 Aug. The old gate-queue writer
     # is gone; _replay_gated_request stays so any pre-change stash still
@@ -1858,10 +1876,14 @@ class JarvisRouter:
                     "The reminder machinery's ONLY levers: quiet_today silences today's "
                     "non-essential nudges (meds and bedtime still fire — non-negotiable); "
                     "wake_skip_tomorrow skips tomorrow's wake sequence; wake_hour_tomorrow "
-                    "(4-11) delays it. WHENEVER Paul states what time he's getting up "
-                    "tomorrow — however casually ('waking up with Steph at seven') — set "
-                    "wake_hour_tomorrow; saying it back without the tool changes nothing. "
-                    "Only claim a rhythm change the result confirms."
+                    "(4-11) delays it; goodnight closes the day and stands the bedtime "
+                    "chasers down; timezone_place moves ALL the clocks to where Paul "
+                    "actually is. WHENEVER Paul states what time he's getting up — however "
+                    "casually ('waking up with Steph at seven') — set wake_hour_tomorrow; "
+                    "whenever he's turning in, in any words, set goodnight; the MOMENT his "
+                    "location and your clocks disagree, set timezone_place. Saying any of "
+                    "it back without the tool changes nothing. Only claim a rhythm change "
+                    "the result confirms."
                 ),
                 "input_schema": {
                     "type": "object",
@@ -1869,6 +1891,11 @@ class JarvisRouter:
                         "quiet_today": {"type": "boolean"},
                         "wake_skip_tomorrow": {"type": "boolean"},
                         "wake_hour_tomorrow": {"type": "integer"},
+                        "goodnight": {"type": "boolean"},
+                        "timezone_place": {
+                            "type": "string",
+                            "enum": sorted(self.TIMEZONE_MAP),
+                        },
                     },
                 },
             })
@@ -1915,8 +1942,30 @@ class JarvisRouter:
             )
         if name == "rhythm" and self.heartbeat is not None:
             done = []
+            # Timezone first — every other switch reads the clock it sets.
+            place = str(tool_input.get("timezone_place") or "").strip().lower()
+            if place in self.TIMEZONE_MAP:
+                await self.store.set(TIMEZONE_KEY, self.TIMEZONE_MAP[place])
+                if self.on_timezone_change is not None:
+                    await self.on_timezone_change()
+                done.append(
+                    f"clocks moved to {self.TIMEZONE_MAP[place]} — briefs, nudges, "
+                    "bedtime and wake-ups all follow"
+                )
             tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
             wake_date = self._next_wake_date(tz_name)  # past midnight = THIS morning
+            if tool_input.get("goodnight"):
+                night = self._sleep_night_date(tz_name)
+                exists = await self.db.fetch_one(
+                    "SELECT id FROM sleep_log WHERE day = ?", (night.isoformat(),)
+                )
+                if not exists:
+                    await self.db.execute(
+                        "INSERT INTO sleep_log (day, goodnight_time, tz) VALUES (?, ?, ?)",
+                        (night.isoformat(),
+                         datetime.now(ZoneInfo("UTC")).isoformat(timespec="seconds"), tz_name),
+                    )
+                done.append("day closed — goodnight logged, bedtime chasers stand down")
             if tool_input.get("quiet_today") is not None:
                 await self.heartbeat.set_quiet_today(bool(tool_input["quiet_today"]))
                 done.append(

@@ -230,6 +230,59 @@ class TestBrainHands(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[0]["room"], "people")
         self.assertIn("filed", b.sent().lower())
 
+    async def test_rhythm_tool_moves_the_clocks_when_paul_is_elsewhere(self):
+        # 4 Aug, 01:30 Dubai: lights-out fired on London clocks. The brain
+        # knew he was in Dubai but had no lever — now it does.
+        from app.core.store import SettingsStore
+
+        b = BrainHarness(
+            self.db,
+            opus_responses=[
+                [tool_use("rhythm", timezone_place="dubai")],
+                [text_block("Clocks moved to Dubai, sir — everything follows you now.")],
+            ],
+        )
+        await b.h.router.handle_update(
+            text_update("mate those bedtime pings came at half one in the morning here", OWNER)
+        )
+        self.assertEqual(
+            await SettingsStore(self.db).get("current_timezone"), "Asia/Dubai"
+        )
+        self.assertIn("Clocks moved to Dubai", b.sent())
+
+    async def test_rhythm_tool_goodnight_closes_the_previous_nights_day(self):
+        from unittest.mock import patch
+
+        b = BrainHarness(
+            self.db,
+            opus_responses=[
+                [tool_use("rhythm", goodnight=True)],
+                [text_block("Goodnight, Paul — day closed. Sleep well.")],
+            ],
+        )
+        from datetime import datetime as real_dt
+        from zoneinfo import ZoneInfo as _Z
+
+        class PastMidnight(real_dt):
+            @classmethod
+            def now(cls, tz=None):
+                return real_dt(2026, 8, 4, 2, 5, tzinfo=tz or _Z("Europe/London"))
+
+        with patch("app.core.router.datetime", PastMidnight):
+            await b.h.router.handle_update(
+                text_update("right im actually off to sleep now speak tomorrow", OWNER)
+            )
+        row = await self.db.fetch_one("SELECT day FROM sleep_log")
+        self.assertEqual(row["day"], "2026-08-03")   # closes YESTERDAY's night
+        self.assertIn("Goodnight", b.sent())
+
+    async def test_rhythm_state_carries_the_clock_truth(self):
+        b = BrainHarness(self.db, opus_responses=[[text_block("Evening, sir.")]])
+        await b.h.router.handle_update(text_update("evening", OWNER))
+        opus = [r for r in b.script.requests if "haiku" not in r["model"]][0]
+        self.assertIn("Clocks: Europe/London", opus["system"])
+        self.assertIn("timezone_place", opus["system"])
+
     async def test_brain_system_carries_the_hands_rules(self):
         b = BrainHarness(self.db, opus_responses=[[text_block("Evening, sir.")]])
         await b.h.router.handle_update(text_update("evening mate, how are we", OWNER))
