@@ -372,6 +372,13 @@ class JarvisRouter:
         link_context = await self._read_links(transcript)
         if link_context:
             system_status += "\n\n" + link_context
+        # Quiet-day state: the brain must know the day's gone quiet — and honour it.
+        if await self.store.get("quiet_day", "") == datetime.now(ZoneInfo(timezone)).date().isoformat():
+            system_status += (
+                "\n\nQUIET DAY ACTIVE: Paul silenced today's proactive nudges earlier. "
+                "Honour the spirit of it — answer what he asks, warmly, but don't pile "
+                "on tasks or chase him. 'notifications back on' lifts it."
+            )
         # The build list rides every turn so Jarvis knows what's already asked for.
         try:
             import json as _json
@@ -757,6 +764,14 @@ class JarvisRouter:
             "Google Docs shared 'anyone with the link') is fetched live and appears in "
             "this prompt, filed in the library for later. Login-walled pages and private "
             "Google Docs stay out of reach until the Google Workspace hookup.",
+            "- Reminder & rhythm controls — these phrases are the ONLY levers, and the "
+            "machinery acts on them BEFORE you ever see a message: 'quiet day' / 'cancel "
+            "my notifications' silences today's non-essential nudges (meds still fire); "
+            "'notifications back on' resumes; 'no wake-up tomorrow' skips the wake "
+            "sequence; 'wake me at 7 tomorrow' moves it. IF A REQUEST TO SILENCE, CANCEL "
+            "OR MOVE REMINDERS REACHES YOU, the machinery did NOT catch it — you have no "
+            "switch of your own, so NEVER claim it's done. Tell Paul the exact phrase to "
+            "say instead.",
             "If Paul asks about a connection, answer from this list — or tell him to say "
             "'status' for a live check.",
             "YOU ARE AN EVOLVING SYSTEM: Paul and his engineer (Claude, in build "
@@ -928,6 +943,70 @@ class JarvisRouter:
             place = move.group(1).upper() if move.group(1) == "uk" else move.group(1).title()
             reply = f"Clocks switched to {place} time. Briefs, nudges and the 9pm review all follow you."
             await self.log.log("out", reply, chat_id=message.chat_id)
+            await self.telegram.send_text(message.chat_id, reply)
+            return True
+
+        # Quiet day / notifications off + wake-up skip or delay. One message can
+        # carry both ('cancel my notifications today and I'm not getting up at
+        # 5am tomorrow, hopefully 6am') — handle every half, reply once. The
+        # brain has NO lever for these; this is the only switch, so the words
+        # must land here, not in a confident hallucination.
+        quiet_hit = re.search(
+            r"\b(?:quiet day|do not disturb|leave me (?:alone|be))\b"
+            r"|\b(?:cancel|stop|kill|silence|mute|pause|turn off|switch off|no more)\b"
+            r"[^.!?]{0,40}?\b(?:notification|nudge|reminder|ping|alert)s?\b",
+            lowered,
+        )
+        resume_hit = re.search(
+            r"\b(?:notification|nudge|reminder)s?\s+(?:back\s+)?on\b"
+            r"|\b(?:resume|restore|restart)\b[^.!?]{0,30}\b(?:notification|nudge|reminder)s?\b"
+            r"|\b(?:turn|switch)\s+on\b[^.!?]{0,30}\b(?:notification|nudge|reminder)s?\b"
+            r"|\bend (?:the )?quiet day\b",
+            lowered,
+        )
+        wake_delay_hour, wake_skip = None, False
+        if "tomorrow" in lowered and self.heartbeat is not None:
+            hours = [int(h) for h in re.findall(r"\b([4-9]|1[01])\s*(?::00)?\s*a\.?m\b", lowered)]
+            if re.search(
+                r"\b(?:no wake[- ]?up|don'?t wake me|skip the wake|not getting up|lie[- ]?in|sleep(?:ing)? in)\b",
+                lowered,
+            ):
+                # 'not getting up at 5am … hopefully 6am' → the non-default hour wins.
+                # A pure skip (no hour, no quiet ask) belongs to the established
+                # 'no wake-up tomorrow' handler below — don't shadow it.
+                wake_delay_hour = next((h for h in reversed(hours) if h != 5), None)
+                wake_skip = wake_delay_hour is None and bool(quiet_hit)
+            else:
+                at = re.search(r"\bwake me (?:up )?at (\d{1,2})", lowered)
+                if at and 4 <= int(at.group(1)) <= 11:
+                    wake_delay_hour = int(at.group(1))
+        if quiet_hit or resume_hit or wake_skip or wake_delay_hour:
+            parts = []
+            if resume_hit and not quiet_hit:
+                if self.heartbeat is not None:
+                    await self.heartbeat.set_quiet_today(False)
+                else:
+                    await self.store.set("quiet_day", "")
+                parts.append("nudges and check-ins are back on")
+            elif quiet_hit:
+                if self.heartbeat is not None:
+                    await self.heartbeat.set_quiet_today(True)
+                else:
+                    await self.store.set("quiet_day", today_iso)
+                parts.append(
+                    "quiet for the rest of today — no nudges, digests or check-ins from me. "
+                    "Med reminders still stand (non-negotiable), and I'm right here if you message first"
+                )
+            if self.heartbeat is not None and (wake_skip or wake_delay_hour):
+                tomorrow = datetime.fromisoformat(today_iso).date() + timedelta(days=1)
+                if wake_skip:
+                    await self.heartbeat.skip_next_wake(tomorrow)
+                    parts.append("no wake-up sequence tomorrow")
+                else:
+                    await self.heartbeat.delay_wake(tomorrow, wake_delay_hour)
+                    parts.append(f"tomorrow's wake-up moves to {wake_delay_hour:02d}:00")
+            reply = "Done, sir — " + "; ".join(parts) + "."
+            await self.log.log("out", reply, chat_id=message.chat_id, meta={"rhythm": True})
             await self.telegram.send_text(message.chat_id, reply)
             return True
 

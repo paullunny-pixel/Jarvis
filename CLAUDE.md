@@ -16,7 +16,7 @@ non-skippable gates (run + meds).
 
 ## Commands
 
-- Tests: `python -m unittest discover -s tests` (392 tests; stdlib unittest,
+- Tests: `python -m unittest discover -s tests` (400 tests; stdlib unittest,
   NOT pytest — keep it that way. Only `requirements.txt` is needed; two PDF
   tests also use `reportlab` and skip automatically when it isn't installed)
 - No local run needed for most work; local dev uses SQLite automatically
@@ -68,7 +68,14 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
   held, and a stale draft (45 min) needs one fresh read-back confirm
 - `app/heartbeat/` — scheduler jobs, streaks, gates, ICS calendar, SMTP email,
   day rhythm: wake sequence (OFF until Paul arms it; channel seam for Twilio
-  in `wake_channels.py`), hourly move+water, med reminders, nudge dedupe
+  in `wake_channels.py`), hourly move+water, med reminders, nudge dedupe.
+  Quiet day (3 Aug): 'cancel my notifications today' → QUIET_KEY suppresses
+  every non-essential send at the `_send_text`/`_send_voice` funnel for the
+  local day (meds fire regardless, `essential=True`); 'notifications back
+  on' lifts it; 'wake me at 6 tomorrow' → WAKE_DELAY_KEY holds the wake
+  sequence. The brain is told it has NO reminder switch of its own — a
+  rhythm request reaching it means the machinery missed; give the phrase,
+  never claim 'done' (that phantom was the 3 Aug bug)
 - `app/voice/` — live voice engine (ElevenLabs Conversational AI agent:
   Paul's Jarvis voice, persona-primed, barge-in; cockpit 'Talk' button via
   signed URL; webhook tools back into memory/Trello/mail/rhythm; Twilio

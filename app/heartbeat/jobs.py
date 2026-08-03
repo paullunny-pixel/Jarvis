@@ -34,6 +34,12 @@ logger = logging.getLogger(__name__)
 HOUND_KEY = "hound_date"
 MIDDAY_TARGET_KEY = "midday_target"  # tasks expected done by 13:30 (default 4)
 
+# Quiet day ('cancel my notifications today'): every non-essential proactive
+# message is suppressed for the rest of the local day. Med reminders still
+# fire — the non-negotiables don't take days off. Expires at midnight.
+QUIET_KEY = "quiet_day"
+WAKE_DELAY_KEY = "wake_delay"        # "YYYY-MM-DD:H" — hold the wake until H:00
+
 # --- Wake-up system (Master Update §4) — built but OFF until Paul says
 # "start the wake-ups". Follows the current timezone; "no wake-up tomorrow"
 # skips exactly one day; 'override' stops today's sequence.
@@ -163,19 +169,31 @@ class HeartbeatJobs:
         await self._stamp(key)
         return True
 
-    async def _send_text(self, text: str) -> None:
+    async def quiet_today(self) -> bool:
+        return await self.store.get(QUIET_KEY, "") == (await self._today()).isoformat()
+
+    async def set_quiet_today(self, on: bool) -> None:
+        await self.store.set(QUIET_KEY, (await self._today()).isoformat() if on else "")
+
+    async def _send_text(self, text: str, essential: bool = False) -> None:
         chat_id = await self._owner_chat()
         if not chat_id:
             logger.warning("No owner chat yet — heartbeat message skipped")
+            return
+        if not essential and await self.quiet_today():
+            logger.info("Quiet day — heartbeat message suppressed")
             return
         if not await self._not_a_repeat(text):
             return
         await self.log.log("out", text, chat_id=chat_id, meta={"heartbeat": True})
         await self.telegram.send_text(chat_id, text)
 
-    async def _send_voice(self, text: str) -> None:
+    async def _send_voice(self, text: str, essential: bool = False) -> None:
         chat_id = await self._owner_chat()
         if not chat_id:
+            return
+        if not essential and await self.quiet_today():
+            logger.info("Quiet day — heartbeat voice message suppressed")
             return
         if not await self._not_a_repeat(text):
             return
@@ -443,6 +461,10 @@ class HeartbeatJobs:
     async def skip_next_wake(self, tomorrow: date) -> None:
         await self.store.set(WAKE_SKIP_KEY, tomorrow.isoformat())
 
+    async def delay_wake(self, day: date, hour: int) -> None:
+        """'Wake me at 6 tomorrow' — hold that day's sequence until hour:00."""
+        await self.store.set(WAKE_DELAY_KEY, f"{day.isoformat()}:{hour}")
+
     async def arm_wake_for(self, day: date) -> None:
         """One-shot arm: 'goodnight, wake me as normal' arms just tomorrow —
         Paul's nightly ritual, no standing commitment needed."""
@@ -473,6 +495,11 @@ class HeartbeatJobs:
             return False
         if await self.store.get(WAKE_SKIP_KEY) == today.isoformat():
             return False
+        delay = await self.store.get(WAKE_DELAY_KEY, "")
+        if delay:
+            day, _, hour = delay.rpartition(":")
+            if day == today.isoformat() and now.hour < int(hour or 0):
+                return False
         return not await self.woke_today(today)
 
     async def wake_tick(self, now: datetime | None = None) -> None:
@@ -587,9 +614,11 @@ class HeartbeatJobs:
         if not await self._once(f"med:{item}:{today.isoformat()}"):
             return
         med = MED_SCHEDULE[item]
+        # essential: meds are a non-negotiable — a quiet day never silences them.
         await self._send_voice(
             f"Reminder, sir — {med['label']} ({med['window']}). "
-            "Tell me when it's in and I'll log it."
+            "Tell me when it's in and I'll log it.",
+            essential=True,
         )
 
     async def _wins_recap(self, today: date, done: int, total: int, snapshot: dict) -> str:

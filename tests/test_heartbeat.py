@@ -237,6 +237,64 @@ def at_local(hhmm: str, day: int = 25) -> "datetime":
     return _dt(2026, 7, day, hour, minute, tzinfo=LONDON)
 
 
+class TestQuietDay(unittest.IsolatedAsyncioTestCase):
+    """'Cancel all my notifications today' must actually work — the 3 Aug bug
+    was Jarvis SAYING 'nudges off' while the move+water nudge fired anyway."""
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = SqliteDatabase(os.path.join(self._dir.name, "t.db"))
+        await self.db.init()
+        self.h = JobsHarness(self.db)
+        self.jobs = self.h.jobs
+
+    async def asyncTearDown(self):
+        await self.db.close()
+        self._dir.cleanup()
+
+    def sent(self):
+        return [b for m, b in self.h.telegram_calls if m in ("sendMessage", "sendVoice")]
+
+    async def test_quiet_day_silences_the_nudges(self):
+        await self.jobs.set_quiet_today(True)
+        await self.jobs.move_water_nudge(at_local("15:05"))
+        await self.jobs.midday_nudge()
+        await self.jobs.evening_review()
+        await self.jobs.bedtime_nudge()
+        self.assertEqual(self.sent(), [])
+
+    async def test_med_reminders_survive_a_quiet_day(self):
+        # Non-negotiables don't take days off — meds still fire.
+        await self.jobs.set_quiet_today(True)
+        await self.jobs.med_reminder("adhd", at_local("09:30"))
+        self.assertEqual(len(self.sent()), 1)
+        from urllib.parse import unquote_plus
+
+        self.assertIn("ADHD medication", unquote_plus(self.sent()[0]))
+
+    async def test_quiet_expires_at_midnight_and_clears_on_resume(self):
+        await self.jobs.set_quiet_today(True)
+        self.assertTrue(await self.jobs.quiet_today())
+        await self.jobs.set_quiet_today(False)
+        self.assertFalse(await self.jobs.quiet_today())
+        await self.jobs.move_water_nudge(at_local("16:05"))
+        self.assertEqual(len(self.sent()), 1)
+        # And a stale quiet marker from yesterday never mutes today.
+        await self.jobs.store.set("quiet_day", "2001-01-01")
+        await self.jobs.move_water_nudge(at_local("17:05"))
+        self.assertEqual(len(self.sent()), 2)
+
+    async def test_wake_delay_holds_until_the_new_hour(self):
+        await self.jobs.set_wake_enabled(True)
+        await self.jobs.delay_wake(at_local("05:00", day=26).date(), 6)
+        await self.jobs.wake_tick(at_local("05:06", day=26))
+        self.assertEqual(self.sent(), [])                    # held — no 5am
+        await self.jobs.wake_tick(at_local("06:03", day=26))
+        self.assertEqual(len(self.sent()), 1)                # 6am: sequence runs
+        await self.jobs.wake_tick(at_local("05:06", day=27))
+        self.assertEqual(len(self.sent()), 2)                # next day: back to normal
+
+
 class TestDayRhythm(unittest.IsolatedAsyncioTestCase):
     """Master Update §4 (wake, built but OFF), §5 (move+water), §6 (meds)."""
 
@@ -393,6 +451,60 @@ class TestDayRhythmRouter(unittest.IsolatedAsyncioTestCase):
             await self.jobs.store.get("wake_skip_date"), tomorrow.isoformat()
         )
         self.assertIn("re-arms automatically", " ".join(self.texts()))
+
+    async def test_pauls_exact_message_goes_quiet_and_moves_the_wake(self):
+        # The 3 Aug bug, verbatim: Jarvis SAID 'Done — nudges off, no 5am,
+        # wake-up moved to 06:00' but had no switch — the 18:04 nudge fired
+        # anyway. Now the words hit real machinery before the brain can bluff.
+        from datetime import timedelta as td
+
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        await self.h.router.handle_update(text_update(
+            "Just cancel all my notifications today and I'm not getting up at "
+            "5am tomorrow hopefully 6am and am early night", OWNER,
+        ))
+        reply = " ".join(self.texts())
+        self.assertIn("quiet for the rest of today", reply)
+        self.assertIn("06:00", reply)
+        # The switch is real: today's nudge is suppressed…
+        self.assertTrue(await self.jobs.quiet_today())
+        before = len(self.jobs_harness.telegram_calls)
+        await self.jobs.move_water_nudge(at_local("18:04"))
+        self.assertEqual(len(self.jobs_harness.telegram_calls), before)
+        # …and tomorrow's wake holds until six.
+        tomorrow = (await self.jobs._today()) + td(days=1)
+        self.assertEqual(await self.jobs.store.get("wake_delay"), f"{tomorrow.isoformat()}:6")
+
+    async def test_notifications_back_on_lifts_the_quiet(self):
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        await self.h.router.handle_update(text_update("cancel my notifications today", OWNER))
+        self.assertTrue(await self.jobs.quiet_today())
+        await self.h.router.handle_update(text_update("notifications back on please", OWNER))
+        self.assertFalse(await self.jobs.quiet_today())
+        self.assertIn("back on", " ".join(self.texts()))
+
+    async def test_brain_is_told_it_has_no_reminder_switch(self):
+        # If a rhythm request slips past the regexes, the brain must hand Paul
+        # the exact phrase — never claim 'done' with a switch it doesn't have.
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        await self.h.router.handle_update(text_update("morning, how are we", OWNER))
+        system = self.h.claude_requests[-1]["system"]
+        self.assertIn("NEVER claim it's done", system)
+        self.assertIn("quiet day", system)
+
+    async def test_brain_sees_quiet_day_state(self):
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        await self.h.router.handle_update(text_update("cancel my notifications today", OWNER))
+        await self.h.router.handle_update(text_update("how's my day looking", OWNER))
+        self.assertIn("QUIET DAY ACTIVE", self.h.claude_requests[-1]["system"])
 
     async def test_goodnight_wake_me_as_normal_arms_tomorrow_only(self):
         from tests.test_router import OWNER
