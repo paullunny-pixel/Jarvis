@@ -477,6 +477,16 @@ class TestDayRhythmRouter(unittest.IsolatedAsyncioTestCase):
         tomorrow = (await self.jobs._today()) + td(days=1)
         self.assertEqual(await self.jobs.store.get("wake_delay"), f"{tomorrow.isoformat()}:6")
 
+    async def test_quite_day_typo_still_goes_quiet(self):
+        # 3 Aug, live: Paul typed 'Quite day' (autocorrect), the switch heard
+        # nothing, and the brain fumbled the leftovers. The typo counts now.
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        await self.h.router.handle_update(text_update("Quite day", OWNER))
+        self.assertTrue(await self.jobs.quiet_today())
+        self.assertIn("quiet for the rest of today", " ".join(self.texts()))
+
     async def test_notifications_back_on_lifts_the_quiet(self):
         from tests.test_router import OWNER
         from tests.test_telegram_client import text_update

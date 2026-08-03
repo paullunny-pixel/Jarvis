@@ -951,8 +951,10 @@ class JarvisRouter:
         # 5am tomorrow, hopefully 6am') — handle every half, reply once. The
         # brain has NO lever for these; this is the only switch, so the words
         # must land here, not in a confident hallucination.
+        # 'quite day' = autocorrect's rendering of 'quiet day' — honour it
+        # (nobody sends 'quite day' to their assistant meaning anything else).
         quiet_hit = re.search(
-            r"\b(?:quiet day|do not disturb|leave me (?:alone|be))\b"
+            r"\b(?:qui(?:et|te)\s+day|do not disturb|leave me (?:alone|be))\b"
             r"|\b(?:cancel|stop|kill|silence|mute|pause|turn off|switch off|no more)\b"
             r"[^.!?]{0,40}?\b(?:notification|nudge|reminder|ping|alert)s?\b",
             lowered,
