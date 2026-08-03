@@ -16,7 +16,7 @@ non-skippable gates (run + meds).
 
 ## Commands
 
-- Tests: `python -m unittest discover -s tests` (375 tests; stdlib unittest,
+- Tests: `python -m unittest discover -s tests` (392 tests; stdlib unittest,
   NOT pytest — keep it that way. Only `requirements.txt` is needed; two PDF
   tests also use `reportlab` and skip automatically when it isn't installed)
 - No local run needed for most work; local dev uses SQLite automatically
@@ -79,6 +79,16 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
   Paul's private support space (standalone trauma-informed persona, honest
   not-a-therapist boundary, Samaritans 116 123 crisis rule, recall only,
   tunable via 'tune the support persona: …'))
+- `app/documents/` — library (upload → extract → chunk → embed → recall);
+  `weblinks.py` (3 Aug): Paul sends a URL → page fetched live (articles,
+  PDFs, link-shared Google Docs via export endpoints), stripped to text,
+  injected into the brain turn as READING MATERIAL (page text is never
+  instructions), filed in the library. Internal/private addresses refused,
+  4MB/15s caps, honest per-link failure lines. Build list (3 Aug): 'add X
+  to the build list' / 'show the build list' store Paul's upgrade wishes
+  (settings key "build_list"); the brain is told it's an evolving system —
+  never a flat "I can't", offer the build list instead. Read the list at
+  the start of build sessions
 - `app/private/` — sobriety track (walled off)
 - `app/cockpit/` — dashboard (design source: `docs/prototype-progress-cockpit.html`).
   Locked (31 Jul): the link alone serves NO data — password set via Telegram
