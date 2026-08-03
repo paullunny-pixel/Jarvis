@@ -161,6 +161,7 @@ class GatedHarness:
 
     def __init__(self, db, vision_json=None):
         self.telegram_calls = []
+        self.claude_requests = []
 
         def telegram_handler(request: httpx.Request) -> httpx.Response:
             method = request.url.path.split("/")[-1]
@@ -173,6 +174,7 @@ class GatedHarness:
 
         def claude_handler(request: httpx.Request) -> httpx.Response:
             payload = json.loads(request.content)
+            self.claude_requests.append(payload)
             content = payload["messages"][0].get("content")
             has_image = isinstance(content, list) and content and content[0].get("type") == "image"
             if "haiku" in payload["model"]:
@@ -223,6 +225,37 @@ class TestGatedRouter(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.db.close()
         self._dir.cleanup()
+
+    async def test_link_message_with_task_words_is_never_gate_queued(self):
+        # Live 3 Aug, 19:08: 'These needs to be done by the brain read this and
+        # update your memory…' + a ChatGPT link. The word 'done' tripped the
+        # task detector and the gate queued READING MATERIAL behind the run.
+        # Links are reading, not board work — straight to the brain, gates open.
+        from app.core.store import SettingsStore
+        from tests.test_weblinks import CHATGPT_SHARE_HTML
+
+        h = GatedHarness(self.db)
+        await SettingsStore(self.db).set(
+            "gates_config",
+            json.dumps([{"id": "run", "label": "the 5km run", "by": "00:00"},
+                        {"id": "meds", "label": "supplements & medication", "by": "00:00"}]),
+        )
+        h.router.web_transport = httpx.MockTransport(
+            lambda r: httpx.Response(200, headers={"content-type": "text/html"}, text=CHATGPT_SHARE_HTML)
+        )
+        await h.router.handle_update(text_update(
+            "https://chatgpt.com/share/6a70a4e1-dce4-83eb-86da-5dd9834cf4ca\n\n"
+            "These needs to be done by the brain read this and update your memory "
+            "with any new information about me",
+            OWNER,
+        ))
+        joined = " ".join(h.texts())
+        self.assertNotIn("queued, not lost", joined)          # no gate block
+        self.assertEqual(await SettingsStore(self.db).get("gated_request", ""), "")
+        brain = [r for r in h.claude_requests if "haiku" not in r["model"]]
+        self.assertEqual(len(brain), 1)                        # the brain answered
+        self.assertIn("PAGES PAUL JUST LINKED", brain[0]["system"])
+        self.assertIn("works best in the evenings", brain[0]["system"])  # page content
 
     async def test_board_blocked_while_gates_outstanding(self):
         # Assumes tests run at a time past the 09:30 deadline is NOT guaranteed,

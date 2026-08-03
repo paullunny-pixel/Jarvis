@@ -299,7 +299,13 @@ class JarvisRouter:
         # 2d. Task talk → the Daily 12 + Trello write-back (Milestone 3).
         # THE GATES: past their deadline, an unconfirmed run/meds blocks the
         # working day — Jarvis will not serve the board until they're done.
-        if self.daily12 is not None and mentions_tasks(transcript):
+        # A message carrying a LINK is reading material, not board work
+        # ('These needs to be done by the brain — read this…' must never be
+        # gate-queued on the word 'done'): it skips task talk and goes to the
+        # brain turn, where the pages are fetched and read.
+        from app.documents.weblinks import extract_urls
+
+        if self.daily12 is not None and not extract_urls(transcript) and mentions_tasks(transcript):
             if self.gates is not None:
                 tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
                 now_local = datetime.now(ZoneInfo(tz_name))
