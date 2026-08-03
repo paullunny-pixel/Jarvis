@@ -262,15 +262,15 @@ class TestGatedRouter(unittest.IsolatedAsyncioTestCase):
         self.assertIn("PAGES PAUL JUST LINKED", brain[0]["system"])
         self.assertIn("works best in the evenings", brain[0]["system"])  # page content
 
-    async def test_board_blocked_while_gates_outstanding(self):
-        # Brain-first: 'what's my 12?' reaches the brain, whose trello tool
-        # hits the shut gates — the tool result is BLOCKED, the ask is queued,
-        # and the brain relays the block. The gates still guard the board.
+    async def test_gates_ride_board_answers_as_a_note_never_a_block(self):
+        # Chase-not-block: the brain's trello tool serves the board with the
+        # gates shut — the owed items ride the result as a NOTE, nothing is
+        # queued, and the brain mentions them after the answer.
         h = GatedHarness(self.db, opus_responses=[
             [{"type": "tool_use", "id": "t1", "name": "trello",
               "input": {"instruction": "show today's focus list"}}],
-            [{"type": "text", "text": "Before we touch the board, sir — the 5km run and "
-              "supplements & medication first. Your instructions are queued, not lost."}],
+            [{"type": "text", "text": "List's below, sir — and the run and meds are "
+              "still owed today; tell me when they're in."}],
         ])
         from app.core.store import SettingsStore
 
@@ -280,19 +280,18 @@ class TestGatedRouter(unittest.IsolatedAsyncioTestCase):
                         {"id": "meds", "label": "supplements & medication", "by": "00:00"}]),
         )
         await h.router.handle_update(text_update("what's my 12?", OWNER))
-        # The tool result carried the block back to the model…
         tool_results = [
             b for r in h.claude_requests for m in r["messages"]
             if isinstance(m.get("content"), list)
             for b in m["content"] if isinstance(b, dict) and b.get("type") == "tool_result"
         ]
-        self.assertTrue(any("BLOCKED" in str(b.get("content")) for b in tool_results))
-        # …and the ask is queued for replay when the gates open.
-        stash = json.loads(await SettingsStore(self.db).get("gated_request"))
-        self.assertIn("show today's focus", stash["text"])
-        combined = " ".join(h.texts())
-        self.assertIn("queued, not lost", combined)   # the brain relayed the block
-        self.assertNotIn("TODAY'S FOCUS", combined)   # and the board stayed shut
+        payload = " ".join(str(b.get("content")) for b in tool_results)
+        self.assertIn("today's focus", payload.lower())    # the board WAS served
+        self.assertIn("NOTE — still owed today", payload)  # with the chase riding along
+        self.assertIn("the 5km run and supplements", payload)
+        self.assertNotIn("BLOCKED", payload)
+        self.assertEqual(await SettingsStore(self.db).get("gated_request", ""), "")
+        self.assertIn("still owed today", " ".join(h.texts()))
 
     async def test_meds_confirmation_opens_meds_gate(self):
         h = GatedHarness(self.db)
@@ -332,10 +331,10 @@ RUN_ONLY_BLOCKED = json.dumps(
 )
 
 
-class TestGatedRequestReplay(unittest.IsolatedAsyncioTestCase):
-    """The production bug (28 Jul): a voice note's instructions died at the
-    run gate, and opening the gate later never actioned them. The gate must
-    queue instructions and replay them the moment it opens."""
+class TestGatesChaseNotBlock(unittest.IsolatedAsyncioTestCase):
+    """Paul's call (3 Aug, from dinner, mid-recovery): gates never block board
+    work again — they chase. A rest day settles the run; meds get reminded
+    until confirmed. A pre-change stash still replays once (dormant path)."""
 
     async def asyncSetUp(self):
         self._dir = tempfile.TemporaryDirectory()
@@ -349,94 +348,52 @@ class TestGatedRequestReplay(unittest.IsolatedAsyncioTestCase):
         await self.db.close()
         self._dir.cleanup()
 
-    async def test_blocked_instructions_are_queued_not_lost(self):
+    async def test_prefix_lane_board_work_proceeds_with_gates_shut(self):
         h = GatedHarness(self.db)
         await self.store.set("gates_config", ALWAYS_BLOCKED)
         await h.router.handle_update(
-            text_update("jarvis add to trello a card for the VAT return", OWNER)
+            text_update("jarvis add to trello — what's my 12?", OWNER)
         )
-        self.assertIn("queued", " ".join(h.texts()))
-        stash = json.loads(await self.store.get("gated_request"))
-        self.assertIn("VAT return", stash["text"])
+        combined = " ".join(h.texts())
+        self.assertIn("today's focus", combined.lower())                # served anyway
+        self.assertNotIn("queued, not lost", combined)                  # no block talk
+        self.assertEqual(await self.store.get("gated_request", ""), "")  # nothing stashed
 
-    async def test_second_blocked_ask_joins_the_queue(self):
-        h = GatedHarness(self.db)
-        await self.store.set("gates_config", ALWAYS_BLOCKED)
-        await h.router.handle_update(
-            text_update("jarvis add to trello a card for the VAT return", OWNER)
-        )
-        await h.router.handle_update(
-            text_update("jarvis add to trello a card for the BMI stock order", OWNER)
-        )
-        stash = json.loads(await self.store.get("gated_request"))
-        self.assertIn("VAT return", stash["text"])
-        self.assertIn("BMI stock", stash["text"])
+    async def test_private_relapse_talk_declares_a_rest_day_boolean_only(self):
+        # 'Jarvis needs to know Paul's on a rest day because he's recovering' —
+        # the private room raises the rest-day flag; the reason never leaves it.
+        from datetime import datetime as dt
 
-    async def test_meds_confirm_replays_the_queued_request(self):
-        h = GatedHarness(self.db)
-        await self.store.set("gates_config", MEDS_ONLY_BLOCKED)
-        await h.router.handle_update(
-            text_update("jarvis add to trello a card for the VAT return", OWNER)
-        )
-        self.assertIn("queued", " ".join(h.texts()))
-        await h.router.handle_update(text_update("meds and vitamins taken", OWNER))
-        self.assertIn("back to what you asked", " ".join(h.texts()))
-        self.assertEqual(await self.store.get("gated_request", ""), "")
-
-    async def test_rest_day_replays_like_production(self):
-        from tests.test_heartbeat import JobsHarness
+        from app.memory.crypto import PrivateBox
+        from app.private.service import PrivateTrack
 
         h = GatedHarness(self.db)
-        h.router.heartbeat = JobsHarness(self.db).jobs
+        h.router.private_track = PrivateTrack(self.db, h.router.claude, PrivateBox("k"))
+        await h.router.handle_update(
+            text_update("I had a relapse last night, feeling rough about it", OWNER)
+        )
+        today = dt.now(TZ).date()
+        self.assertTrue(await h.router.streaks.recovery_today(today))
+        # The wall holds: the general log carries only the redacted marker.
+        rows = await self.db.fetch_all("SELECT transcript FROM messages")
+        self.assertTrue(all("relapse" not in (r["transcript"] or "") for r in rows))
+        # And with a rest day declared, the run gate no longer chases.
         await self.store.set("gates_config", RUN_ONLY_BLOCKED)
-        await h.router.handle_update(
-            text_update("jarvis add to trello the BMI order", OWNER)
-        )
-        self.assertIn("queued", " ".join(h.texts()))
-        await h.router.handle_update(text_update("I'm having a rest day", OWNER))
-        combined = " ".join(h.texts())
-        self.assertIn("Recovery day logged", combined)
-        self.assertIn("back to what you asked", combined)
-        self.assertEqual(await self.store.get("gated_request", ""), "")
+        self.assertEqual(await h.gates.outstanding(dt.now(TZ)), [])
 
-    async def test_replay_holds_until_every_gate_is_open_and_says_so(self):
-        # The 30 Jul repeat: rest day opened the run gate, meds stayed shut,
-        # and the queue held SILENTLY — indistinguishable from losing it.
+    async def test_preexisting_stash_still_replays_once(self):
+        # Anything queued before the redesign must not be lost: the dormant
+        # replay path drains it on 'carry on' with the gates clear.
         h = GatedHarness(self.db)
-        await self.store.set("gates_config", ALWAYS_BLOCKED)
-        await h.router.handle_update(
-            text_update("jarvis add to trello a card for the VAT return", OWNER)
+        await self.store.set(
+            "gated_request",
+            json.dumps({"date": datetime.now(TZ).date().isoformat(),
+                        "text": "a card for the VAT return"}),
         )
-        await h.router.handle_update(text_update("meds and vitamins taken", OWNER))
-        combined = " ".join(h.texts())
-        # The run gate is still shut — the queue holds rather than half-fires...
-        self.assertNotIn("back to what you asked", combined)
-        self.assertTrue(await self.store.get("gated_request", ""))
-        # ...but the hold is SPOKEN, naming what still blocks it.
-        self.assertIn("queued instructions are safe", combined)
-        self.assertIn("5km run", combined)
-
-    async def test_carry_on_replays_when_the_gates_are_open(self):
-        h = GatedHarness(self.db)
-        await self.store.set("gates_config", ALWAYS_BLOCKED)
-        await h.router.handle_update(
-            text_update("jarvis add to trello a card for the VAT return", OWNER)
-        )
-        await self.store.set("gates_config", NEVER_BLOCKED)  # gates now clear
+        await self.store.set("gates_config", NEVER_BLOCKED)
         await h.router.handle_update(text_update("carry on", OWNER))
         self.assertIn("back to what you asked", " ".join(h.texts()))
         self.assertEqual(await self.store.get("gated_request", ""), "")
-
-    async def test_carry_on_while_still_gated_explains_the_hold(self):
-        h = GatedHarness(self.db)
-        await self.store.set("gates_config", ALWAYS_BLOCKED)
-        await h.router.handle_update(
-            text_update("jarvis add to trello a card for the VAT return", OWNER)
-        )
-        await h.router.handle_update(text_update("carry on then", OWNER))
-        combined = " ".join(h.texts())
-        self.assertIn("queued instructions are safe", combined)
-        self.assertTrue(await self.store.get("gated_request", ""))  # still queued
 
     async def test_carry_on_with_no_queue_is_ordinary_conversation(self):
         h = GatedHarness(self.db)

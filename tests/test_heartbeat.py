@@ -477,6 +477,68 @@ class TestDayRhythmRouter(unittest.IsolatedAsyncioTestCase):
         tomorrow = (await self.jobs._today()) + td(days=1)
         self.assertEqual(await self.jobs.store.get("wake_delay"), f"{tomorrow.isoformat()}:6")
 
+    def jobs_sent(self):
+        return [
+            body for method, body in self.jobs_harness.telegram_calls
+            if method in ("sendMessage", "sendVoice")
+        ]
+
+    async def test_gate_chaser_reminds_hourly_until_confirmed(self):
+        import json as _json
+
+        from app.heartbeat.gates import GateKeeper
+        from app.heartbeat.streaks import Streaks
+
+        self.jobs.gates = GateKeeper(self.db, Streaks(self.db))
+        await self.jobs.store.set("gates_config", _json.dumps(
+            [{"id": "run", "label": "the 5km run", "by": "00:00"},
+             {"id": "meds", "label": "supplements & medication", "by": "00:00"}]
+        ))
+        await self.jobs.gate_chaser(at_local("11:15"))
+        await self.jobs.gate_chaser(at_local("11:20"))   # same hour — once only
+        sent = self.jobs_sent()
+        self.assertEqual(len(sent), 1)
+        self.assertIn("still+owed", sent[0])          # URL-encoded send body
+        self.assertIn("Not+blocking+a+thing", sent[0])
+        await self.jobs.gate_chaser(at_local("12:15"))   # next hour chases again
+        self.assertEqual(len(self.jobs_sent()), 2)
+
+    async def test_gate_chaser_meds_pierce_quiet_but_run_alone_does_not(self):
+        import json as _json
+
+        from app.heartbeat.gates import GateKeeper
+        from app.heartbeat.streaks import Streaks
+
+        self.jobs.gates = GateKeeper(self.db, Streaks(self.db))
+        await self.jobs.set_quiet_today(True)
+        # Run-only owed on a quiet day → silence.
+        await self.jobs.store.set("gates_config", _json.dumps(
+            [{"id": "run", "label": "the 5km run", "by": "00:00"}]
+        ))
+        await self.jobs.gate_chaser(at_local("11:15"))
+        self.assertEqual(self.jobs_sent(), [])
+        # Meds owed → the chase is essential and pierces the quiet.
+        await self.jobs.store.set("gates_config", _json.dumps(
+            [{"id": "meds", "label": "supplements & medication", "by": "00:00"}]
+        ))
+        await self.jobs.gate_chaser(at_local("12:15"))
+        self.assertEqual(len(self.jobs_sent()), 1)
+
+    async def test_gate_chaser_stands_down_on_a_rest_day(self):
+        import json as _json
+
+        from app.heartbeat.gates import GateKeeper
+        from app.heartbeat.streaks import Streaks
+
+        streaks = Streaks(self.db)
+        self.jobs.gates = GateKeeper(self.db, streaks)
+        await self.jobs.store.set("gates_config", _json.dumps(
+            [{"id": "run", "label": "the 5km run", "by": "00:00"}]
+        ))
+        await streaks.record_recovery(at_local("11:00").date())
+        await self.jobs.gate_chaser(at_local("11:15"))
+        self.assertEqual(self.jobs_sent(), [])   # rest day settles the run
+
     async def test_quite_day_typo_still_goes_quiet(self):
         # 3 Aug, live: Paul typed 'Quite day' (autocorrect), the switch heard
         # nothing, and the brain fumbled the leftovers. The typo counts now.

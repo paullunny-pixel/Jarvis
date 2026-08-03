@@ -301,22 +301,13 @@ class JarvisRouter:
         # 'Jarvis add to Trello' rides the proven parser rails. Every other
         # board-ish message goes to the brain, which drives the SAME machinery
         # through its trello tool (gates enforced inside the tool).
+        # THE GATES CHASE, THEY DON'T BLOCK (Paul's call, 3 Aug): board work
+        # proceeds regardless; anything still owed (run/meds) is chased by the
+        # hourly reminder job and noted alongside board replies, never in
+        # front of them. A declared rest day settles the run for the day.
         prefix_hit = self.TRELLO_PREFIX.match(transcript)
         if self.daily12 is not None and prefix_hit:
             task_text = transcript[prefix_hit.end():].strip() or transcript
-            if self.gates is not None:
-                tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
-                now_local = datetime.now(ZoneInfo(tz_name))
-                outstanding = await self.gates.outstanding(now_local)
-                if outstanding:
-                    block = await self._queue_gated(transcript, now_local, outstanding)
-                    await self.log.log("out", block, chat_id=message.chat_id, meta={"gated": True})
-                    try:
-                        audio = await self.elevenlabs.synthesize(strip_for_speech(block))
-                        await self.telegram.send_voice(message.chat_id, audio, transcript=block)
-                    except SynthesisError:
-                        await self.telegram.send_text(message.chat_id, block)
-                    return
             if await self._handle_task_talk(message, task_text):
                 return
 
@@ -411,7 +402,7 @@ class JarvisRouter:
                 "spelling (he has dyslexia — read for meaning). NEVER say you'll do "
                 "something, or that something is done, remembered or silenced, without a "
                 "tool result confirming exactly that — tool results are ground truth; "
-                "relay BLOCKED and FAILED results honestly. What the machinery handled "
+                "relay FAILED results and owed-gates NOTEs honestly. What the machinery handled "
                 "before you (streak logging, exact command phrases, email) arrives "
                 "already done — don't redo it. If Paul starts a message 'Jarvis add to "
                 "Trello', that lane never reaches you at all."
@@ -852,6 +843,18 @@ class JarvisRouter:
             kind="voice" if message.is_voice else "text", meta={"private": True},
         )
         reply = await self.private_track.respond(transcript, today)
+        # Recovery crossover (Paul, 3 Aug): a relapse/recovery conversation
+        # means today's run is off the table — declare a rest day so the
+        # business side stops expecting it. ONLY the boolean crosses the
+        # wall; the reason stays in this room, encrypted.
+        import re as _re
+
+        if _re.search(
+            r"\b(relapse[ds]?|fell off|slipped up|drank|drinking again|had a drink|"
+            r"recovering today|rough (night|one) last night)\b",
+            transcript, _re.IGNORECASE,
+        ) and not await self.streaks.recovery_today(today):
+            await self.streaks.record_recovery(today)
         await self.log.log("out", "[private exchange]", chat_id=message.chat_id, meta={"private": True})
         try:
             audio = await self.elevenlabs.synthesize(strip_for_speech(reply))
@@ -877,8 +880,10 @@ class JarvisRouter:
             f"- Apple Health webhook: {'configured' if s.apple_health_webhook_secret else 'not configured yet'}",
             "- Day rhythm: wake-up sequence built (05:00 local; Paul arms it with 'start the "
             "wake-ups', skips one day with 'no wake-up tomorrow'); hourly move+water nudges; "
-            "med reminders (ADHD 09:30, supplements 14:00, TRT Saturdays); 'override' releases "
-            "any block.",
+            "med reminders (ADHD 09:30, supplements 14:00, TRT Saturdays). The run/meds "
+            "gates CHASE, they never block (Paul's rule, 3 Aug): board work always "
+            "proceeds; anything owed is reminded hourly until confirmed; a declared rest "
+            "day settles the run; 'override' quiets the chase for the day.",
             "- Work-group ears: Paul's org runs on Telegram; when this bot is in a work "
             "group (privacy mode off) every message is ingested, tagged by company and "
             "summarisable ('catch me up on Derma EU'). The bot never replies in groups.",
@@ -1749,33 +1754,10 @@ class JarvisRouter:
             return {key: "na" for key in keys}
         return {key: "done" for key in keys}
 
-    async def _queue_gated(self, text: str, now_local, outstanding) -> str:
-        """Stash a request behind the gates (same-day queue, append not
-        replace) and return the spoken block line. The gate never eats
-        instructions — they replay the moment a gate opens."""
-        import json as _json
-
-        queued_text = text
-        try:
-            prev = _json.loads(await self.store.get("gated_request", "") or "null")
-            if (
-                isinstance(prev, dict)
-                and prev.get("date") == now_local.date().isoformat()
-                and prev.get("text")
-            ):
-                queued_text = prev["text"] + "\n" + text
-        except Exception:
-            pass
-        await self.store.set(
-            "gated_request",
-            _json.dumps({"date": now_local.date().isoformat(), "text": queued_text}),
-        )
-        return self.gates.block_message(outstanding) + (
-            " Your instructions are queued, not lost — the moment the gate "
-            "opens I'll action them."
-        )
-
     # ---------------- Brain-first (Phase A2): the brain's hands ----------------
+    # (Gates chase, they don't block — Paul, 3 Aug. The old gate-queue writer
+    # is gone; _replay_gated_request stays so any pre-change stash still
+    # replays once, then the mechanism is naturally dormant.)
 
     def _brain_tools(self) -> list[dict]:
         """The tool belt for the main brain turn. Every tool executes through
@@ -1790,9 +1772,9 @@ class JarvisRouter:
                     "cards, or show the list. Pass ONE clear instruction in plain words with "
                     "Paul's meaning cleaned up — fix his typos, resolve 'those'/'the first one' "
                     "from the conversation into explicit names. The result says exactly what "
-                    "happened: report THAT, never your intention. A result starting BLOCKED "
-                    "means the day's gates (run/meds) are shut — relay it honestly; his "
-                    "instruction is queued, not lost."
+                    "happened: report THAT, never your intention. A NOTE about the run/meds "
+                    "still owed may ride along — mention it gently AFTER the board answer; "
+                    "it never blocks anything."
                 ),
                 "input_schema": {
                     "type": "object",
@@ -1921,26 +1903,30 @@ class JarvisRouter:
         gates as the deterministic lane."""
         if not instruction.strip():
             return "NO ACTION — empty instruction."
+        owed = ""
         if self.gates is not None:
             tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
-            now_local = datetime.now(ZoneInfo(tz_name))
-            outstanding = await self.gates.outstanding(now_local)
+            outstanding = await self.gates.outstanding(datetime.now(ZoneInfo(tz_name)))
             if outstanding:
-                return "BLOCKED: " + await self._queue_gated(instruction, now_local, outstanding)
+                owed = (
+                    "\n\nNOTE — still owed today (mention it gently AFTER the board "
+                    "answer; it never blocks anything): "
+                    + " and ".join(g["label"] for g in outstanding)
+                )
         plan_date = await self.daily12.paul_today()
         if wants_plan(instruction):
             await self.daily12.generate(plan_date)
-            return await self.daily12.format_plan(plan_date)
+            return await self.daily12.format_plan(plan_date) + owed
         plan_text = await self.daily12.format_plan(plan_date)
         actions = await parse_actions(self.claude, instruction, plan_text)
         if not actions:
-            return "NO ACTION RECOGNISED — nothing was changed on the board."
+            return "NO ACTION RECOGNISED — nothing was changed on the board." + owed
         results, show = await execute_actions(self.daily12, actions)
         out = " ".join(results) if results else ""
         if show or not results:
             await self.daily12.generate(plan_date)
             out = (out + "\n\n" if out else "") + await self.daily12.format_plan(plan_date)
-        return out or "Done — nothing to report."
+        return (out or "Done — nothing to report.") + owed
 
     async def _handle_task_talk(self, message: IncomingMessage, transcript: str) -> bool:
         """Daily 12 queries and voice feedback → Trello (Milestone 3). Returns

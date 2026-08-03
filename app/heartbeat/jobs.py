@@ -273,8 +273,8 @@ class HeartbeatJobs:
                 f"{g['label']} by {g['by']}" for g in await self.gates.config()
             )
             skeleton += (
-                f"\n\nNON-NEGOTIABLES — {gate_lines}. Confirm each to me; "
-                "the board stays shut until they're done."
+                f"\n\nNON-NEGOTIABLES — {gate_lines}. Confirm each to me — "
+                "I'll keep chasing till they're in (never blocking, just persistent)."
             )
         opener = await self._flourish(
             "Write a 2–3 sentence opener for Paul's 7am brief. He's rough in his first hour — "
@@ -619,6 +619,31 @@ class HeartbeatJobs:
             f"Reminder, sir — {med['label']} ({med['window']}). "
             "Tell me when it's in and I'll log it.",
             essential=True,
+        )
+
+    async def gate_chaser(self, now: datetime | None = None) -> None:
+        """Gates chase, they don't block (Paul, 3 Aug): one gentle reminder an
+        hour for anything still owed — run (unless a rest day settled it) and
+        meds — until confirmed. Meds chasing is essential (quiet day can't
+        silence it); a run-only chase respects quiet."""
+        if self.gates is None:
+            return
+        now = now or datetime.now(await self._tz())
+        outstanding = await self.gates.outstanding(now)
+        if not outstanding:
+            return
+        today = now.date()
+        if not await self._once(f"gatechase:{today.isoformat()}:{now.hour}", hours=0.9):
+            return
+        labels = " and ".join(g["label"] for g in outstanding)
+        essential = any(g["id"] != "run" for g in outstanding)
+        # Timestamped so the global identical-message dedupe never eats the
+        # next hour's chase — persistence is the whole point here.
+        await self._send_voice(
+            f"{now.strftime('%H:%M')} — gentle chase, sir: {labels} still owed today. "
+            "Not blocking a thing; just tell me when it's done "
+            "(or 'rest day' / 'override' and I'll stand down).",
+            essential=essential,
         )
 
     async def _wins_recap(self, today: date, done: int, total: int, snapshot: dict) -> str:
