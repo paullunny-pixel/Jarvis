@@ -11,7 +11,7 @@ from app.memory.store import LivingFacts, MemoryStore
 
 logger = logging.getLogger(__name__)
 
-SEED_VERSION = "4"
+SEED_VERSION = "5"
 
 # (content, room, type, tags)
 STABLE_CHUNKS: list[tuple[str, str, str, list[str]]] = [
@@ -95,6 +95,12 @@ DYSLEXIA_CHUNKS: list[tuple[str, str, str, list[str]]] = [
     ("Paul has dyslexia. Spellings wobble, autocorrect mangles words ('quite day' means 'quiet day'), and voice transcripts garble. ALWAYS read his messages for meaning, never take an odd spelling literally, and NEVER comment on or correct his spelling — just understand him.", "you", "STABLE", ["dyslexia", "operating-manual"]),
 ]
 
+# v5 (3 Aug 2026): the fact the memory writer refused to file live — Paul told
+# Jarvis at dinner time and the classifier shrugged it off as logistics.
+CIRCLE_CHUNKS: list[tuple[str, str, str, list[str]]] = [
+    ("Marijana — the girl Kiefer is seeing (Paul met her at dinner in Dubai with Kiefer and Steph, 3 Aug 2026).", "people", "STABLE", ["kiefer", "marijana"]),
+]
+
 CHATGPT_PRIVATE_CHUNKS: list[tuple[str, str, str, list[str]]] = [
     ("From Paul's year with ChatGPT: chronic loneliness, feeling misunderstood, and often not feeling emotionally safe are his deepest recurring themes. Not feeling safe is his biggest drinking trigger; he knows he cannot drink moderately, and shame follows relapses. Emotional safety is the ground everything else stands on.", "private", "PRIVATE", ["sobriety", "emotional-safety", "chatgpt-import"]),
     ("Paul has explored a previous or possible diagnosis of Borderline Personality Disorder alongside his ADHD, plus childhood trauma and emotional-regulation work. Support-space territory only — never raised unprompted, never in business context.", "private", "PRIVATE", ["mental-health", "chatgpt-import"]),
@@ -167,6 +173,11 @@ async def load_day_one_brain(
     if not current or current in ("1", "2", "3"):
         # v4: dyslexia — read for meaning, everywhere.
         for content, room, type_, tags in DYSLEXIA_CHUNKS:
+            await memory.add_chunk(content, room=room, type_=type_, source="engineer-note", tags=tags)
+            count += 1
+    if not current or current in ("1", "2", "3", "4"):
+        # v5: Kiefer's Marijana — refused by the live writer, filed by hand.
+        for content, room, type_, tags in CIRCLE_CHUNKS:
             await memory.add_chunk(content, room=room, type_=type_, source="engineer-note", tags=tags)
             count += 1
     await settings_store.set("seed_version", SEED_VERSION)

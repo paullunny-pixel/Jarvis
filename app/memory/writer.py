@@ -30,6 +30,10 @@ Rules:
   known to the assistant for planning, never shared onward.
 - Numbers that change over time (weight, balances, targets, deadlines) → type "LIVING" with a living_key.
 - Company/product/people facts → their rooms, usually STABLE.
+- A logistics line can still CARRY a durable fact — extract the fact, drop
+  the logistics: "dinner tonight with Kiefer and Marijana, the girl he's
+  seeing" → {"content": "Kiefer is seeing Marijana"}. A NEW PERSON entering
+  the circle (partner, date, colleague, friend) is always worth filing.
 - At most 5 items. Quality over quantity.\
 """
 

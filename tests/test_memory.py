@@ -8,6 +8,7 @@ from app.memory.embedder import HashEmbedder, cosine
 from app.memory.seed import (
     CHATGPT_CHUNKS,
     CHATGPT_PRIVATE_CHUNKS,
+    CIRCLE_CHUNKS,
     DYSLEXIA_CHUNKS,
     FAMILY_CHUNKS,
     LIVING_SEED,
@@ -135,7 +136,7 @@ class TestSeed(MemoryBase):
         n1 = await load_day_one_brain(self.memory, self.living, store)
         self.assertEqual(n1, len(STABLE_CHUNKS) + len(FAMILY_CHUNKS) + len(PRIVATE_CHUNKS)
                          + len(CHATGPT_CHUNKS) + len(CHATGPT_PRIVATE_CHUNKS)
-                         + len(DYSLEXIA_CHUNKS))
+                         + len(DYSLEXIA_CHUNKS) + len(CIRCLE_CHUNKS))
         n2 = await load_day_one_brain(self.memory, self.living, store)
         self.assertEqual(n2, 0)
         row = await self.db.fetch_one("SELECT COUNT(*) AS n FROM memory_chunks")
@@ -173,8 +174,9 @@ class TestSeed(MemoryBase):
         await store.set("seed_version", "1")
         moved = await load_day_one_brain(self.memory, self.living, store)
         self.assertEqual(moved, len(FAMILY_CHUNKS) + len(CHATGPT_CHUNKS)
-                         + len(CHATGPT_PRIVATE_CHUNKS) + len(DYSLEXIA_CHUNKS))
-        self.assertEqual(await store.get("seed_version"), "4")
+                         + len(CHATGPT_PRIVATE_CHUNKS) + len(DYSLEXIA_CHUNKS)
+                         + len(CIRCLE_CHUNKS))
+        self.assertEqual(await store.get("seed_version"), "5")
         hits = await self.memory.search("Jack Minecraft birthday October", k=4)
         self.assertTrue(any("2 October" in h["content"] for h in hits))
         # old private copies are superseded, not current
@@ -188,8 +190,8 @@ class TestSeed(MemoryBase):
         await store.set("seed_version", "2")
         added = await load_day_one_brain(self.memory, self.living, store)
         self.assertEqual(added, len(CHATGPT_CHUNKS) + len(CHATGPT_PRIVATE_CHUNKS)
-                         + len(DYSLEXIA_CHUNKS))
-        self.assertEqual(await store.get("seed_version"), "4")
+                         + len(DYSLEXIA_CHUNKS) + len(CIRCLE_CHUNKS))
+        self.assertEqual(await store.get("seed_version"), "5")
         row = await self.db.fetch_one("SELECT COUNT(*) AS n FROM memory_chunks")
         self.assertEqual(row["n"], added)          # nothing re-seeded
         self.assertIsNone(await self.living.get("villa.paid"))  # living untouched
@@ -197,15 +199,26 @@ class TestSeed(MemoryBase):
         self.assertEqual(await load_day_one_brain(self.memory, self.living, store), 0)
 
     async def test_v3_to_v4_adds_only_the_dyslexia_note(self):
-        # Production's actual 3 Aug path: v3 → v4 adds the dyslexia rule alone,
-        # and it's recallable so every reader learns to read for meaning.
+        # v3 → adds the dyslexia rule (and later top-ups), recallable so every
+        # reader learns to read for meaning.
         store = SettingsStore(self.db)
         await store.set("seed_version", "3")
         added = await load_day_one_brain(self.memory, self.living, store)
-        self.assertEqual(added, len(DYSLEXIA_CHUNKS))
-        self.assertEqual(await store.get("seed_version"), "4")
+        self.assertEqual(added, len(DYSLEXIA_CHUNKS) + len(CIRCLE_CHUNKS))
+        self.assertEqual(await store.get("seed_version"), "5")
         hits = await self.memory.search("Paul spelling typos dyslexia", k=3)
         self.assertTrue(any("dyslexia" in h["content"].lower() for h in hits))
+
+    async def test_v4_to_v5_files_marijana(self):
+        # The fact the live writer refused on 3 Aug — Kiefer's Marijana —
+        # filed by hand and recallable.
+        store = SettingsStore(self.db)
+        await store.set("seed_version", "4")
+        added = await load_day_one_brain(self.memory, self.living, store)
+        self.assertEqual(added, len(CIRCLE_CHUNKS))
+        self.assertEqual(await store.get("seed_version"), "5")
+        hits = await self.memory.search("who is Kiefer seeing girlfriend", k=3)
+        self.assertTrue(any("Marijana" in h["content"] for h in hits))
 
     async def test_chatgpt_import_holds_the_private_wall(self):
         await load_day_one_brain(self.memory, self.living, SettingsStore(self.db))

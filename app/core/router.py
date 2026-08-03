@@ -1811,7 +1811,14 @@ class JarvisRouter:
                 ),
                 "input_schema": {
                     "type": "object",
-                    "properties": {"facts": {"type": "string"}},
+                    "properties": {
+                        "facts": {"type": "string"},
+                        "room": {
+                            "type": "string",
+                            "enum": ["you", "people", "companies", "health", "finances"],
+                            "description": "Where this belongs; default 'you'. Never use this tool for sobriety/private matters — they have their own space.",
+                        },
+                    },
                     "required": ["facts"],
                 },
             })
@@ -1864,9 +1871,17 @@ class JarvisRouter:
             if not facts:
                 return "NOTHING FILED — no facts given."
             n = await extract_and_file(self.claude, self.memory, self.living, facts, source="brain-tool")
-            return f"Filed {n} fact(s) into permanent memory." if n else (
-                "NOTHING FILED — the memory writer found nothing durable in that."
+            if n:
+                return f"Filed {n} fact(s) into permanent memory."
+            # A DELIBERATE remember never comes back empty-handed (the
+            # Marijana bug, 3 Aug): if the classifier shrugs, file verbatim.
+            room = tool_input.get("room")
+            if room not in ("you", "people", "companies", "health", "finances"):
+                room = "you"
+            await self.memory.add_chunk(
+                facts, room=room, type_="STABLE", source="brain-tool", tags=["deliberate"]
             )
+            return f"Filed verbatim into the {room} room."
         if name == "update_brief":
             from app.memory.brief import compose_brief
 

@@ -202,6 +202,34 @@ class TestBrainHands(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("14 September" in h["content"] for h in hits))
         self.assertIn("Locked in", b.sent())
 
+    async def test_deliberate_remember_never_comes_back_empty(self):
+        # The Marijana bug (3 Aug): Paul said who Kiefer is seeing, the
+        # extraction classifier shrugged ('[]'), and Jarvis told him his
+        # memory refused to file her. A deliberate remember now files
+        # verbatim when the classifier finds nothing.
+        from app.memory.crypto import PrivateBox
+        from app.memory.embedder import HashEmbedder
+        from app.memory.store import LivingFacts, MemoryStore
+
+        b = BrainHarness(
+            self.db,
+            opus_responses=[
+                [tool_use("remember", facts="Marijana is the girl Kiefer is seeing.", room="people")],
+                [text_block("Marijana — filed. She'll be no stranger tomorrow.")],
+            ],
+            writer_items=[],   # the classifier finds nothing durable
+        )
+        b.h.router.memory = MemoryStore(self.db, HashEmbedder(), PrivateBox("k"))
+        b.h.router.living = LivingFacts(self.db)
+        await b.h.router.handle_update(
+            text_update("dinner with Kiefer, Stef and Marijana the girl he is seeing", OWNER)
+        )
+        hits = await b.h.router.memory.search("who is Kiefer seeing", k=3)
+        self.assertTrue(any("Marijana" in h["content"] for h in hits))
+        rows = await self.db.fetch_all("SELECT room FROM memory_chunks WHERE source = 'brain-tool'")
+        self.assertEqual(rows[0]["room"], "people")
+        self.assertIn("filed", b.sent().lower())
+
     async def test_brain_system_carries_the_hands_rules(self):
         b = BrainHarness(self.db, opus_responses=[[text_block("Evening, sir.")]])
         await b.h.router.handle_update(text_update("evening mate, how are we", OWNER))
