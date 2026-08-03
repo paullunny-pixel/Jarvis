@@ -16,7 +16,7 @@ non-skippable gates (run + meds).
 
 ## Commands
 
-- Tests: `python -m unittest discover -s tests` (367 tests; stdlib unittest,
+- Tests: `python -m unittest discover -s tests` (373 tests; stdlib unittest,
   NOT pytest — keep it that way. Only `requirements.txt` is needed; two PDF
   tests also use `reportlab` and skip automatically when it isn't installed)
 - No local run needed for most work; local dev uses SQLite automatically
@@ -43,7 +43,12 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
   SQL uses `?` placeholders (auto-translated to `$n`). Use
   `insert_returning_id` for inserts whose id you need (race-free)
 - `app/memory/` — second brain: chunks (pgvector), living facts, seed +
-  versioned migrations, Fernet encryption for private content
+  versioned migrations, Fernet encryption for private content; `brief.py`
+  (Phase A1, 3 Aug) — the living Paul Brief: composed by the brain model from
+  recent conversation + living facts (private wall enforced at composition),
+  refreshed nightly at 21:55 and on demand ('update your brief'), injected
+  into every brain turn alongside Paul's own persona notes ('tune jarvis: …'
+  sets them — highest authority on tone; 'reset jarvis persona' clears)
 - `app/daily12/` — Trello sync, §16 scoring (pure functions in `scoring.py`),
   voice-command parsing, board write-back. Master Board system (Trello brief,
   30 Jul): two-axis labels (Domain: Personal/Prodermis/Derma/Business Ops ·
@@ -88,11 +93,12 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
    markers only), or any outbound report. The Kiefer note composes ONLY from
    task/streak data and passes `assert_no_private_content` before sending.
    Sobriety rows are encrypted with `PrivateBox` (PRIVATE_ROOM_KEY env).
-2. **Persona register** (`app/persona.py`): composed, courteous British AI
-   aide who is genuinely good company — warm, playful, a real sense of humour
-   (Paul asked for this, July 2026; the earlier formal register read as cold).
-   Hard lines unchanged: NEVER passive-aggressive, never sniping, never
-   guilt-tripping; comedy drops when Paul is struggling.
+2. **Persona register** (`app/persona.py`): a sharp, warm friend who happens
+   to run his life — mate FIRST, PA second ('sir' is an occasional flourish,
+   not a verbal tic; Paul asked for less robot, more human, Aug 2026 — the
+   earlier registers read as cold). Paul's own 'tune jarvis:' notes outrank
+   the base persona on tone. Hard lines unchanged: NEVER passive-aggressive,
+   never sniping, never guilt-tripping; comedy drops when Paul is struggling.
 3. **§16 scoring weights** (0.35/0.25/0.25/0.15) are spec-locked; tunable via
    arguments, not by editing constants casually.
 4. **Negation-aware logging:** phrase matchers only nominate; Haiku confirms

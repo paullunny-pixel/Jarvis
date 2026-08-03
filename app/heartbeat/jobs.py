@@ -740,6 +740,18 @@ class HeartbeatJobs:
         except Exception:
             logger.exception("Hourly Trello resync failed — cache continues")
 
+    async def refresh_paul_brief(self) -> None:
+        """Nightly (Phase A1): rewrite the living Paul Brief from the day's
+        conversation, so tomorrow's Jarvis wakes up already knowing today."""
+        if not await self._once("paulbrief", hours=20.0):
+            return
+        from app.memory.brief import compose_brief
+
+        try:
+            await compose_brief(self.claude, self.db, self.store)
+        except Exception:
+            logger.exception("Nightly Paul Brief refresh failed — previous brief stands")
+
     # ------------------------------------------------------------ shared
 
     async def _focus_progress(self, today: date) -> tuple[int, int]:

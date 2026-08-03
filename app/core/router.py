@@ -362,10 +362,14 @@ class JarvisRouter:
                 )
             except Exception:
                 logger.exception("Board truth injection failed — continuing without")
+        from app.memory.brief import BRIEF_KEY, PERSONA_NOTES_KEY
+
         system = build_system_prompt(
             timezone=timezone,
             memory_context=memory_context,
             system_status=system_status,
+            persona_notes=await self.store.get(PERSONA_NOTES_KEY, ""),
+            paul_brief=await self.store.get(BRIEF_KEY, ""),
         )
         history = await self.log.as_claude_messages(self.settings.history_messages)
         raw_reply = await self.claude.converse(system, history)
@@ -837,6 +841,51 @@ class JarvisRouter:
                 except Exception:
                     logger.exception("Manual Trello sync failed")
                     reply = "Trello wouldn't answer just now — I'll retry on the hourly pass."
+            await self.log.log("out", reply, chat_id=message.chat_id)
+            await self.telegram.send_text(message.chat_id, reply)
+            return True
+
+        # Tune (or reset) JARVIS HIMSELF — Paul pastes how he wants to be
+        # spoken to ('tune jarvis: <style, even pasted from ChatGPT>') and it
+        # becomes the highest authority on tone, effective immediately.
+        jarvis_tune = re.match(
+            r"\s*(?:tune|set|update|adjust)\s+(?:jarvis|your)\s*(?:'s)?\s*"
+            r"(?:personality|persona|style|tone|voice)?\s*[:,\-]\s*(.+)$",
+            transcript, re.IGNORECASE | re.DOTALL,
+        ) or re.match(r"\s*tune\s+jarvis\s*[:,\-]\s*(.+)$", transcript, re.IGNORECASE | re.DOTALL)
+        if jarvis_tune and jarvis_tune.group(1).strip():
+            from app.memory.brief import PERSONA_NOTES_KEY
+
+            await self.store.set(PERSONA_NOTES_KEY, jarvis_tune.group(1).strip())
+            reply = (
+                "Got it — that's now the law on how I talk to you, effective this "
+                "second. 'reset jarvis persona' clears it if I start grating."
+            )
+            await self.log.log("out", reply, chat_id=message.chat_id)
+            await self.telegram.send_text(message.chat_id, reply)
+            return True
+        if re.search(r"\breset\s+(?:jarvis|your)\s*(?:'s)?\s*(?:personality|persona|style|tone)\b", lowered):
+            from app.memory.brief import PERSONA_NOTES_KEY
+
+            await self.store.set(PERSONA_NOTES_KEY, "")
+            reply = "Back to factory me — tell me what grated and I'll adjust properly."
+            await self.log.log("out", reply, chat_id=message.chat_id)
+            await self.telegram.send_text(message.chat_id, reply)
+            return True
+
+        # 'Update your brief' — rebuild the living Paul Brief on demand.
+        if re.search(r"\b(update|refresh|rebuild)\b.{0,12}\b(your|the|my)\s+brief\b", lowered):
+            from app.memory.brief import compose_brief
+
+            note = "Rebuilding my picture of you now — give me a minute."
+            await self.log.log("out", note, chat_id=message.chat_id)
+            await self.telegram.send_text(message.chat_id, note)
+            brief = await compose_brief(self.claude, self.db, self.store)
+            reply = (
+                "Done — the brief is current, and every reply I give now carries it."
+                if brief
+                else "That rebuild failed mid-flight — I've kept the previous brief; try again shortly."
+            )
             await self.log.log("out", reply, chat_id=message.chat_id)
             await self.telegram.send_text(message.chat_id, reply)
             return True

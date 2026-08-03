@@ -138,6 +138,39 @@ class TestRouter(unittest.IsolatedAsyncioTestCase):
         # the recent block.
         self.assertNotIn("add those trello candidates", system)
 
+    async def test_tune_jarvis_rides_the_next_reply(self):
+        # Phase A1 (31 Jul): Paul pastes his preferred style and it becomes
+        # the top authority on tone, injected into every brain turn.
+        from app.core.store import SettingsStore
+        from app.memory.brief import BRIEF_KEY, PERSONA_NOTES_KEY
+
+        h = RouterHarness(self.db)
+        await h.router.handle_update(text_update(
+            "tune jarvis: talk like ChatGPT does with me — casual, curious, no butler stuff",
+            OWNER,
+        ))
+        store = SettingsStore(self.db)
+        self.assertIn("no butler stuff", await store.get(PERSONA_NOTES_KEY, ""))
+        await store.set(BRIEF_KEY, "RIGHT NOW: in Dubai until Friday.")
+        await h.router.handle_update(text_update("morning, how are we", OWNER))
+        system = h.claude_requests[-1]["system"]
+        self.assertIn("PAUL'S OWN WORDS", system)
+        self.assertIn("no butler stuff", system)
+        self.assertIn("THE PAUL BRIEF", system)
+        self.assertIn("in Dubai until Friday", system)
+        # And reset clears it.
+        await h.router.handle_update(text_update("reset jarvis persona", OWNER))
+        self.assertEqual(await store.get(PERSONA_NOTES_KEY, ""), "")
+
+    async def test_update_your_brief_command(self):
+        from app.core.store import SettingsStore
+        from app.memory.brief import BRIEF_KEY
+
+        h = RouterHarness(self.db, claude_reply="THE FRESH BRIEF")
+        await h.router.handle_update(text_update("update your brief please", OWNER))
+        store = SettingsStore(self.db)
+        self.assertEqual(await store.get(BRIEF_KEY, ""), "THE FRESH BRIEF")
+
     async def test_text_in_short_reply_comes_back_as_voice(self):
         h = RouterHarness(self.db)
         await h.router.handle_update(text_update("what's first today?", OWNER))

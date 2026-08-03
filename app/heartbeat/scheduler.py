@@ -79,6 +79,8 @@ class Heartbeat:
             ("digest_eve", self.jobs.group_digest, CronTrigger(hour=18, minute=0, timezone=timezone), 1800),
             # Cache honesty: hourly board re-sync through the working day
             ("trello_resync", self.jobs.trello_resync, CronTrigger(hour="7-22", minute=40, timezone=timezone), 900),
+            # Phase A1: the living Paul Brief re-learns him nightly at 21:55
+            ("paul_brief", self.jobs.refresh_paul_brief, CronTrigger(hour=21, minute=55, timezone=timezone), 1800),
             # Paul's rule: 22:30 lights out without fail (plus one 23:00 chaser)
             ("lights_out", self.jobs.lights_out, CronTrigger(hour=22, minute=30, timezone=timezone), 900),
             ("lights_out_chaser", self.jobs.lights_out_chaser, CronTrigger(hour=23, minute=0, timezone=timezone), 900),
