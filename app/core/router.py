@@ -343,6 +343,27 @@ class JarvisRouter:
         if email_handled:
             return  # the email half answered; no brain turn on top
 
+        # 2f. THE UNDERSTANDING LAYER (3 Aug): nothing deterministic matched.
+        # Before the chatty brain gets it, the fast model reads the message —
+        # dyslexia, autocorrect and voice-garble tolerant — and says whether
+        # it was a known command in disguise ('Quite day' → quiet_day).
+        # Unsure means it wasn't: fall through to conversation as ever.
+        if len(transcript) <= 200:
+            from app.core.intent import classify
+
+            recent = ""
+            try:
+                rows = await self.log.recent(6)
+                recent = "\n".join(
+                    f"{'Paul' if r['direction'] == 'in' else 'Jarvis'}: {r['transcript'][:200]}"
+                    for r in rows[:-1]  # the message being judged isn't context
+                )
+            except Exception:
+                pass
+            data = await classify(self.claude, transcript, recent)
+            if data is not None and await self._execute_intent(message, data):
+                return
+
         # 3. Think (with the second brain's recalled knowledge, Milestone 2).
         timezone = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
         memory_context = await self._recall(transcript)
@@ -516,23 +537,115 @@ class JarvisRouter:
         except Exception:
             wishes = []
         if add:
-            wish = add.group(1).strip().rstrip(".!")
-            tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
-            wishes.append({"date": datetime.now(ZoneInfo(tz_name)).date().isoformat(), "wish": wish})
-            await self.store.set("build_list", _json.dumps(wishes))
-            reply = (
-                f"On the build list, sir — “{wish}”. That's {len(wishes)} waiting for the "
-                "engineer; it'll be raised in the next build session."
-            )
-        elif not wishes:
-            reply = (
+            reply = await self._build_list_add(add.group(1).strip().rstrip(".!"))
+        else:
+            reply = self._build_list_show(wishes)
+        await self.log.log("out", reply, chat_id=message.chat_id, meta={"build_list": True})
+        await self.telegram.send_text(message.chat_id, reply)
+        return True
+
+    async def _build_list_add(self, wish: str) -> str:
+        import json as _json
+
+        try:
+            wishes = _json.loads(await self.store.get("build_list", "[]"))
+        except Exception:
+            wishes = []
+        tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
+        wishes.append({"date": datetime.now(ZoneInfo(tz_name)).date().isoformat(), "wish": wish})
+        await self.store.set("build_list", _json.dumps(wishes))
+        return (
+            f"On the build list, sir — “{wish}”. That's {len(wishes)} waiting for the "
+            "engineer; it'll be raised in the next build session."
+        )
+
+    @staticmethod
+    def _build_list_show(wishes: list) -> str:
+        if not wishes:
+            return (
                 "The build list is empty — nothing waiting on the engineer. Anything I "
                 "can't do yet, say 'add it to the build list' and it's captured."
             )
-        else:
-            lines = [f"{i}. {w['wish']} (asked {w['date']})" for i, w in enumerate(wishes, 1)]
-            reply = "THE BUILD LIST — waiting on the engineer:\n" + "\n".join(lines)
-        await self.log.log("out", reply, chat_id=message.chat_id, meta={"build_list": True})
+        lines = [f"{i}. {w['wish']} (asked {w['date']})" for i, w in enumerate(wishes, 1)]
+        return "THE BUILD LIST — waiting on the engineer:\n" + "\n".join(lines)
+
+    async def _execute_intent(self, message: IncomingMessage, data: dict) -> bool:
+        """Act on a triaged command through the SAME machinery the exact
+        phrases use. Unknown/malformed → False, and the brain takes over."""
+        import json as _json
+
+        intent = data.get("intent")
+        tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
+        today_local = datetime.now(ZoneInfo(tz_name)).date()
+        reply = ""
+        if intent == "quiet_day":
+            if self.heartbeat is not None:
+                await self.heartbeat.set_quiet_today(True)
+            else:
+                await self.store.set("quiet_day", today_local.isoformat())
+            reply = (
+                "Done, sir — quiet for the rest of today. No nudges, digests or "
+                "check-ins from me; med reminders still stand (non-negotiable). "
+                "'notifications back on' wakes me early."
+            )
+        elif intent == "notifications_on":
+            if self.heartbeat is not None:
+                await self.heartbeat.set_quiet_today(False)
+            else:
+                await self.store.set("quiet_day", "")
+            reply = "Done, sir — nudges and check-ins are back on."
+        elif intent == "wake_skip" and self.heartbeat is not None:
+            await self.heartbeat.skip_next_wake(today_local + timedelta(days=1))
+            reply = "Understood — no wake-up tomorrow. It re-arms automatically the day after."
+        elif intent == "wake_delay" and self.heartbeat is not None:
+            hour = data.get("hour")
+            if not (isinstance(hour, int) and 4 <= hour <= 11):
+                return False
+            await self.heartbeat.delay_wake(today_local + timedelta(days=1), hour)
+            reply = f"Done — tomorrow's wake-up moves to {hour:02d}:00, back to normal the day after."
+        elif intent == "status_check":
+            await self._handle_status(message)
+            return True
+        elif intent == "group_digest" and self.heartbeat is not None:
+            if await self.heartbeat.group_digest(force=True):
+                return True
+            reply = "Nothing new in the groups since the last digest, sir — all caught up."
+        elif intent == "trello_sync" and self.daily12 is not None:
+            try:
+                count = await self.daily12.sync()
+                reply = f"Board synced — {count} cards read. Moves, ticks and deletions all landed."
+            except Exception:
+                logger.exception("Triage-triggered Trello sync failed")
+                reply = "Trello wouldn't answer just now — I'll retry on the hourly pass."
+        elif intent == "update_brief":
+            from app.memory.brief import compose_brief
+
+            brief = await compose_brief(self.claude, self.db, self.store)
+            reply = (
+                "Done — the brief is current, and every reply I give now carries it."
+                if brief
+                else "That rebuild failed mid-flight — I've kept the previous brief; try again shortly."
+            )
+        elif intent == "build_list_add" and (data.get("wish") or "").strip():
+            reply = await self._build_list_add(str(data["wish"]).strip())
+        elif intent == "build_list_show":
+            try:
+                wishes = _json.loads(await self.store.get("build_list", "[]"))
+            except Exception:
+                wishes = []
+            reply = self._build_list_show(wishes)
+        elif intent == "timezone_change":
+            place = str(data.get("place") or "").strip().lower()
+            if place not in self.TIMEZONE_MAP:
+                return False
+            await self.store.set(TIMEZONE_KEY, self.TIMEZONE_MAP[place])
+            if self.on_timezone_change is not None:
+                await self.on_timezone_change()
+            shown = place.upper() if place == "uk" else place.title()
+            reply = f"Clocks switched to {shown} time. Briefs, nudges and the 9pm review all follow you."
+        if not reply:
+            return False
+        await self.log.log("out", reply, chat_id=message.chat_id, meta={"intent": intent})
         await self.telegram.send_text(message.chat_id, reply)
         return True
 

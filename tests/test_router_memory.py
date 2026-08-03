@@ -97,7 +97,8 @@ class TestRouterMemory(unittest.IsolatedAsyncioTestCase):
     async def test_brain_receives_recalled_knowledge(self):
         h = self.harness()
         await h.router.handle_update(text_update("what do we do about the BMI fillers situation?", OWNER))
-        system = h.claude_requests[0]["system"]
+        # Short messages get an intent-triage look first — assert on the BRAIN call.
+        system = [r for r in h.claude_requests if r["model"] == "claude-opus-5"][0]["system"]
         self.assertIn("Recalled memory", system)
         self.assertIn("BMI", system)
         self.assertIn("Current living facts", system)

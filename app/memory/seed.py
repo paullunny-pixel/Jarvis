@@ -11,7 +11,7 @@ from app.memory.store import LivingFacts, MemoryStore
 
 logger = logging.getLogger(__name__)
 
-SEED_VERSION = "3"
+SEED_VERSION = "4"
 
 # (content, room, type, tags)
 STABLE_CHUNKS: list[tuple[str, str, str, list[str]]] = [
@@ -89,6 +89,12 @@ CHATGPT_CHUNKS: list[tuple[str, str, str, list[str]]] = [
     ("Paul often asks for Brazilian Portuguese translations so Steph can understand important topics — language is one of the ways he looks after her.", "people", "STABLE", ["steph", "language", "chatgpt-import"]),
 ]
 
+# v4 (3 Aug 2026): Paul told the engineer he has dyslexia — this governs how
+# every part of the system reads his words.
+DYSLEXIA_CHUNKS: list[tuple[str, str, str, list[str]]] = [
+    ("Paul has dyslexia. Spellings wobble, autocorrect mangles words ('quite day' means 'quiet day'), and voice transcripts garble. ALWAYS read his messages for meaning, never take an odd spelling literally, and NEVER comment on or correct his spelling — just understand him.", "you", "STABLE", ["dyslexia", "operating-manual"]),
+]
+
 CHATGPT_PRIVATE_CHUNKS: list[tuple[str, str, str, list[str]]] = [
     ("From Paul's year with ChatGPT: chronic loneliness, feeling misunderstood, and often not feeling emotionally safe are his deepest recurring themes. Not feeling safe is his biggest drinking trigger; he knows he cannot drink moderately, and shame follows relapses. Emotional safety is the ground everything else stands on.", "private", "PRIVATE", ["sobriety", "emotional-safety", "chatgpt-import"]),
     ("Paul has explored a previous or possible diagnosis of Borderline Personality Disorder alongside his ADHD, plus childhood trauma and emotional-regulation work. Support-space territory only — never raised unprompted, never in business context.", "private", "PRIVATE", ["mental-health", "chatgpt-import"]),
@@ -152,10 +158,17 @@ async def load_day_one_brain(
             await living.set(key, value, room=room)
     elif current == "1":
         count += await _migrate_v1_to_v2(memory)
-    # v2→v3 top-up (also part of any fresh load): the ChatGPT memory import.
-    for content, room, type_, tags in CHATGPT_CHUNKS + CHATGPT_PRIVATE_CHUNKS:
-        await memory.add_chunk(content, room=room, type_=type_, source="chatgpt-import", tags=tags)
-        count += 1
+    # Versioned top-ups (each also part of any fresh load).
+    if not current or current in ("1", "2"):
+        # v3: the ChatGPT memory import.
+        for content, room, type_, tags in CHATGPT_CHUNKS + CHATGPT_PRIVATE_CHUNKS:
+            await memory.add_chunk(content, room=room, type_=type_, source="chatgpt-import", tags=tags)
+            count += 1
+    if not current or current in ("1", "2", "3"):
+        # v4: dyslexia — read for meaning, everywhere.
+        for content, room, type_, tags in DYSLEXIA_CHUNKS:
+            await memory.add_chunk(content, room=room, type_=type_, source="engineer-note", tags=tags)
+            count += 1
     await settings_store.set("seed_version", SEED_VERSION)
     logger.info("Brain seed at v%s: %d chunks written/moved", SEED_VERSION, count)
     return count

@@ -41,6 +41,10 @@ RECENT CONVERSATION (oldest first) — Paul is usually replying to Jarvis's
 last message; resolve "that one", "those", names and list items against it:
 {recent}
 
+Paul has dyslexia: spellings wobble and voice transcripts garble. Read for
+meaning — match cards by intent not exact spelling, and quietly fix obvious
+misspellings in any title or description you create.
+
 Reply ONLY a JSON array of actions (empty if the message contains none):
 - {{"action":"done","target":"<position number or title words>"}}
 - {{"action":"defer","target":"...","when":"friday|tomorrow|next week|YYYY-MM-DD"}}

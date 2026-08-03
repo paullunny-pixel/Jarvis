@@ -16,7 +16,7 @@ non-skippable gates (run + meds).
 
 ## Commands
 
-- Tests: `python -m unittest discover -s tests` (406 tests; stdlib unittest,
+- Tests: `python -m unittest discover -s tests` (417 tests; stdlib unittest,
   NOT pytest — keep it that way. Only `requirements.txt` is needed; two PDF
   tests also use `reportlab` and skip automatically when it isn't installed)
 - No local run needed for most work; local dev uses SQLite automatically
@@ -36,7 +36,16 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
   documents → photos (vision + run-proof) → voice STT → PRIVATE ROOM (before
   general logging!) → life signals (status/timezone/hound/streaks/meds) →
   document requests → email talk (never swallows a mixed message's board
-  half) → gated task-talk → brain conversation → memory writer
+  half) → gated task-talk → INTENT TRIAGE → brain conversation → memory writer
+- `app/core/intent.py` — the understanding layer (3 Aug): when no exact
+  phrase matched and the message is ≤200 chars, Haiku reads it (dyslexia/
+  typo/garble tolerant — Paul has dyslexia, 'quite day' = 'quiet day') with
+  recent-conversation context and classifies into the known command set
+  (quiet/resume/wake/status/digest/sync/brief/build-list/timezone);
+  `_execute_intent` acts through the SAME deterministic machinery; only
+  confident hits execute, anything unsure falls through to the brain.
+  Task/email/logging talk is always 'none' — their own flows keep priority.
+  Stepping stone to brain-first routing, not throwaway
 - `app/clients/` — thin httpx clients (Anthropic, Deepgram, ElevenLabs,
   Telegram). Deliberately no SDKs; keep them thin and MockTransport-testable
 - `app/db/` — dual-dialect layer: SQLite (dev/tests) + Postgres/asyncpg (prod).
@@ -121,6 +130,8 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
    earlier registers read as cold). Paul's own 'tune jarvis:' notes outrank
    the base persona on tone. Hard lines unchanged: NEVER passive-aggressive,
    never sniping, never guilt-tripping; comedy drops when Paul is struggling.
+   Paul has DYSLEXIA (3 Aug): read for meaning everywhere — persona, task
+   parser and intent triage all carry the rule; never comment on spelling.
 3. **§16 scoring weights** (0.35/0.25/0.25/0.15) are spec-locked; tunable via
    arguments, not by editing constants casually.
 4. **Negation-aware logging:** phrase matchers only nominate; Haiku confirms

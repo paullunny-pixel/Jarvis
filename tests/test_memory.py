@@ -8,6 +8,7 @@ from app.memory.embedder import HashEmbedder, cosine
 from app.memory.seed import (
     CHATGPT_CHUNKS,
     CHATGPT_PRIVATE_CHUNKS,
+    DYSLEXIA_CHUNKS,
     FAMILY_CHUNKS,
     LIVING_SEED,
     PRIVATE_CHUNKS,
@@ -133,7 +134,8 @@ class TestSeed(MemoryBase):
         store = SettingsStore(self.db)
         n1 = await load_day_one_brain(self.memory, self.living, store)
         self.assertEqual(n1, len(STABLE_CHUNKS) + len(FAMILY_CHUNKS) + len(PRIVATE_CHUNKS)
-                         + len(CHATGPT_CHUNKS) + len(CHATGPT_PRIVATE_CHUNKS))
+                         + len(CHATGPT_CHUNKS) + len(CHATGPT_PRIVATE_CHUNKS)
+                         + len(DYSLEXIA_CHUNKS))
         n2 = await load_day_one_brain(self.memory, self.living, store)
         self.assertEqual(n2, 0)
         row = await self.db.fetch_one("SELECT COUNT(*) AS n FROM memory_chunks")
@@ -170,27 +172,40 @@ class TestSeed(MemoryBase):
                                         source="day-one-brain", tags=tags)
         await store.set("seed_version", "1")
         moved = await load_day_one_brain(self.memory, self.living, store)
-        self.assertEqual(moved, len(FAMILY_CHUNKS) + len(CHATGPT_CHUNKS) + len(CHATGPT_PRIVATE_CHUNKS))
-        self.assertEqual(await store.get("seed_version"), "3")
+        self.assertEqual(moved, len(FAMILY_CHUNKS) + len(CHATGPT_CHUNKS)
+                         + len(CHATGPT_PRIVATE_CHUNKS) + len(DYSLEXIA_CHUNKS))
+        self.assertEqual(await store.get("seed_version"), "4")
         hits = await self.memory.search("Jack Minecraft birthday October", k=4)
         self.assertTrue(any("2 October" in h["content"] for h in hits))
         # old private copies are superseded, not current
         private_rows = await self.memory.audit(room="private", include_private=True)
         self.assertTrue(all(not r["content"].startswith("Jack —") for r in private_rows))
 
-    async def test_v2_to_v3_adds_only_the_chatgpt_import(self):
-        # The path production takes on 3 Aug: already at v2, top up with the
-        # ChatGPT memory export — no duplicate day-one chunks, no living resets.
+    async def test_v2_topup_adds_chatgpt_and_dyslexia_only(self):
+        # Upgrades never re-seed: from v2, only the newer top-ups land —
+        # no duplicate day-one chunks, no living-fact resets.
         store = SettingsStore(self.db)
         await store.set("seed_version", "2")
         added = await load_day_one_brain(self.memory, self.living, store)
-        self.assertEqual(added, len(CHATGPT_CHUNKS) + len(CHATGPT_PRIVATE_CHUNKS))
-        self.assertEqual(await store.get("seed_version"), "3")
+        self.assertEqual(added, len(CHATGPT_CHUNKS) + len(CHATGPT_PRIVATE_CHUNKS)
+                         + len(DYSLEXIA_CHUNKS))
+        self.assertEqual(await store.get("seed_version"), "4")
         row = await self.db.fetch_one("SELECT COUNT(*) AS n FROM memory_chunks")
         self.assertEqual(row["n"], added)          # nothing re-seeded
         self.assertIsNone(await self.living.get("villa.paid"))  # living untouched
         # And it never runs twice.
         self.assertEqual(await load_day_one_brain(self.memory, self.living, store), 0)
+
+    async def test_v3_to_v4_adds_only_the_dyslexia_note(self):
+        # Production's actual 3 Aug path: v3 → v4 adds the dyslexia rule alone,
+        # and it's recallable so every reader learns to read for meaning.
+        store = SettingsStore(self.db)
+        await store.set("seed_version", "3")
+        added = await load_day_one_brain(self.memory, self.living, store)
+        self.assertEqual(added, len(DYSLEXIA_CHUNKS))
+        self.assertEqual(await store.get("seed_version"), "4")
+        hits = await self.memory.search("Paul spelling typos dyslexia", k=3)
+        self.assertTrue(any("dyslexia" in h["content"].lower() for h in hits))
 
     async def test_chatgpt_import_holds_the_private_wall(self):
         await load_day_one_brain(self.memory, self.living, SettingsStore(self.db))

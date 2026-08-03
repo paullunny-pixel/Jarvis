@@ -191,9 +191,10 @@ class TestRouter(unittest.IsolatedAsyncioTestCase):
         log = await h.router.log.recent()
         self.assertEqual(log[0]["transcript"], "voice words here")
         self.assertEqual(log[0]["kind"], "voice")
-        # conversation history was sent to the brain
-        self.assertEqual(h.claude_requests[0]["messages"][-1]["content"], "voice words here")
-        self.assertIn("Jarvis", h.claude_requests[0]["system"])
+        # conversation history was sent to the brain (triage may run first)
+        brain = [r for r in h.claude_requests if r["model"] == "claude-opus-5"][0]
+        self.assertEqual(brain["messages"][-1]["content"], "voice words here")
+        self.assertIn("Jarvis", brain["system"])
 
     async def test_listy_reply_goes_as_text(self):
         h = RouterHarness(self.db, claude_reply="Today:\n- surveys\n- run\n- call Kiefer")
