@@ -173,6 +173,17 @@ class TestFetchPage(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(page["ok"])
         self.assertIn("Select All", page["error"])
+        self.assertIn("blocks assistants", page["error"])
+
+    async def test_blocked_chatgpt_share_says_blocked_not_login(self):
+        # chatgpt.com sits behind bot protection: a 403 on a share link must
+        # explain THAT, not mutter about Google Docs sharing settings.
+        from app.documents.weblinks import CHATGPT_BLOCKED_ERROR
+
+        page = await self.fetch(lambda r: httpx.Response(403), "https://chatgpt.com/share/abc123")
+        self.assertEqual(page["error"], CHATGPT_BLOCKED_ERROR)
+        page = await self.fetch(lambda r: httpx.Response(429), "https://chatgpt.com/share/abc123")
+        self.assertEqual(page["error"], CHATGPT_BLOCKED_ERROR)
 
     async def test_unreadable_type_is_refused_kindly(self):
         page = await self.fetch(

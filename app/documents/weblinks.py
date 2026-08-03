@@ -31,6 +31,13 @@ LOGIN_WALL_ERROR = (
     "'anyone with the link' for me to read it (or wait for the Workspace hookup)"
 )
 
+CHATGPT_BLOCKED_ERROR = (
+    "ChatGPT actively blocks assistants from reading its share pages "
+    "(verified — it's their bot protection, not a fault here). The reliable "
+    "route: open the chat, Select All, paste it to me — or send screenshots; "
+    "I read both perfectly"
+)
+
 
 def extract_urls(text: str) -> list[str]:
     urls: list[str] = []
@@ -140,8 +147,12 @@ async def fetch_page(
             response = await client.get(fetch_url)
         # A private Google file bounces the export to the account login page.
         if "accounts.google.com" in str(response.url) or response.status_code in (401, 403):
+            if CHATGPT_SHARE.match(url):
+                return {"ok": False, "url": url, "error": CHATGPT_BLOCKED_ERROR}
             return {"ok": False, "url": url, "error": LOGIN_WALL_ERROR}
         if response.status_code >= 400:
+            if CHATGPT_SHARE.match(url):
+                return {"ok": False, "url": url, "error": CHATGPT_BLOCKED_ERROR}
             return {"ok": False, "url": url, "error": f"the site answered {response.status_code}"}
         body = response.content[:MAX_BYTES]
         ctype = response.headers.get("content-type", "").lower()
@@ -151,13 +162,7 @@ async def fetch_page(
         if CHATGPT_SHARE.match(url):
             convo = extract_chatgpt_share(decoded)
             if not convo:
-                return {
-                    "ok": False, "url": url,
-                    "error": (
-                        "that ChatGPT share page came back without the conversation in it — "
-                        "open the chat, Select All, and paste the text instead"
-                    ),
-                }
+                return {"ok": False, "url": url, "error": CHATGPT_BLOCKED_ERROR}
             title, _ = html_to_text(decoded)
             return {"ok": True, "url": url, "title": title or "ChatGPT conversation",
                     "text": convo, "pdf": None}
