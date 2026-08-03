@@ -337,22 +337,31 @@ async function openInterpreter() {
     bar.innerHTML = `
       <button id="ptt-hold" style="flex:1;padding:20px;border-radius:16px;border:none;font-size:17px;
         font-weight:600;background:#2f81f7;color:#fff;cursor:pointer;-webkit-user-select:none;user-select:none;
-        touch-action:none">🎙 Hold to speak · segure para falar</button>
+        touch-action:none">🎙 Tap or hold to speak · toque ou segure</button>
       <button id="ptt-end" style="padding:20px 16px;border-radius:16px;border:1px solid #2a3644;
         background:transparent;color:#8fa0b3;font-size:15px;cursor:pointer">End</button>`;
     document.body.appendChild(bar);
 
+    // Two ways to drive it: HOLD like a walkie-talkie, or a quick TAP to
+    // latch the mic open (tap again to finish). A quick press is a tap.
     const hold = document.getElementById('ptt-hold');
-    const down = e => { e.preventDefault(); conv.setMicMuted(false);
-      hold.style.background = '#dc2626'; hold.textContent = '🔴 Listening — let go when you’re done'; };
-    const up = e => { e.preventDefault(); conv.setMicMuted(true);
-      hold.style.background = '#2f81f7'; hold.textContent = '🎙 Hold to speak · segure para falar'; };
+    let latched = false, downAt = 0;
+    const setLive = live => { conv.setMicMuted(!live);
+      hold.style.background = live ? '#dc2626' : '#2f81f7';
+      hold.textContent = live ? '🔴 Listening — tap or let go to finish'
+                              : '🎙 Tap or hold to speak · toque ou segure'; };
+    const down = e => { e.preventDefault(); downAt = Date.now(); if (!latched) setLive(true); };
+    const up = e => { e.preventDefault();
+      if (latched) { latched = false; setLive(false); }                 // tap while latched → done
+      else if (Date.now() - downAt < 300) { latched = true; }           // quick tap → stay live
+      else { setLive(false); } };                                       // hold released → done
+    const cancel = e => { if (!latched) setLive(false); };              // finger slid off mid-hold
     hold.addEventListener('mousedown', down);
     hold.addEventListener('touchstart', down, {passive:false});
     hold.addEventListener('mouseup', up);
-    hold.addEventListener('mouseleave', up);
     hold.addEventListener('touchend', up);
-    hold.addEventListener('touchcancel', up);
+    hold.addEventListener('mouseleave', cancel);
+    hold.addEventListener('touchcancel', cancel);
     document.getElementById('ptt-end').addEventListener('click', async () => {
       try { await conv.endSession(); } catch (e) {}
       bar.remove(); window.__jarvisPtt = null;

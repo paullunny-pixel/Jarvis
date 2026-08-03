@@ -300,9 +300,10 @@ class TestCockpitSurface(unittest.TestCase):
 
         html = render_page("/cockpit/S/data")
         self.assertIn("ptt-hold", html)
-        self.assertIn("setMicMuted", html)                # mic dead unless held
-        self.assertIn("Hold to speak", html)
-        self.assertIn("segure para falar", html)          # Steph's side of the button
+        self.assertIn("setMicMuted", html)                # mic dead unless engaged
+        self.assertIn("Tap or hold to speak", html)
+        self.assertIn("toque ou segure", html)            # Steph's side of the button
+        self.assertIn("latched", html)                    # tap-to-toggle mode
         self.assertIn("openInterpreter", html)
 
     def test_interpreter_translates_meaning_not_words(self):
@@ -312,6 +313,8 @@ class TestCockpitSurface(unittest.TestCase):
         self.assertIn("never word-for-word", prompt)
         self.assertIn("arm and a leg", prompt)            # idioms cross as equivalents
         self.assertIn("stiff, odd or robotic, it is WRONG", prompt)
+        self.assertIn("BRAZILIAN Portuguese", prompt)     # never European forms
+        self.assertIn("never 'tu'", prompt)
 
     def test_page_carries_the_support_button(self):
         from app.cockpit.page import render_page
