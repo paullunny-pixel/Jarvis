@@ -693,9 +693,12 @@ class HeartbeatJobs:
             if armed
             else "Say 'goodnight — wake me as normal' and I'll run the 05:00 sequence."
         )
+        # Sleep protection is essential (Paul, 4 Aug 00:39 — awake at half
+        # midnight on a quiet day, unnudged): a quiet day never silences it.
         await self._send_voice(
             f"Wind-down time, sir. Screens dimming, tomorrow's cards are set — lights out at "
-            f"half ten, that's the deal we made. {arm_line}"
+            f"half ten, that's the deal we made. {arm_line}",
+            essential=True,
         )
 
     async def lights_out(self) -> None:
@@ -711,7 +714,8 @@ class HeartbeatJobs:
             return
         await self._send_voice(
             "Half past ten, sir — lights out, your rule, and a rather good one. Phone on the "
-            "nightstand, 'goodnight' to me, and 05:00-you wakes up a hero."
+            "nightstand, 'goodnight' to me, and 05:00-you wakes up a hero.",
+            essential=True,
         )
 
     async def lights_out_chaser(self) -> None:
@@ -726,7 +730,8 @@ class HeartbeatJobs:
             return
         await self._send_voice(
             "Eleven o'clock, sir. Every minute now comes straight out of tomorrow's 05:00. "
-            "Lights out — I'll take the goodnight as you fade."
+            "Lights out — I'll take the goodnight as you fade.",
+            essential=True,
         )
 
     # ------------------------------------ 3× daily work-group digest

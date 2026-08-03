@@ -260,8 +260,10 @@ class TestQuietDay(unittest.IsolatedAsyncioTestCase):
         await self.jobs.move_water_nudge(at_local("15:05"))
         await self.jobs.midday_nudge()
         await self.jobs.evening_review()
-        await self.jobs.bedtime_nudge()
         self.assertEqual(self.sent(), [])
+        # Bedtime protection is the exception (4 Aug): it pierces the quiet.
+        await self.jobs.bedtime_nudge()
+        self.assertEqual(len(self.sent()), 1)
 
     async def test_med_reminders_survive_a_quiet_day(self):
         # Non-negotiables don't take days off — meds still fire.
@@ -482,6 +484,72 @@ class TestDayRhythmRouter(unittest.IsolatedAsyncioTestCase):
             body for method, body in self.jobs_harness.telegram_calls
             if method in ("sendMessage", "sendVoice")
         ]
+
+    async def test_bedtime_protection_pierces_a_quiet_day(self):
+        # 4 Aug, 00:39: Paul awake at half midnight on a quiet day and nothing
+        # said a word — the quiet day had swallowed lights-out. Never again:
+        # sleep protection is essential.
+        await self.jobs.set_quiet_today(True)
+        await self.jobs.bedtime_nudge()
+        await self.jobs.lights_out()
+        await self.jobs.lights_out_chaser()
+        sent = self.jobs_sent()
+        self.assertEqual(len(sent), 3)
+        self.assertIn("lights+out", sent[1].lower().replace("%2C", ""))
+
+    async def test_late_night_brain_turn_carries_past_lights_out(self):
+        from unittest.mock import patch
+
+        from datetime import datetime as real_dt
+
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        class LateNight(real_dt):
+            @classmethod
+            def now(cls, tz=None):
+                return real_dt(2026, 8, 4, 0, 39, tzinfo=tz or LONDON)
+
+        with patch("app.core.router.datetime", LateNight):
+            await self.h.router.handle_update(text_update("still up, watching the football", OWNER))
+        system = self.h.claude_requests[-1]["system"]
+        self.assertIn("PAST LIGHTS-OUT", system)
+        self.assertIn("00:39", system)
+        self.assertIn("Bedtime machinery EXISTS", system)
+
+    async def test_goodnight_clears_the_past_lights_out_flag(self):
+        from unittest.mock import patch
+
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        from datetime import datetime as real_dt
+
+        # Goodnight logged for the night of the 3rd…
+        await self.db.execute(
+            "INSERT INTO sleep_log (day, goodnight_time, tz) VALUES (?, ?, ?)",
+            ("2026-08-03", "2026-08-03T23:50:00+00:00", "Europe/London"),
+        )
+
+        class LateNight(real_dt):
+            @classmethod
+            def now(cls, tz=None):
+                return real_dt(2026, 8, 4, 0, 39, tzinfo=tz or LONDON)
+
+        with patch("app.core.router.datetime", LateNight):
+            await self.h.router.handle_update(text_update("one last thought", OWNER))
+        self.assertNotIn("PAST LIGHTS-OUT", self.h.claude_requests[-1]["system"])
+
+    async def test_wake_override_state_rides_the_brain_turn(self):
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        await self.jobs.delay_wake(at_local("07:00", day=26).date(), 7)
+        await self.h.router.handle_update(text_update("morning thoughts?", OWNER))
+        system = self.h.claude_requests[-1]["system"]
+        self.assertIn("WAKE OVERRIDE SET", system)
+        self.assertIn("07:00", system)
+        self.assertIn("switch is the truth", system)
 
     async def test_gate_chaser_reminds_hourly_until_confirmed(self):
         import json as _json

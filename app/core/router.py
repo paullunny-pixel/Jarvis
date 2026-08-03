@@ -372,13 +372,40 @@ class JarvisRouter:
         link_context = await self._read_links(transcript)
         if link_context:
             system_status += "\n\n" + link_context
-        # Quiet-day state: the brain must know the day's gone quiet — and honour it.
-        if await self.store.get("quiet_day", "") == datetime.now(ZoneInfo(timezone)).date().isoformat():
-            system_status += (
-                "\n\nQUIET DAY ACTIVE: Paul silenced today's proactive nudges earlier. "
-                "Honour the spirit of it — answer what he asks, warmly, but don't pile "
-                "on tasks or chase him. 'notifications back on' lifts it."
+        # RHYTHM STATE — live switch truth, so the brain never recites a stale
+        # wake hour or denies machinery that exists (both happened 4 Aug 00:40).
+        now_local = datetime.now(ZoneInfo(timezone))
+        rhythm_lines = []
+        if await self.store.get("quiet_day", "") == now_local.date().isoformat():
+            rhythm_lines.append(
+                "QUIET DAY ACTIVE: Paul silenced today's proactive nudges. Honour the "
+                "spirit — answer warmly, don't pile on or chase. 'notifications back "
+                "on' lifts it. Meds and bedtime protection still fire regardless."
             )
+        wake_delay = await self.store.get("wake_delay", "")
+        if wake_delay:
+            d, _, hh = wake_delay.partition(":")
+            rhythm_lines.append(f"WAKE OVERRIDE SET: the wake sequence on {d} holds until {int(hh):02d}:00 — this switch is the truth, not remembered conversation.")
+        if await self.store.get("wake_skip_date", "") >= now_local.date().isoformat():
+            rhythm_lines.append(f"WAKE SKIP SET for {await self.store.get('wake_skip_date')}.")
+        rhythm_lines.append(
+            "Bedtime machinery EXISTS and is wired: wind-down nudge 21:45, lights-out "
+            "22:30, chaser 23:00 (all local, all pierce a quiet day). Never tell Paul "
+            "there's no bedtime reminder."
+        )
+        if (now_local.hour >= 22 and now_local.minute >= 30 or now_local.hour == 23 or now_local.hour < 4):
+            night_date = now_local.date() if now_local.hour >= 22 else (now_local.date() - timedelta(days=1))
+            asleep = await self.db.fetch_one(
+                "SELECT id FROM sleep_log WHERE day = ?", (night_date.isoformat(),)
+            )
+            if not asleep:
+                rhythm_lines.append(
+                    f"PAST LIGHTS-OUT: it is {now_local.strftime('%H:%M')} and Paul has "
+                    "not said goodnight. He should be asleep — his own 22:30 rule. OPEN "
+                    "your reply by telling him so (warm, one line, no lecture) before "
+                    "anything else, every message until he goes."
+                )
+        system_status += "\n\nRHYTHM STATE (switch truth beats memory):\n- " + "\n- ".join(rhythm_lines)
         # The build list rides every turn so Jarvis knows what's already asked for.
         try:
             import json as _json
@@ -880,7 +907,9 @@ class JarvisRouter:
             f"- Apple Health webhook: {'configured' if s.apple_health_webhook_secret else 'not configured yet'}",
             "- Day rhythm: wake-up sequence built (05:00 local; Paul arms it with 'start the "
             "wake-ups', skips one day with 'no wake-up tomorrow'); hourly move+water nudges; "
-            "med reminders (ADHD 09:30, supplements 14:00, TRT Saturdays). The run/meds "
+            "med reminders (ADHD 09:30, supplements 14:00, TRT Saturdays); bedtime "
+            "protection (wind-down 21:45, lights-out 22:30, chaser 23:00 — pierces quiet "
+            "days; 'goodnight' stands it down). The run/meds "
             "gates CHASE, they never block (Paul's rule, 3 Aug): board work always "
             "proceeds; anything owed is reminded hourly until confirmed; a declared rest "
             "day settles the run; 'override' quiets the chase for the day.",
@@ -1817,9 +1846,12 @@ class JarvisRouter:
                 "name": "rhythm",
                 "description": (
                     "The reminder machinery's ONLY levers: quiet_today silences today's "
-                    "non-essential nudges (meds still fire — non-negotiable); "
+                    "non-essential nudges (meds and bedtime still fire — non-negotiable); "
                     "wake_skip_tomorrow skips tomorrow's wake sequence; wake_hour_tomorrow "
-                    "(4-11) delays it. Only claim a rhythm change the result confirms."
+                    "(4-11) delays it. WHENEVER Paul states what time he's getting up "
+                    "tomorrow — however casually ('waking up with Steph at seven') — set "
+                    "wake_hour_tomorrow; saying it back without the tool changes nothing. "
+                    "Only claim a rhythm change the result confirms."
                 ),
                 "input_schema": {
                     "type": "object",
