@@ -630,13 +630,13 @@ class JarvisRouter:
                 await self.store.set("quiet_day", "")
             reply = "Done, sir — nudges and check-ins are back on."
         elif intent == "wake_skip" and self.heartbeat is not None:
-            await self.heartbeat.skip_next_wake(today_local + timedelta(days=1))
+            await self.heartbeat.skip_next_wake(self._next_wake_date(tz_name))
             reply = "Understood — no wake-up tomorrow. It re-arms automatically the day after."
         elif intent == "wake_delay" and self.heartbeat is not None:
             hour = data.get("hour")
             if not (isinstance(hour, int) and 4 <= hour <= 11):
                 return False
-            await self.heartbeat.delay_wake(today_local + timedelta(days=1), hour)
+            await self.heartbeat.delay_wake(self._next_wake_date(tz_name), hour)
             reply = f"Done — tomorrow's wake-up moves to {hour:02d}:00, back to normal the day after."
         elif intent == "status_check":
             await self._handle_status(message)
@@ -1783,6 +1783,16 @@ class JarvisRouter:
             return {key: "na" for key in keys}
         return {key: "done" for key in keys}
 
+    @staticmethod
+    def _next_wake_date(tz_name: str):
+        """The date 'tomorrow morning' refers to. Past midnight (before 04:00),
+        'wake me at 7 tomorrow' means THIS coming morning, not the day after —
+        the 00:55 trap, 4 Aug."""
+        now_local = datetime.now(ZoneInfo(tz_name))
+        if now_local.hour < 4:
+            return now_local.date()
+        return now_local.date() + timedelta(days=1)
+
     # ---------------- Brain-first (Phase A2): the brain's hands ----------------
     # (Gates chase, they don't block — Paul, 3 Aug. The old gate-queue writer
     # is gone; _replay_gated_request stays so any pre-change stash still
@@ -1906,19 +1916,19 @@ class JarvisRouter:
         if name == "rhythm" and self.heartbeat is not None:
             done = []
             tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
-            today_local = datetime.now(ZoneInfo(tz_name)).date()
+            wake_date = self._next_wake_date(tz_name)  # past midnight = THIS morning
             if tool_input.get("quiet_today") is not None:
                 await self.heartbeat.set_quiet_today(bool(tool_input["quiet_today"]))
                 done.append(
                     "quiet day ON (meds still fire)" if tool_input["quiet_today"] else "nudges back ON"
                 )
             if tool_input.get("wake_skip_tomorrow"):
-                await self.heartbeat.skip_next_wake(today_local + timedelta(days=1))
-                done.append("tomorrow's wake-up skipped")
+                await self.heartbeat.skip_next_wake(wake_date)
+                done.append(f"the {wake_date.strftime('%d %b')} wake-up skipped")
             hour = tool_input.get("wake_hour_tomorrow")
             if isinstance(hour, int) and 4 <= hour <= 11:
-                await self.heartbeat.delay_wake(today_local + timedelta(days=1), hour)
-                done.append(f"tomorrow's wake-up moved to {hour:02d}:00")
+                await self.heartbeat.delay_wake(wake_date, hour)
+                done.append(f"the {wake_date.strftime('%d %b')} wake-up moved to {hour:02d}:00")
             return ("Confirmed: " + ", ".join(done) + ".") if done else "NO CHANGE — no valid switch given."
         if name == "build_list":
             if (tool_input.get("add") or "").strip():
