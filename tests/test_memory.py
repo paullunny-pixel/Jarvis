@@ -6,6 +6,8 @@ from app.core.store import SettingsStore
 from app.memory.crypto import PrivateBox
 from app.memory.embedder import HashEmbedder, cosine
 from app.memory.seed import (
+    CHATGPT_CHUNKS,
+    CHATGPT_PRIVATE_CHUNKS,
     FAMILY_CHUNKS,
     LIVING_SEED,
     PRIVATE_CHUNKS,
@@ -130,7 +132,8 @@ class TestSeed(MemoryBase):
     async def test_seed_loads_once(self):
         store = SettingsStore(self.db)
         n1 = await load_day_one_brain(self.memory, self.living, store)
-        self.assertEqual(n1, len(STABLE_CHUNKS) + len(FAMILY_CHUNKS) + len(PRIVATE_CHUNKS))
+        self.assertEqual(n1, len(STABLE_CHUNKS) + len(FAMILY_CHUNKS) + len(PRIVATE_CHUNKS)
+                         + len(CHATGPT_CHUNKS) + len(CHATGPT_PRIVATE_CHUNKS))
         n2 = await load_day_one_brain(self.memory, self.living, store)
         self.assertEqual(n2, 0)
         row = await self.db.fetch_one("SELECT COUNT(*) AS n FROM memory_chunks")
@@ -167,13 +170,48 @@ class TestSeed(MemoryBase):
                                         source="day-one-brain", tags=tags)
         await store.set("seed_version", "1")
         moved = await load_day_one_brain(self.memory, self.living, store)
-        self.assertEqual(moved, len(FAMILY_CHUNKS))
-        self.assertEqual(await store.get("seed_version"), "2")
+        self.assertEqual(moved, len(FAMILY_CHUNKS) + len(CHATGPT_CHUNKS) + len(CHATGPT_PRIVATE_CHUNKS))
+        self.assertEqual(await store.get("seed_version"), "3")
         hits = await self.memory.search("Jack Minecraft birthday October", k=4)
         self.assertTrue(any("2 October" in h["content"] for h in hits))
         # old private copies are superseded, not current
         private_rows = await self.memory.audit(room="private", include_private=True)
         self.assertTrue(all(not r["content"].startswith("Jack —") for r in private_rows))
+
+    async def test_v2_to_v3_adds_only_the_chatgpt_import(self):
+        # The path production takes on 3 Aug: already at v2, top up with the
+        # ChatGPT memory export — no duplicate day-one chunks, no living resets.
+        store = SettingsStore(self.db)
+        await store.set("seed_version", "2")
+        added = await load_day_one_brain(self.memory, self.living, store)
+        self.assertEqual(added, len(CHATGPT_CHUNKS) + len(CHATGPT_PRIVATE_CHUNKS))
+        self.assertEqual(await store.get("seed_version"), "3")
+        row = await self.db.fetch_one("SELECT COUNT(*) AS n FROM memory_chunks")
+        self.assertEqual(row["n"], added)          # nothing re-seeded
+        self.assertIsNone(await self.living.get("villa.paid"))  # living untouched
+        # And it never runs twice.
+        self.assertEqual(await load_day_one_brain(self.memory, self.living, store), 0)
+
+    async def test_chatgpt_import_holds_the_private_wall(self):
+        await load_day_one_brain(self.memory, self.living, SettingsStore(self.db))
+        # Interests are recallable in ordinary conversation…
+        hits = await self.memory.search("Roman history aviation Catholic theology", k=4)
+        self.assertTrue(any("Roman history" in h["content"] for h in hits))
+        # …but the sensitive lines never surface outside the private scope.
+        for query in ("emotionally unsafe drinking trigger shame",
+                      "borderline personality disorder childhood trauma"):
+            hits = await self.memory.search(query, k=10)
+            self.assertTrue(all(h["room"] != "private" for h in hits))
+        # Encrypted at rest, reachable only when the private scope asks.
+        raw = await self.db.fetch_all(
+            "SELECT content FROM memory_chunks WHERE source = 'chatgpt-import' AND is_private = 1"
+        )
+        self.assertEqual(len(raw), len(CHATGPT_PRIVATE_CHUNKS))
+        self.assertTrue(all(r["content"].startswith("enc:") for r in raw))
+        private_hits = await self.memory.search(
+            "biggest drinking trigger", include_private=True, rooms=["private"], k=5
+        )
+        self.assertTrue(any("not feeling safe" in h["content"].lower() for h in private_hits))
 
     async def test_seed_living_facts_present(self):
         await load_day_one_brain(self.memory, self.living, SettingsStore(self.db))

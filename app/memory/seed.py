@@ -11,7 +11,7 @@ from app.memory.store import LivingFacts, MemoryStore
 
 logger = logging.getLogger(__name__)
 
-SEED_VERSION = "2"
+SEED_VERSION = "3"
 
 # (content, room, type, tags)
 STABLE_CHUNKS: list[tuple[str, str, str, list[str]]] = [
@@ -78,6 +78,22 @@ FAMILY_CHUNKS: list[tuple[str, str, str, list[str]]] = [
     ("Frankie — a different ex-partner; co-owns the UK house being sold; Harry's sister.", "people", "STABLE", ["frankie", "family"]),
 ]
 
+# v3 (3 Aug 2026): Paul's year of ChatGPT memory, imported from his export
+# ('What ChatGPT Knows About Paul'). Only what the Day-One Brain didn't already
+# hold. Sensitive lines go to the private room — encrypted, support-space only.
+CHATGPT_CHUNKS: list[tuple[str, str, str, list[str]]] = [
+    ("How Paul likes to be answered (a year of his own ChatGPT habits): detailed, practical, commercially focused. He often asks for an expert lens — think like a CEO, lawyer, doctor, strategist, regulator, even a theologian — and he prefers explanations over excuses, in both directions.", "you", "STABLE", ["working-style", "chatgpt-import"]),
+    ("Paul's interests beyond work: entrepreneurship, medical aesthetics, psychology, neuroscience, addiction science, aviation, Roman history, Catholic theology, AI and technology, and luxury cars. Real doors for real conversation — use them.", "you", "STABLE", ["interests", "chatgpt-import"]),
+    ("Paul spends considerable time trying to understand himself — psychology and self-knowledge genuinely matter to him. He responds to honest observations about his own patterns, not platitudes.", "you", "STABLE", ["self-knowledge", "chatgpt-import"]),
+    ("Travel Paul has planned or discussed at length: South Korea (his supplier country), Italy, and Dubai — business meetings, hotels, restaurants and aesthetics clinics all in scope.", "you", "STABLE", ["travel", "chatgpt-import"]),
+    ("Paul often asks for Brazilian Portuguese translations so Steph can understand important topics — language is one of the ways he looks after her.", "people", "STABLE", ["steph", "language", "chatgpt-import"]),
+]
+
+CHATGPT_PRIVATE_CHUNKS: list[tuple[str, str, str, list[str]]] = [
+    ("From Paul's year with ChatGPT: chronic loneliness, feeling misunderstood, and often not feeling emotionally safe are his deepest recurring themes. Not feeling safe is his biggest drinking trigger; he knows he cannot drink moderately, and shame follows relapses. Emotional safety is the ground everything else stands on.", "private", "PRIVATE", ["sobriety", "emotional-safety", "chatgpt-import"]),
+    ("Paul has explored a previous or possible diagnosis of Borderline Personality Disorder alongside his ADHD, plus childhood trauma and emotional-regulation work. Support-space territory only — never raised unprompted, never in business context.", "private", "PRIVATE", ["mental-health", "chatgpt-import"]),
+]
+
 PRIVATE_CHUNKS: list[tuple[str, str, str, list[str]]] = [
     ("Sobriety triggers and how Jarvis gets ahead of each: flying/travel days (check in before and after flights, pre-plan the journey, extra presence); work events especially trade shows (high-risk — prep beforehand, stay close during, decompress after); loneliness, a major trigger (watch for quiet evenings, time away from the kids/Steph, low engagement — reach out first, nudge a call to John, Kiefer or Steph); not feeling happy/fulfilled (reconnect to the deeper why and the day's wins); overwhelm around the kids, worst in school holidays (keep work light, offer decompression, normalise that it's hard — gentle, never guilt).", "private", "PRIVATE", ["sobriety", "triggers"]),
     ("Sobriety approach: proactive and pattern-aware — cross-reference sleep, mood, isolation and the travel/event calendar to anticipate hard days. SOS on demand. Celebrate milestones. Always 'I've got you', never a scoreboard. Optional additions when Paul's ready: a who-to-call shortlist and a preferred professional/helpline resource on file.", "private", "PRIVATE", ["sobriety", "approach"]),
@@ -127,16 +143,19 @@ async def load_day_one_brain(
     current = await settings_store.get("seed_version")
     if current == SEED_VERSION:
         return 0
-    if current == "1":
-        moved = await _migrate_v1_to_v2(memory)
-        await settings_store.set("seed_version", SEED_VERSION)
-        return moved
     count = 0
-    for content, room, type_, tags in STABLE_CHUNKS + FAMILY_CHUNKS + PRIVATE_CHUNKS:
-        await memory.add_chunk(content, room=room, type_=type_, source="day-one-brain", tags=tags)
+    if not current:
+        for content, room, type_, tags in STABLE_CHUNKS + FAMILY_CHUNKS + PRIVATE_CHUNKS:
+            await memory.add_chunk(content, room=room, type_=type_, source="day-one-brain", tags=tags)
+            count += 1
+        for key, value, room in LIVING_SEED:
+            await living.set(key, value, room=room)
+    elif current == "1":
+        count += await _migrate_v1_to_v2(memory)
+    # v2→v3 top-up (also part of any fresh load): the ChatGPT memory import.
+    for content, room, type_, tags in CHATGPT_CHUNKS + CHATGPT_PRIVATE_CHUNKS:
+        await memory.add_chunk(content, room=room, type_=type_, source="chatgpt-import", tags=tags)
         count += 1
-    for key, value, room in LIVING_SEED:
-        await living.set(key, value, room=room)
     await settings_store.set("seed_version", SEED_VERSION)
-    logger.info("Day-One Brain loaded: %d chunks, %d living facts", count, len(LIVING_SEED))
+    logger.info("Brain seed at v%s: %d chunks written/moved", SEED_VERSION, count)
     return count
