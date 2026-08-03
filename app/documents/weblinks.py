@@ -24,6 +24,7 @@ CONTEXT_CHARS = 12_000       # per page, in the brain's prompt
 _GOOGLE_DOC = re.compile(r"https?://docs\.google\.com/document/d/([\w-]+)")
 _GOOGLE_SHEET = re.compile(r"https?://docs\.google\.com/spreadsheets/d/([\w-]+)")
 _GOOGLE_DRIVE = re.compile(r"https?://drive\.google\.com/file/d/([\w-]+)")
+CHATGPT_SHARE = re.compile(r"https?://(?:chat\.openai\.com|chatgpt\.com)/share/[\w-]+")
 
 LOGIN_WALL_ERROR = (
     "the page needs a login — a Google Doc must be shared as "
@@ -76,6 +77,46 @@ def html_to_text(page: str) -> tuple[str, str]:
     return title, "\n".join(line for line in lines if line)
 
 
+def extract_chatgpt_share(page: str) -> str:
+    """The conversation out of a ChatGPT share page. The visible HTML is an
+    empty JS-app shell — the transcript hides inside streamed script data
+    (modern: self.__next_f.push chunks; legacy: a __NEXT_DATA__ JSON blob),
+    which is exactly what the normal HTML stripper throws away."""
+    import json as _json
+
+    stream = ""
+    # Modern RSC stream — decode each pushed JS string and concatenate, so a
+    # message split across two chunks knits back together.
+    for m in re.finditer(r'self\.__next_f\.push\(\[1,"((?:[^"\\]|\\.)*)"\]\)', page):
+        try:
+            stream += _json.loads(f'"{m.group(1)}"')
+        except Exception:
+            continue
+    legacy = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', page, re.DOTALL)
+    if legacy:
+        stream += legacy.group(1)
+    if not stream:
+        stream = page
+    roles = [
+        (m.start(), m.group(1))
+        for m in re.finditer(r'"author"\s*:\s*\{\s*"role"\s*:\s*"(\w+)"', stream)
+    ]
+    lines: list[str] = []
+    seen: set[str] = set()
+    for m in re.finditer(r'"parts"\s*:\s*\[\s*"((?:[^"\\]|\\.)*)"', stream):
+        try:
+            text = _json.loads(f'"{m.group(1)}"').strip()
+        except Exception:
+            continue
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        role = next((r for pos, r in reversed(roles) if pos < m.start()), "")
+        speaker = {"user": "PAUL", "assistant": "CHATGPT"}.get(role, role.upper() or "MESSAGE")
+        lines.append(f"{speaker}: {text}")
+    return "\n\n".join(lines)
+
+
 async def fetch_page(
     url: str, transport: httpx.AsyncBaseTransport | None = None
 ) -> dict[str, Any]:
@@ -88,7 +129,13 @@ async def fetch_page(
             transport=transport,
             follow_redirects=True,
             timeout=FETCH_TIMEOUT,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; JarvisBot/1.0)"},
+            # A real browser UA — chatgpt.com and friends turn away obvious bots.
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+                )
+            },
         ) as client:
             response = await client.get(fetch_url)
         # A private Google file bounces the export to the account login page.
@@ -101,6 +148,19 @@ async def fetch_page(
         if "pdf" in ctype or fetch_url.split("?")[0].lower().endswith(".pdf"):
             return {"ok": True, "url": url, "title": "", "text": "", "pdf": bytes(body)}
         decoded = body.decode(response.encoding or "utf-8", "replace")
+        if CHATGPT_SHARE.match(url):
+            convo = extract_chatgpt_share(decoded)
+            if not convo:
+                return {
+                    "ok": False, "url": url,
+                    "error": (
+                        "that ChatGPT share page came back without the conversation in it — "
+                        "open the chat, Select All, and paste the text instead"
+                    ),
+                }
+            title, _ = html_to_text(decoded)
+            return {"ok": True, "url": url, "title": title or "ChatGPT conversation",
+                    "text": convo, "pdf": None}
         if "html" in ctype or decoded.lstrip()[:1] == "<":
             title, text = html_to_text(decoded)
         elif ctype.startswith("text/") or "csv" in ctype or "json" in ctype or not ctype:

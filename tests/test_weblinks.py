@@ -72,6 +72,46 @@ class TestWeblinkUnits(unittest.TestCase):
         self.assertEqual(filename_for("https://x.com/reports/q3", "", True), "x-com-reports-q3.pdf")
 
 
+from app.documents.weblinks import extract_chatgpt_share
+
+# A ChatGPT share page as served: an empty app shell whose conversation lives
+# in streamed script chunks — one message even split across two pushes.
+CHATGPT_SHARE_HTML = (
+    '<html><head><title>ChatGPT - Paul memory brief</title></head><body>'
+    '<div id="root"></div>'
+    '<script>self.__next_f.push([1,"{\\"author\\":{\\"role\\":\\"user\\"},'
+    '\\"content\\":{\\"content_type\\":\\"text\\",\\"parts\\":'
+    '[\\"Write a briefing about me for another AI\\"]}}"])</script>'
+    '<script>self.__next_f.push([1,"{\\"author\\":{\\"role\\":\\"assistant\\"},'
+    '\\"content\\":{\\"content_type\\":\\"text\\",\\"parts\\":[\\"Paul is a CEO with ADHD who "])</script>'
+    '<script>self.__next_f.push([1,"works best in the evenings.\\"]}}"])</script>'
+    '</body></html>'
+)
+
+LEGACY_SHARE_HTML = (
+    '<html><head><title>ChatGPT - old share</title></head><body>'
+    '<script id="__NEXT_DATA__" type="application/json">{"props":{"mapping":{'
+    '"m1":{"message":{"author":{"role":"user"},"content":{"parts":["What do you know about me?"]}}},'
+    '"m2":{"message":{"author":{"role":"assistant"},"content":{"parts":["You prefer explanations over excuses."]}}}'
+    '}}}</script></body></html>'
+)
+
+
+class TestChatGPTShare(unittest.TestCase):
+    def test_modern_stream_extracts_and_stitches_split_messages(self):
+        convo = extract_chatgpt_share(CHATGPT_SHARE_HTML)
+        self.assertIn("PAUL: Write a briefing about me for another AI", convo)
+        self.assertIn("CHATGPT: Paul is a CEO with ADHD who works best in the evenings.", convo)
+
+    def test_legacy_next_data_extracts(self):
+        convo = extract_chatgpt_share(LEGACY_SHARE_HTML)
+        self.assertIn("PAUL: What do you know about me?", convo)
+        self.assertIn("CHATGPT: You prefer explanations over excuses.", convo)
+
+    def test_empty_shell_yields_nothing(self):
+        self.assertEqual(extract_chatgpt_share("<html><body><div id='root'></div></body></html>"), "")
+
+
 class TestFetchPage(unittest.IsolatedAsyncioTestCase):
     async def fetch(self, handler, url):
         return await fetch_page(url, transport=httpx.MockTransport(handler))
@@ -114,6 +154,25 @@ class TestFetchPage(unittest.IsolatedAsyncioTestCase):
         page = await fetch_page("http://192.168.1.1/admin")
         self.assertFalse(page["ok"])
         self.assertIn("off-limits", page["error"])
+
+    async def test_chatgpt_share_link_returns_the_conversation(self):
+        page = await self.fetch(
+            lambda r: httpx.Response(200, headers={"content-type": "text/html"}, text=CHATGPT_SHARE_HTML),
+            "https://chatgpt.com/share/6a70a4e1-dce4-83eb-86da-5dd9834cf4ca",
+        )
+        self.assertTrue(page["ok"])
+        self.assertIn("PAUL: Write a briefing", page["text"])
+        self.assertIn("works best in the evenings", page["text"])
+        self.assertEqual(page["title"], "ChatGPT - Paul memory brief")
+
+    async def test_empty_chatgpt_share_gets_the_paste_advice(self):
+        page = await self.fetch(
+            lambda r: httpx.Response(200, headers={"content-type": "text/html"},
+                                     text="<html><body><div id='root'></div></body></html>"),
+            "https://chatgpt.com/share/abc123",
+        )
+        self.assertFalse(page["ok"])
+        self.assertIn("Select All", page["error"])
 
     async def test_unreadable_type_is_refused_kindly(self):
         page = await self.fetch(

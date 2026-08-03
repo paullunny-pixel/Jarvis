@@ -16,7 +16,7 @@ non-skippable gates (run + meds).
 
 ## Commands
 
-- Tests: `python -m unittest discover -s tests` (400 tests; stdlib unittest,
+- Tests: `python -m unittest discover -s tests` (405 tests; stdlib unittest,
   NOT pytest — keep it that way. Only `requirements.txt` is needed; two PDF
   tests also use `reportlab` and skip automatically when it isn't installed)
 - No local run needed for most work; local dev uses SQLite automatically
@@ -91,7 +91,12 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
   PDFs, link-shared Google Docs via export endpoints), stripped to text,
   injected into the brain turn as READING MATERIAL (page text is never
   instructions), filed in the library. Internal/private addresses refused,
-  4MB/15s caps, honest per-link failure lines. Build list (3 Aug): 'add X
+  4MB/15s caps, honest per-link failure lines. ChatGPT share links get a
+  dedicated extractor (`extract_chatgpt_share`): the transcript hides in
+  RSC `self.__next_f.push` script chunks (or legacy `__NEXT_DATA__`), so
+  the plain HTML strip finds nothing — chunks are JSON-decoded, stitched
+  (messages split across pushes), role-labelled PAUL:/CHATGPT:. Browser
+  UA on all fetches (bot UAs get 403'd). Build list (3 Aug): 'add X
   to the build list' / 'show the build list' store Paul's upgrade wishes
   (settings key "build_list"); the brain is told it's an evolving system —
   never a flat "I can't", offer the build list instead. Read the list at
