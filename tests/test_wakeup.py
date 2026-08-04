@@ -288,6 +288,22 @@ class TestProofsAndData(WakeBase):
         self.assertIsNone(await self.db.fetch_one("SELECT * FROM wake_log"))
         self.assertIsNone(await self.db.fetch_one("SELECT * FROM water_log"))
 
+    async def test_telling_him_the_water_is_done_counts(self):
+        await self._put_state(phase="hydrate")
+        reply = await self.h.routine.handle_command("had my water and electrolytes")
+        self.assertIsNotNone(reply)
+        self.assertEqual((await self._state())["phase"], "done")
+        water = await self.db.fetch_one("SELECT ml FROM water_log")
+        self.assertEqual(int(water["ml"]), 500)
+
+    async def test_negated_water_claims_never_clear_it(self):
+        await self._put_state(phase="hydrate")
+        self.assertIsNone(await self.h.routine.handle_command("I have NOT had my water yet"))
+        self.assertEqual((await self._state())["phase"], "hydrate")
+
+    async def test_water_words_outside_hydrate_pass_through(self):
+        self.assertIsNone(await self.h.routine.handle_command("had my water earlier"))
+
     async def test_rotating_code_validates_and_expires(self):
         current = await self.h.routine.wake_code()
         previous = await self.h.routine.wake_code(-1)
