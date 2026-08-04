@@ -825,8 +825,9 @@ class HeartbeatJobs:
             logger.exception("Hourly Trello resync failed — cache continues")
 
     async def refresh_paul_brief(self) -> None:
-        """Nightly (Phase A1): rewrite the living Paul Brief from the day's
-        conversation, so tomorrow's Jarvis wakes up already knowing today."""
+        """Nightly (Phase A1 + A3): rewrite the living Paul Brief, then the
+        mind reflects — MIND NOTES for tomorrow (what mattered, what to watch,
+        how to open the morning) ride tomorrow's brain turns and brief."""
         if not await self._once("paulbrief", hours=20.0):
             return
         from app.memory.brief import compose_brief
@@ -835,6 +836,143 @@ class HeartbeatJobs:
             await compose_brief(self.claude, self.db, self.store)
         except Exception:
             logger.exception("Nightly Paul Brief refresh failed — previous brief stands")
+        import json as _json
+
+        from app.heartbeat.mind import MIND_NOTES_KEY, reflect
+
+        try:
+            today = await self._today()
+            situation = await self._mind_situation(datetime.now(await self._tz()))
+            notes = await reflect(self.claude, situation)
+            if notes:
+                await self.store.set(
+                    MIND_NOTES_KEY,
+                    _json.dumps({"for": (today + timedelta(days=1)).isoformat(), "notes": notes}),
+                )
+        except Exception:
+            logger.exception("Nightly reflection failed — tomorrow starts without notes")
+
+    # ------------------------------ Phase A3: the Continuous Mind ------------
+
+    async def _mind_situation(self, now: datetime) -> str:
+        """Everything the mind sees on a pass — same ground truth the router
+        gives conversation turns, composed for thinking."""
+        import json as _json
+
+        tz_name = await self.store.get("current_timezone", self.settings.timezone_default)
+        today = now.date()
+        parts = [f"TIME: {now.strftime('%A %d %B, %H:%M')} — Paul's local time ({tz_name})."]
+        rhythm = []
+        if await self.quiet_today():
+            rhythm.append("QUIET DAY is active — Paul silenced non-essential pings.")
+        floor = await self.wake_floor_hour(today)
+        if floor is not None:
+            rhythm.append(f"Declared wake hour today: {floor:02d}:00.")
+        gone = await self.db.fetch_one(
+            "SELECT id FROM sleep_log WHERE day = ?", (today.isoformat(),)
+        )
+        if gone:
+            rhythm.append("Paul has said goodnight — the day is closed.")
+        if self.gates is not None:
+            outstanding = await self.gates.outstanding(now)
+            rhythm.append(
+                "Owed today (machinery chases these, you don't): "
+                + (", ".join(g["label"] for g in outstanding) if outstanding
+                   else "nothing — settled or excused")
+            )
+        if rhythm:
+            parts.append("RHYTHM: " + " ".join(rhythm))
+        try:
+            snapshot = await self.streaks.snapshot(today)
+            water = await self.water_total(today)
+            moves = await self.movement_total(today)
+            parts.append(
+                f"BODY: water {water / 1000:.1f}L · {moves} movement breaks · "
+                + " · ".join(
+                    f"{k} {'done' if v.get('done_today') else 'not logged'}"
+                    for k, v in snapshot.items() if isinstance(v, dict)
+                )
+            )
+        except Exception:
+            logger.exception("Mind situation: streak read failed")
+        if self.daily12 is not None:
+            try:
+                parts.append("BOARD:\n" + await self.daily12.format_plan(today))
+            except Exception:
+                pass
+        if self.calendar is not None:
+            try:
+                events = await self.calendar.events_for(today, ZoneInfo(tz_name))
+                if events:
+                    parts.append(
+                        "CALENDAR TODAY: " + " · ".join(f"{e['time']} {e['title']}" for e in events)
+                    )
+            except Exception:
+                pass
+        try:
+            from app.heartbeat.mind import MIND_NOTES_KEY
+
+            stored = _json.loads(await self.store.get(MIND_NOTES_KEY, "") or "{}")
+            if stored.get("for") == today.isoformat() and stored.get("notes"):
+                parts.append("YOUR NOTES FROM LAST NIGHT:\n" + stored["notes"])
+        except Exception:
+            pass
+        brief = await self.store.get("paul_brief", "")
+        if brief:
+            parts.append("THE PAUL BRIEF (your living picture of him):\n" + brief[:4000])
+        rows = await self.log.recent(40)
+        if rows:
+            convo = "\n".join(
+                f"{'Paul' if r['direction'] == 'in' else 'Jarvis'}: {r['transcript'][:400]}"
+                for r in rows
+            )
+            parts.append("TODAY'S CONVERSATION (oldest first — never repeat any of it):\n" + convo[-8000:])
+        return "\n\n".join(parts)
+
+    async def mind_tick(self, now: datetime | None = None) -> None:
+        """The hourly thinking pass: the BRAIN looks at everything and decides
+        whether anything is worth saying. Usually: silence."""
+        from app.heartbeat.mind import MIND_ENABLED_KEY
+
+        if await self.store.get(MIND_ENABLED_KEY, "") == "off":
+            return
+        now = now or datetime.now(await self._tz())
+        today = now.date()
+        if not (7 <= now.hour <= 22):
+            return
+        floor = await self.wake_floor_hour(today)
+        if floor is not None and now.hour < floor:
+            return
+        gone = await self.db.fetch_one(
+            "SELECT id FROM sleep_log WHERE day = ?", (today.isoformat(),)
+        )
+        if gone:
+            return  # goodnight said — the mind lets him be
+        # Mid-conversation guard: he messaged minutes ago; the router has him.
+        rows = await self.log.recent(6)
+        for row in reversed(rows):
+            if row["direction"] == "in":
+                try:
+                    last_in = datetime.fromisoformat(row["ts"])
+                    if last_in.tzinfo is None:
+                        last_in = last_in.replace(tzinfo=timezone.utc)
+                    if datetime.now(timezone.utc) - last_in < timedelta(minutes=15):
+                        return
+                except Exception:
+                    pass
+                break
+        if not await self._once(f"mind:{today.isoformat()}:{now.hour}", hours=0.9):
+            return
+        from app.heartbeat.mind import think
+
+        decision = await think(self.claude, await self._mind_situation(now))
+        if decision is None:
+            return  # silence — the usual, and correct, outcome
+        logger.info("Mind speaks (%s): %s", decision["channel"], decision["reason"])
+        if decision["channel"] == "voice":
+            await self._send_voice(decision["message"])
+        else:
+            await self._send_text(decision["message"])
 
     # ------------------------------------------------------------ shared
 

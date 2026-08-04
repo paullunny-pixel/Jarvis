@@ -413,10 +413,22 @@ class JarvisRouter:
                     "anything else, every message until he goes."
                 )
         system_status += "\n\nRHYTHM STATE (switch truth beats memory):\n- " + "\n- ".join(rhythm_lines)
-        # The build list rides every turn so Jarvis knows what's already asked for.
+        # The Continuous Mind's nightly notes ride today's turns (Phase A3).
         try:
             import json as _json
 
+            from app.heartbeat.mind import MIND_NOTES_KEY
+
+            stored_notes = _json.loads(await self.store.get(MIND_NOTES_KEY, "") or "{}")
+            if stored_notes.get("for") == now_local.date().isoformat() and stored_notes.get("notes"):
+                system_status += (
+                    "\n\nYOUR NOTES FROM LAST NIGHT'S REFLECTION (you wrote these for "
+                    "today — act on them, don't recite them):\n" + stored_notes["notes"]
+                )
+        except Exception:
+            logger.exception("Mind notes injection failed — continuing without")
+        # The build list rides every turn so Jarvis knows what's already asked for.
+        try:
             wishes = _json.loads(await self.store.get("build_list", "[]"))
         except Exception:
             wishes = []

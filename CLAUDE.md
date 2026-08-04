@@ -16,7 +16,7 @@ chasing gates (run + meds — remind hourly, never block; Paul's call 3 Aug).
 
 ## Commands
 
-- Tests: `python -m unittest discover -s tests` (438 tests; stdlib unittest,
+- Tests: `python -m unittest discover -s tests` (450 tests; stdlib unittest,
   NOT pytest — keep it that way. Only `requirements.txt` is needed; two PDF
   tests also use `reportlab` and skip automatically when it isn't installed)
 - No local run needed for most work; local dev uses SQLite automatically
@@ -98,7 +98,19 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
   a rest day settles the run — and a relapse/recovery conversation in the
   PRIVATE room auto-declares the rest day (boolean only crosses the wall).
   The old gate-queue no longer fills; `_replay_gated_request` stays dormant
-  to drain any pre-change stash once
+  to drain any pre-change stash once. THE CONTINUOUS MIND (Phase A3, 4 Aug,
+  `mind.py`): hourly :50 (07-22 local) the BRAIN model reads the whole
+  situation (`_mind_situation`: time/tz, rhythm switches, gates, body,
+  board, calendar, last night's notes, Paul Brief, day's transcript) and
+  decides speak-or-silence (JSON; silence default; no tools on the pass —
+  speech only). Guards: mind_enabled!="off", wake floor, goodnight said,
+  Paul messaged <15 min ago, once/hour; sends ride the same funnel (quiet
+  day + identical-message dedupe = it can never nag the same sentence
+  twice). Nightly reflection rides the 21:55 brief refresh → MIND_NOTES_KEY
+  {"for": tomorrow, notes} injected into tomorrow's brain turns ('act on
+  them, don't recite') and available to the morning pass. Old clockwork
+  stays as the safety net; the mind is told what machinery already chases
+  and never duplicates it
 - `app/voice/` — live voice engine (ElevenLabs Conversational AI agent:
   Paul's Jarvis voice, persona-primed, barge-in; cockpit 'Talk' button via
   signed URL; webhook tools back into memory/Trello/mail/rhythm; Twilio
