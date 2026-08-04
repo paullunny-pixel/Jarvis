@@ -25,14 +25,26 @@ DEFAULT_GREETING = "Paul. Jarvis here. What do you need?"
 FAREWELL = "Speak soon, sir."
 BRAIN_STUMBLE = "I lost my thread there — give me that once more?"
 
-def error_twiml() -> str:
+PIPELINE_ERROR_LINE = (
+    "Something choked in my pipeline there, sir. Give me a minute and try "
+    "again — or message me on Telegram, I'm fine over there."
+)
+# Distinct by ear from the pipeline line: if Paul hears THIS, the request
+# reached us but failed Twilio's signature check — a config problem, not a
+# crash — and the Render logs will name the mismatch.
+SIGNATURE_ERROR_LINE = (
+    "That request didn't carry a valid Twilio signature, so I'm not taking "
+    "instructions from it. If that was really you calling, the logs will "
+    "say why, sir."
+)
+
+
+def error_twiml(line: str = PIPELINE_ERROR_LINE) -> str:
     """The last-resort TwiML: whatever broke, Jarvis owns it out loud instead
     of Twilio's stock 'an application error has occurred' (invariant 5)."""
     return (
         '<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Brian">'
-        "Something choked in my pipeline there, sir. Give me a minute and try "
-        "again — or message me on Telegram, I'm fine over there."
-        "</Say><Hangup/></Response>"
+        f"{escape(line)}</Say><Hangup/></Response>"
     )
 
 
