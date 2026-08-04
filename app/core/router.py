@@ -483,16 +483,23 @@ class JarvisRouter:
             persona_notes=await self.store.get(PERSONA_NOTES_KEY, ""),
             paul_brief=await self.store.get(BRIEF_KEY, ""),
         )
-        history = await self.log.as_claude_messages(self.settings.history_messages)
+        # Phone turns: less history to chew through, tighter reply budget, and
+        # Sonnet instead of Opus — each one is seconds off the silence.
+        history = await self.log.as_claude_messages(
+            16 if phone else self.settings.history_messages
+        )
         reply_budget = 350 if phone else 1024
+        turn_model = self.settings.phone_model if phone else None
         if tools:
             raw_reply = await self.claude.converse_with_tools(
                 system, history, tools,
                 lambda name, tool_input: self._dispatch_tool(name, tool_input, message),
-                max_tokens=reply_budget,
+                max_tokens=reply_budget, model=turn_model,
             )
         else:
-            raw_reply = await self.claude.converse(system, history, max_tokens=reply_budget)
+            raw_reply = await self.claude.converse(
+                system, history, max_tokens=reply_budget, model=turn_model
+            )
         if not raw_reply:
             raw_reply = "I lost my train of thought there — go again."
         return raw_reply

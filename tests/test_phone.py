@@ -544,6 +544,14 @@ class TestPhoneTurn(unittest.IsolatedAsyncioTestCase):
         brain_calls = [r for r in self.h.claude_requests if r.get("max_tokens") == 350]
         self.assertTrue(brain_calls, "phone turn should cap the reply budget at 350")
         self.assertIn("LIVE PHONE CALL", brain_calls[0]["system"])
+        # Speed trades: Sonnet on the line (Opus stays the Telegram brain).
+        self.assertEqual(brain_calls[0]["model"], "claude-sonnet-5")
+
+    async def test_telegram_turns_keep_the_full_brain(self):
+        await self.h.router.handle_update(text_update("how are we looking today then", OWNER))
+        models = {r.get("model") for r in self.h.claude_requests}
+        self.assertIn("claude-opus-5", models)
+        self.assertNotIn("claude-sonnet-5", models)
 
     async def test_private_topics_never_reach_the_general_log(self):
         from app.memory.crypto import PrivateBox
