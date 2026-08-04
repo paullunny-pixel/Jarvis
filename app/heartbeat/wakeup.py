@@ -49,6 +49,11 @@ YES = re.compile(
 # Dyslexia rule: 'overide', 'over ride', 'overrride' all count — a safety
 # word that demands perfect spelling isn't a safety word (2:19am, 5 Aug).
 OVERRIDE = re.compile(r"\bover\s*r*i+d+e+\b", re.IGNORECASE)
+# 'Had my water' counts (Paul, 02:30, 5 Aug) — his word is enough at 7am; the
+# negation guard keeps 'have NOT had my water' from ever clearing it.
+WATER_WORD = re.compile(r"\b(water|electrolytes?|hydrated?|hydration)\b", re.IGNORECASE)
+WATER_DONE = re.compile(r"\b(had|done|drank|drunk|finished|down(ed)?|gone|taken|sorted)\b", re.IGNORECASE)
+WATER_NOT = re.compile(r"\b(not|no|haven'?t|havent|didn'?t|didnt|won'?t|wont|later)\b", re.IGNORECASE)
 
 # ---------------------------------------------------------------- the copy
 # Short, punchy, his 'why' — Eva, Kiefer, the dream life, best shape of his
@@ -77,12 +82,15 @@ PROVE_LINES = [
 ]
 SIGNOFF_LINE = "I'll call back in a couple of minutes. Be up when I do."
 HYDRATE_LINES = [
-    "Good man. 500ml water with electrolytes, straight down. Send me a photo "
-    "— glass, sachet or bottle, full or empty.",
-    "Verified — you're up. Now water: 500ml with electrolytes. Photo when "
-    "it's done, glass or sachet or bottle.",
+    "Good man. 500ml water with electrolytes, straight down. Photo it or "
+    "just tell me it's done.",
+    "Verified — you're up. Now water: 500ml with electrolytes. Photo or a "
+    "'water done' when it's down.",
 ]
-HYDRATE_NUDGE = "Water's still owed, sir — 500ml with electrolytes. Photo to me and we're done."
+HYDRATE_NUDGE = (
+    "Water's still owed, sir — 500ml with electrolytes. Photo or just tell me "
+    "it's down, and we're done."
+)
 WELLDONE_LINES = [
     "You should be proud of yourself, Paul. Morning's yours — go take the day.",
     "That's how a day starts, sir. Proud of you. Now go win it.",
@@ -158,6 +166,20 @@ class WakeRoutine:
             except Exception:
                 logger.exception("Test alarm failed to start")
                 return "The test alarm hit an error starting — logs have the why. Say it again and I'll retry."
+        # Hydration by his word: during the water phase, 'had my water' /
+        # 'water's done' completes it — no photo needed (negation-guarded).
+        if (
+            WATER_WORD.search(transcript)
+            and WATER_DONE.search(transcript)
+            and not WATER_NOT.search(transcript)
+            and len(transcript) <= 80
+            and await self.active_phase() == "hydrate"
+        ):
+            try:
+                return await self.proof_hydration()
+            except Exception:
+                logger.exception("Water-word completion failed")
+                return "Heard you on the water — but recording it hit an error. Say it once more."
         if len(transcript) > 60:
             return None
         hit = SET_WAKE.search(transcript)
