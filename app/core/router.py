@@ -348,10 +348,14 @@ class JarvisRouter:
         raw_reply = await self._brain_reply(transcript, message)
         await self._deliver_reply(message, transcript, raw_reply)
 
-    async def _brain_reply(self, transcript: str, message: IncomingMessage) -> str:
+    async def _brain_reply(
+        self, transcript: str, message: IncomingMessage, phone: bool = False
+    ) -> str:
         """The full brain turn — recalled memory, live board truth, rhythm
         state, tools. Shared by Telegram (_handle_message) and the phone
-        channel (phone_turn); only the delivery differs."""
+        channel (phone_turn); only the delivery differs. On the phone,
+        brevity IS latency: every extra sentence is Opus generating longer,
+        TTS synthesizing longer, and Paul holding a silent line."""
         timezone = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
         memory_context = await self._recall(transcript)
         system_status = self._integration_status()
@@ -461,6 +465,15 @@ class JarvisRouter:
                 "already done — don't redo it. If Paul starts a message 'Jarvis add to "
                 "Trello', that lane never reaches you at all."
             )
+        if phone:
+            system_status += (
+                "\n\nYOU ARE ON A LIVE PHONE CALL with Paul RIGHT NOW (not Telegram). "
+                "Speak like a person on a call: one to three short sentences, then "
+                "stop. No lists, no headers, nothing that reads like a document. If "
+                "something genuinely needs the long version, give the one-line "
+                "answer and offer the detail on Telegram. Every second you spend "
+                "composing is Paul holding a silent line."
+            )
         from app.memory.brief import BRIEF_KEY, PERSONA_NOTES_KEY
 
         system = build_system_prompt(
@@ -471,13 +484,15 @@ class JarvisRouter:
             paul_brief=await self.store.get(BRIEF_KEY, ""),
         )
         history = await self.log.as_claude_messages(self.settings.history_messages)
+        reply_budget = 350 if phone else 1024
         if tools:
             raw_reply = await self.claude.converse_with_tools(
                 system, history, tools,
                 lambda name, tool_input: self._dispatch_tool(name, tool_input, message),
+                max_tokens=reply_budget,
             )
         else:
-            raw_reply = await self.claude.converse(system, history)
+            raw_reply = await self.claude.converse(system, history, max_tokens=reply_budget)
         if not raw_reply:
             raw_reply = "I lost my train of thought there — go again."
         return raw_reply
@@ -539,7 +554,7 @@ class JarvisRouter:
         message = IncomingMessage(
             chat_id=chat_id, message_id=0, from_name="Paul", text=transcript
         )
-        reply = strip_for_speech(await self._brain_reply(transcript, message)).strip()
+        reply = strip_for_speech(await self._brain_reply(transcript, message, phone=True)).strip()
         reply = reply or "I lost my train of thought there — go again."
         await self.log.log("out", reply, chat_id=chat_id, kind="voice", channel="phone")
         # The memory writer rides behind the reply — never blocks the call.

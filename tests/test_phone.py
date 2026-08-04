@@ -109,9 +109,11 @@ class FakeTTS:
     def __init__(self, fail=False):
         self.fail = fail
         self.texts = []
+        self.kwargs = {}
 
-    async def synthesize(self, text: str) -> bytes:
+    async def synthesize(self, text: str, **kwargs) -> bytes:
         self.texts.append(text)
+        self.kwargs = kwargs
         if self.fail:
             raise RuntimeError("tts down")
         return b"MP3BYTES"
@@ -226,6 +228,13 @@ class TestPhoneChannel(unittest.IsolatedAsyncioTestCase):
         channel = make_channel()
         twiml = await channel.handle_turn({"SpeechResult": ""})
         self.assertIn("<Gather", twiml)
+
+    async def test_phone_tts_rides_the_fast_model(self):
+        tts = FakeTTS()
+        channel = make_channel(tts=tts)
+        await channel.handle_answer({})
+        self.assertEqual(tts.kwargs.get("model"), "eleven_flash_v2_5")
+        self.assertEqual(tts.kwargs.get("output_format"), "mp3_22050_32")
 
     async def test_audio_cache_serves_then_expires(self):
         channel = make_channel()
@@ -413,12 +422,14 @@ class TestWakeChannelPreference(unittest.IsolatedAsyncioTestCase):
 class PhoneHarness:
     def __init__(self, db):
         self.telegram_calls = []
+        self.claude_requests = []
 
         def telegram_handler(request: httpx.Request) -> httpx.Response:
             self.telegram_calls.append((request.url.path.split("/")[-1], request.content))
             return httpx.Response(200, json={"ok": True, "result": {}})
 
         def claude_handler(request: httpx.Request) -> httpx.Response:
+            self.claude_requests.append(json.loads(request.content))
             return httpx.Response(200, json={"content": [{"type": "text", "text": "Noted."}]})
 
         settings = Settings(telegram_bot_token="TOK", telegram_owner_chat_id=OWNER, _env_file=None)
@@ -527,6 +538,12 @@ class TestPhoneTurn(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.h.router.phone_turn("  "), "Say again?")
         rows = await self.db.fetch_all("SELECT id FROM messages")
         self.assertEqual(rows, [])
+
+    async def test_phone_turns_get_the_brevity_budget(self):
+        await self.h.router.phone_turn("how are we looking")
+        brain_calls = [r for r in self.h.claude_requests if r.get("max_tokens") == 350]
+        self.assertTrue(brain_calls, "phone turn should cap the reply budget at 350")
+        self.assertIn("LIVE PHONE CALL", brain_calls[0]["system"])
 
     async def test_private_topics_never_reach_the_general_log(self):
         from app.memory.crypto import PrivateBox
