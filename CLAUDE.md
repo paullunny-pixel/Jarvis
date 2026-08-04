@@ -88,8 +88,9 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
   ONLY after Paul confirms a read-back draft; recipient-less drafts are
   held, and a stale draft (45 min) needs one fresh read-back confirm
 - `app/heartbeat/` — scheduler jobs, streaks, gates, ICS calendar, SMTP email,
-  day rhythm: wake sequence (OFF until Paul arms it; channel seam for Twilio
-  in `wake_channels.py`), hourly move+water, med reminders, nudge dedupe.
+  day rhythm: wake sequence (OFF until Paul arms it; escalates to a real
+  Twilio phone call via `wake_channels.py` when the Twilio keys are set),
+  hourly move+water, med reminders, nudge dedupe.
   Quiet day (3 Aug): 'cancel my notifications today' → QUIET_KEY suppresses
   every non-essential send at the `_send_text`/`_send_voice` funnel for the
   local day (meds fire regardless, `essential=True`); 'notifications back
@@ -123,7 +124,14 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
   stranger's speech can never trigger actions; third 'Support' agent —
   Paul's private support space (standalone trauma-informed persona, honest
   not-a-therapist boundary, Samaritans 116 123 crisis rule, recall only,
-  tunable via 'tune the support persona: …'))
+  tunable via 'tune the support persona: …')); `phone.py` (4 Aug) — the
+  custom Twilio phone channel (NOT ElevenLabs Agents): 'call me' on Telegram
+  rings Paul, calling the Twilio number reaches Jarvis, wake-ups escalate to
+  a real call; turn-based — Twilio `<Gather>` speech in → `router.phone_turn`
+  (same brain/memory/tools/history, private wall enforced) → ElevenLabs MP3
+  out (Twilio `<Say>` fallback); inbound webhook self-heals on startup;
+  needs TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/TWILIO_FROM_NUMBER/
+  PAUL_PHONE_NUMBER in Render
 - `app/documents/` — library (upload → extract → chunk → embed → recall);
   `weblinks.py` (3 Aug): Paul sends a URL → page fetched live (articles,
   PDFs, link-shared Google Docs via export endpoints), stripped to text,

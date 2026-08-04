@@ -104,8 +104,8 @@ class Settings(BaseSettings):
 
     # --- Day rhythm (Master Update §§4-6) ---
     water_target_ml: int = 2500
-    # Twilio voice-call wake channel — placeholders only, the seam exists but
-    # the channel is deliberately NOT built yet (Master Update §4).
+    # The custom Twilio voice channel (built 4 Aug): 'call me', inbound calls
+    # and the wake-up escalation all ride these + paul_phone_number.
     twilio_account_sid: str = ""
     twilio_auth_token: str = ""
     twilio_from_number: str = ""
@@ -125,6 +125,13 @@ class Settings(BaseSettings):
         import hashlib
 
         return hashlib.sha256(f"jarvis-cockpit:{self.telegram_bot_token}".encode()).hexdigest()[:24]
+
+    @property
+    def effective_phone_secret(self) -> str:
+        """Unguessable path segment for the Twilio voice + audio endpoints."""
+        import hashlib
+
+        return hashlib.sha256(f"jarvis-phone:{self.telegram_bot_token}".encode()).hexdigest()[:32]
 
     @property
     def effective_voice_tool_secret(self) -> str:

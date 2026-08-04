@@ -27,7 +27,11 @@ from app.db.base import Database
 from app.heartbeat.calendar_ics import IcsCalendar, travel_or_event_flags
 from app.heartbeat.emailer import Emailer
 from app.heartbeat.streaks import STREAK_LABELS, Streaks
-from app.heartbeat.wake_channels import PhoneCallWakeChannel, TelegramWakeChannel
+from app.heartbeat.wake_channels import (
+    PhoneCallWakeChannel,
+    TelegramWakeChannel,
+    TwilioCallWakeChannel,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +84,7 @@ class HeartbeatJobs:
         gates=None,           # GateKeeper — the non-skippables
         mail=None,            # MailService — inbox counts in the brief (Phase 2)
         voice_engine=None,    # VoiceEngine — live calls (Build Slice: Voice Access)
+        phone_channel=None,   # PhoneChannel — the custom Twilio pipeline (4 Aug)
     ) -> None:
         self.settings = settings
         self.db = db
@@ -99,9 +104,13 @@ class HeartbeatJobs:
         self.wake_channel = TelegramWakeChannel(
             telegram, elevenlabs, self._owner_chat, self.log
         )
-        # Phone-call escalation joins in when the number is wired up.
+        # Phone-call escalation joins in when a number is wired up. The custom
+        # Twilio pipeline is the live one; the ElevenLabs-Agents seam stays as
+        # the alternative when only that route is configured.
         self.phone_wake = None
-        if (
+        if phone_channel is not None and phone_channel.configured:
+            self.phone_wake = TwilioCallWakeChannel(phone_channel)
+        elif (
             voice_engine is not None
             and settings.elevenlabs_phone_number_id
             and settings.paul_phone_number
