@@ -115,7 +115,8 @@ class Settings(BaseSettings):
     twilio_from_number: str = ""
 
     # --- Wake & Hydrate v2 (Paul's brief, 5 Aug) — all tunable via env ---
-    wake_response_wait: int = 12          # seconds the call waits for his reply
+    wake_response_wait: int = 5           # listen window before Jarvis leads (he's asleep)
+    max_call_seconds: int = 75            # one call's motivation run, then re-call
     wake_callback_interval_min: int = 2   # minutes between callbacks until proof
     test_callback_interval_sec: int = 30  # 'test alarm' iterates fast
     hydration_ml: int = 500
