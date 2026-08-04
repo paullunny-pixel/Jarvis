@@ -21,6 +21,7 @@ from app.clients.anthropic_client import ClaudeClient
 from app.clients.deepgram_client import DeepgramClient
 from app.clients.elevenlabs_client import ElevenLabsClient
 from app.clients.telegram_client import TelegramClient
+from app.clients.twilio_client import TwilioClient, valid_signature
 from app.cockpit.page import render_page
 from app.cockpit.service import CockpitService
 from app.config import get_settings
@@ -45,6 +46,7 @@ from app.memory.seed import load_day_one_brain
 from app.memory.store import LivingFacts, MemoryStore
 from app.private.service import PrivateTrack
 from app.voice.engine import VoiceEngine
+from app.voice.phone import PhoneChannel
 from app.voice.tools import VoiceTools
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -142,6 +144,25 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
             tool_secret=settings.effective_voice_tool_secret,
         )
 
+    # The Twilio phone channel (4 Aug): a custom pipeline, not ElevenLabs
+    # Agents — 'call me', inbound calls to the Twilio number, and the wake-up
+    # escalation, all in Jarvis's own voice, all through the same brain.
+    phone_channel = None
+    if settings.twilio_account_sid and settings.twilio_auth_token:
+        phone_channel = PhoneChannel(
+            TwilioClient(settings.twilio_account_sid, settings.twilio_auth_token),
+            elevenlabs,
+            from_number=settings.twilio_from_number,
+            paul_number=settings.paul_phone_number,
+            public_url=settings.public_url,
+            secret=settings.effective_phone_secret,
+        )
+        if not phone_channel.configured:
+            logger.warning(
+                "Twilio keys present but TWILIO_FROM_NUMBER / PAUL_PHONE_NUMBER / "
+                "PUBLIC_URL incomplete — the phone channel stays dormant"
+            )
+
     # The heartbeat (Milestone 4).
     jobs = HeartbeatJobs(
         settings=settings,
@@ -157,6 +178,7 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
         gates=gates,
         mail=mail,
         voice_engine=voice_engine,
+        phone_channel=phone_channel,
     )
     heartbeat = Heartbeat(jobs)
 
@@ -178,6 +200,9 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
         elevenlabs=elevenlabs,
     )
     router_obj.voice_engine = voice_engine
+    router_obj.phone_channel = phone_channel
+    if phone_channel is not None:
+        phone_channel.brain = router_obj.phone_turn
     router_obj.voice_tools = VoiceTools(
         db, memory=memory, living=living, daily12=daily12, mail=mail, jobs=jobs,
         timezone_default=settings.timezone_default,
@@ -232,6 +257,25 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("Could not register Telegram webhook (will keep serving)")
 
+    # Point the Twilio number's inbound webhook at us (idempotent, self-heals
+    # every deploy) and surface the trial-account limitation honestly.
+    phone = getattr(router, "phone_channel", None)
+    if phone is not None and phone.configured:
+        try:
+            problem = await phone.twilio.configure_inbound(phone.from_number, phone.answer_url())
+            if problem:
+                logger.warning("Twilio inbound webhook NOT set: %s", problem)
+            else:
+                logger.info("Twilio inbound webhook registered — calling the number reaches Jarvis")
+            account = await phone.twilio.account_summary()
+            if account and account.get("type") == "Trial":
+                logger.warning(
+                    "Twilio account is on TRIAL — it can only ring verified numbers; "
+                    "upgrade it (or verify Paul's number) before relying on 'call me'"
+                )
+        except Exception:
+            logger.exception("Twilio phone setup failed (bot still serves)")
+
     # Start the heartbeat — the day runs itself from here.
     if settings.heartbeat_enabled and settings.telegram_bot_token:
         try:
@@ -246,6 +290,8 @@ async def lifespan(app: FastAPI):
     closables = [router.telegram, router.claude, router.deepgram, router.elevenlabs]
     if getattr(router, "voice_engine", None) is not None:
         closables.append(router.voice_engine)
+    if getattr(router, "phone_channel", None) is not None:
+        closables.append(router.phone_channel.twilio)
     for client in closables:
         try:
             await client.close()
@@ -432,6 +478,70 @@ async def voice_tool(secret: str, tool_name: str, request: Request) -> dict:
     if not isinstance(args, dict):
         args = {}
     return {"result": await tools.dispatch(tool_name, args)}
+
+
+def _phone_gate(router: "JarvisRouter", secret: str):
+    """The phone endpoints exist only when the channel does, behind an
+    unguessable path segment — everything else 404s."""
+    phone = getattr(router, "phone_channel", None)
+    if phone is None or not hmac.compare_digest(secret, router.settings.effective_phone_secret):
+        raise HTTPException(status_code=404)
+    return phone
+
+
+def _twilio_signed(router: "JarvisRouter", request: Request, params: dict) -> bool:
+    """Verify X-Twilio-Signature against the public URL Twilio actually hit.
+    Without PUBLIC_URL (local dev) there's nothing to sign against — the
+    secret path still guards the door."""
+    settings = router.settings
+    if not settings.public_url:
+        return True
+    url = settings.public_url.rstrip("/") + request.url.path
+    if request.url.query:
+        url += "?" + request.url.query
+    return valid_signature(
+        settings.twilio_auth_token, url, params, request.headers.get("X-Twilio-Signature", "")
+    )
+
+
+@app.post("/twilio/voice/{secret}/answer")
+async def twilio_answer(secret: str, request: Request):
+    """First TwiML of every call — outbound greetings and inbound answers."""
+    from fastapi.responses import Response
+
+    router: JarvisRouter = request.app.state.router
+    phone = _phone_gate(router, secret)
+    params = {k: str(v) for k, v in (await request.form()).items()}
+    if not _twilio_signed(router, request, params):
+        raise HTTPException(status_code=403, detail="nope")
+    params["g"] = request.query_params.get("g", "")
+    return Response(content=await phone.handle_answer(params), media_type="text/xml")
+
+
+@app.post("/twilio/voice/{secret}/turn")
+async def twilio_turn(secret: str, request: Request):
+    """One conversational turn: Paul's speech in, Jarvis's reply TwiML out."""
+    from fastapi.responses import Response
+
+    router: JarvisRouter = request.app.state.router
+    phone = _phone_gate(router, secret)
+    params = {k: str(v) for k, v in (await request.form()).items()}
+    if not _twilio_signed(router, request, params):
+        raise HTTPException(status_code=403, detail="nope")
+    return Response(content=await phone.handle_turn(params), media_type="text/xml")
+
+
+@app.get("/twilio/audio/{secret}/{audio_id}.mp3")
+async def twilio_audio(secret: str, audio_id: str, request: Request):
+    """Short-lived reply audio (Jarvis's ElevenLabs voice) for <Play>."""
+    from fastapi.responses import Response
+
+    router: JarvisRouter = request.app.state.router
+    phone = _phone_gate(router, secret)
+    data = phone.get_audio(audio_id)
+    if data is None:
+        raise HTTPException(status_code=404)
+    return Response(content=data, media_type="audio/mpeg")
 
 
 async def merge_water_total(db, day_iso: str, water_ml: int) -> bool:

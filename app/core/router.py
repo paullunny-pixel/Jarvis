@@ -78,6 +78,7 @@ class JarvisRouter:
         self.streaks = Streaks(db)
         self._sprint_tasks: set = set()  # strong refs to running buzzer timers
         self.web_transport = None        # httpx transport seam for link-fetch tests
+        self.phone_channel = None        # PhoneChannel — Twilio calls (main.py wires it)
 
     # --- Authorisation: Jarvis talks to Paul and no one else ---
 
@@ -344,6 +345,13 @@ class JarvisRouter:
                 return
 
         # 3. Think (with the second brain's recalled knowledge, Milestone 2).
+        raw_reply = await self._brain_reply(transcript, message)
+        await self._deliver_reply(message, transcript, raw_reply)
+
+    async def _brain_reply(self, transcript: str, message: IncomingMessage) -> str:
+        """The full brain turn — recalled memory, live board truth, rhythm
+        state, tools. Shared by Telegram (_handle_message) and the phone
+        channel (phone_turn); only the delivery differs."""
         timezone = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
         memory_context = await self._recall(transcript)
         system_status = self._integration_status()
@@ -472,7 +480,11 @@ class JarvisRouter:
             raw_reply = await self.claude.converse(system, history)
         if not raw_reply:
             raw_reply = "I lost my train of thought there — go again."
+        return raw_reply
 
+    async def _deliver_reply(
+        self, message: IncomingMessage, transcript: str, raw_reply: str
+    ) -> None:
         # 4. Decide voice vs text, log outbound, deliver.
         channel, reply_text = decide_reply(raw_reply, incoming_was_voice=message.is_voice)
         await self.log.log(
@@ -497,6 +509,51 @@ class JarvisRouter:
                 self.claude, self.memory, self.living, transcript,
                 source="voice" if message.is_voice else "text",
             )
+
+    # --- The phone channel (Twilio, 4 Aug) — another mouth on the same mind ---
+
+    async def phone_turn(self, transcript: str) -> str:
+        """One spoken turn on a phone call: the same brain, memory, tools and
+        conversation history as Telegram. Returns the reply text; the phone
+        channel voices it."""
+        transcript = (transcript or "").strip()
+        if not transcript:
+            return "Say again?"
+        stored = await self.store.get(OWNER_KEY)
+        chat_id = self.settings.telegram_owner_chat_id or (int(stored) if stored else 0)
+        # THE PRIVATE WALL holds on the phone too: private topics never enter
+        # the general log or the business brain — steer to the private room.
+        if self.private_track is not None and (
+            self.private_track.is_sos(transcript) or self.private_track.is_private_topic(transcript)
+        ):
+            await self.log.log(
+                "in", "[private exchange]", chat_id=chat_id, kind="voice",
+                channel="phone", meta={"private": True},
+            )
+            return (
+                "That's ours, not the board's — and a phone line isn't our private "
+                "room. Message me on Telegram the moment we hang up and we'll talk "
+                "properly. I'm right there."
+            )
+        await self.log.log("in", transcript, chat_id=chat_id, kind="voice", channel="phone")
+        message = IncomingMessage(
+            chat_id=chat_id, message_id=0, from_name="Paul", text=transcript
+        )
+        reply = strip_for_speech(await self._brain_reply(transcript, message)).strip()
+        reply = reply or "I lost my train of thought there — go again."
+        await self.log.log("out", reply, chat_id=chat_id, kind="voice", channel="phone")
+        # The memory writer rides behind the reply — never blocks the call.
+        if self.memory is not None and self.living is not None:
+            import asyncio as _asyncio
+
+            task = _asyncio.create_task(
+                extract_and_file(
+                    self.claude, self.memory, self.living, transcript, source="phone"
+                )
+            )
+            self._sprint_tasks.add(task)  # strong ref until done
+            task.add_done_callback(self._sprint_tasks.discard)
+        return reply
 
     # --- Milestone 2 helpers ---
 
@@ -953,6 +1010,14 @@ class JarvisRouter:
                 if getattr(self, "voice_engine", None) is not None
                 else "- Live voice: not available (ElevenLabs key required)."
             ),
+            (
+                "- Phone calls (Twilio): CONNECTED — 'call me' rings Paul's actual "
+                "phone in your voice; Paul calling the Twilio number reaches you; the "
+                "wake-up sequence can escalate to a real call. Turn-based on the line: "
+                "he speaks, you answer."
+                if (self.phone_channel is not None and self.phone_channel.configured)
+                else "- Phone calls: not connected yet (Twilio keys pending in Render)."
+            ),
             "- Voice (ElevenLabs), hearing (Deepgram), vision, the heartbeat, gates and the "
             "private track: all active.",
             "- Web links: CONNECTED — when Paul sends a URL, the page (articles, PDFs, "
@@ -1040,6 +1105,22 @@ class JarvisRouter:
             "✅ Apple Health: webhook ready" if s.apple_health_webhook_secret
             else "▫️ Apple Health: not configured"
         )
+        phone = self.phone_channel
+        if phone is not None and phone.configured:
+            try:
+                account = await phone.twilio.account_summary()
+            except Exception:
+                account = None
+            if account is None:
+                lines.append("⚠️ Phone line (Twilio): keys set but the account didn't answer")
+            else:
+                trial = (
+                    " — TRIAL account, it can only ring verified numbers"
+                    if account.get("type") == "Trial" else ""
+                )
+                lines.append(f"✅ Phone line (Twilio): {phone.from_number}, 'call me' rings you{trial}")
+        else:
+            lines.append("▫️ Phone line (Twilio): not connected (keys not set)")
         since_24h = (datetime.now(ZoneInfo("UTC")) - timedelta(hours=24)).isoformat(timespec="seconds")
         recent_tg = await self.db.fetch_one(
             "SELECT COUNT(*) AS n, COUNT(DISTINCT chat_id) AS chats FROM telegram_ingest"
@@ -1072,6 +1153,34 @@ class JarvisRouter:
         import re
 
         lowered = transcript.lower()
+
+        # 'Call me' → a real phone call on the Twilio channel (4 Aug). Short
+        # messages only, so 'call me when the invoices land' stays conversation.
+        deferral = r"(?!\s*(?:when|after|once|if|at|in|on|about|later|tomorrow|tonight|next)\b)"
+        call_hit = re.search(
+            r"^\s*(?:jarvis[,!.\s]+)?(?:please\s+|can\s+you\s+|could\s+you\s+)?"
+            rf"(?:call|ring|phone)\s+me\b{deferral}"
+            rf"|\bgive\s+me\s+a\s+(?:call|ring|bell)\b{deferral}",
+            lowered,
+        )
+        if call_hit and len(transcript) <= 60:
+            phone = self.phone_channel
+            if phone is None or not phone.configured:
+                reply = (
+                    "No phone line wired up yet, sir — the Twilio keys need to land in "
+                    "Render first. I'm fully here on Telegram meanwhile."
+                )
+            elif await phone.call_paul():
+                reply = "Ringing you now — pick up."
+            else:
+                reply = (
+                    "The call didn't go through — Twilio refused it. If the account is "
+                    "still on trial it can only ring verified numbers; check that, and "
+                    "I'm right here regardless."
+                )
+            await self.log.log("out", reply, chat_id=message.chat_id, meta={"phone_call": True})
+            await self.telegram.send_text(message.chat_id, reply)
+            return True
 
         # THE UNIVERSAL OVERRIDE (Master Update §1). Unconditional failsafe:
         # nothing may suppress it. One confirm, reason logged, gates released

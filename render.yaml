@@ -52,6 +52,14 @@ services:
         sync: false
       - key: EMAIL3_APP_PASSWORD
         sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM_NUMBER
+        sync: false          # the Twilio number Jarvis calls from (E.164, e.g. +1857…)
+      - key: PAUL_PHONE_NUMBER
+        sync: false          # Paul's own mobile (E.164) — wake calls + 'call me'
       - key: APPLE_HEALTH_WEBHOOK_SECRET
         generateValue: true
       - key: PRIVATE_ROOM_KEY

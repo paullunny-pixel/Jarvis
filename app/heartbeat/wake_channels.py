@@ -23,6 +23,22 @@ class WakeChannel(Protocol):
     async def escalate(self, step: int, text: str) -> None: ...
 
 
+class TwilioCallWakeChannel:
+    """The custom Twilio pipeline (4 Aug): Jarvis rings Paul's actual phone
+    and holds a turn-based conversation in his own voice. Preferred over the
+    ElevenLabs-Agents seam below whenever the Twilio keys are configured."""
+
+    name = "phone"
+
+    def __init__(self, phone) -> None:
+        self._phone = phone   # app.voice.phone.PhoneChannel
+
+    async def escalate(self, step: int, text: str) -> None:
+        called = await self._phone.call_paul(text)
+        if not called:
+            logger.warning("Twilio wake call failed at step %d — Telegram carries on", step)
+
+
 class PhoneCallWakeChannel:
     """The Twilio escalation, live: Jarvis literally rings Paul and holds a
     realtime conversation until he's demonstrably conscious. The mirror
