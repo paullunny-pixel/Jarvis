@@ -233,22 +233,42 @@ class WakeRoutine:
 
     # ------------------------------------------------------------ the call
 
+    async def _pitch_lines(self) -> list[str]:
+        """The built-in pitch plus the refreshable bank ('wake2_pitch_bank') —
+        the brain expands the bank OFFLINE (after a completed morning), never
+        during a call."""
+        try:
+            extra = json.loads(await self.store.get("wake2_pitch_bank", "") or "[]")
+            extra = [str(x).strip() for x in extra if str(x).strip()][:12]
+        except Exception:
+            extra = []
+        return list(PITCH_LINES) + extra
+
     async def _place_call(self, state: dict) -> None:
         now = await self._now()
         phone = self.jobs.phone_channel
+        pitches = await self._pitch_lines()
         if state["calls"] == 0:
             line = OPEN_LINES[now.minute % len(OPEN_LINES)].format(time=now.strftime("%H:%M"))
         else:
-            line = (
-                PITCH_LINES[state["pitch_i"] % len(PITCH_LINES)] + " " + ASK_LINE
-            )
+            line = pitches[state["pitch_i"] % len(pitches)] + " " + ASK_LINE
             state["pitch_i"] += 1
         state["calls"] += 1
+        state["silences"] = 0
+        state["call_started"] = now.isoformat(timespec="seconds")
         state["last_action"] = now.isoformat(timespec="seconds")
         await self._save(state)
         if phone is not None and phone.configured:
             phone.script_handler = self.call_turn
             phone.listen_timeout = self.settings.wake_response_wait
+            # Every standard line pre-synthesized: the call never waits on TTS.
+            phone.prewarm(
+                [OPEN_LINES[m % len(OPEN_LINES)].format(time=now.strftime("%H:%M")) for m in range(len(OPEN_LINES))]
+                + pitches
+                + [p + " " + ASK_LINE for p in pitches]
+                + list(PROVE_LINES)
+                + [SIGNOFF_LINE, HYDRATE_NUDGE, OVERRIDE_ACK]
+            )
             if not await phone.call_paul(line):
                 await self._tell("Tried to ring you and Twilio refused — " + line)
         else:
@@ -274,26 +294,32 @@ class WakeRoutine:
             return "[[bye]]" + OVERRIDE_ACK
         if state["phase"] == "hydrate":
             return "[[bye]]" + HYDRATE_NUDGE
-        if not speech:
-            state["silences"] += 1
-            await self._save(state)
-            if state["silences"] >= 3:
-                return "[[bye]]" + SIGNOFF_LINE
-            line = PITCH_LINES[state["pitch_i"] % len(PITCH_LINES)]
-            state["pitch_i"] += 1
-            await self._save(state)
-            return line + " " + ASK_LINE
+        # SILENCE NEVER ENDS THE CALL (5 Aug fix — Paul is ASLEEP; silence is
+        # the expected state). Jarvis leads: next motivation line, ~5s listen
+        # between lines, until the per-call cap — then a graceful sign-off and
+        # the 2-minute loop re-calls. Only override or proof stops the morning.
+        call_started = state.get("call_started") or state.get("last_action") or state["started"]
+        on_air = (now - datetime.fromisoformat(call_started)).total_seconds()
+        if on_air > self.settings.max_call_seconds:
+            return "[[bye]]" + SIGNOFF_LINE
         if YES.search(speech):
             state["silences"] = 0
             await self._save(state)
             return "[[bye]]" + PROVE_LINES[state["calls"] % len(PROVE_LINES)]
-        if len(speech) > 80:
+        if speech and len(speech) > 80:
             return None   # genuinely off-script — the brain can have it
-        line = PITCH_LINES[state["pitch_i"] % len(PITCH_LINES)]
+        pitches = await self._pitch_lines()
+        line = pitches[state["pitch_i"] % len(pitches)]
         state["pitch_i"] += 1
-        state["silences"] = 0
+        if not speech:
+            state["silences"] += 1
+            if state["silences"] % 3 == 0:
+                line += " " + ASK_LINE   # an occasional direct ask amid the lead
+        else:
+            state["silences"] = 0
+            line += " " + ASK_LINE       # he's talking but not committing — ask
         await self._save(state)
-        return line + " " + ASK_LINE
+        return line
 
     # ------------------------------------------------------------ the tick
 
@@ -395,8 +421,42 @@ class WakeRoutine:
             phone.listen_timeout = None
         if not state.get("test"):
             await self.jobs.log_water(now.date(), self.settings.hydration_ml)
+        # Morning complete = offline: the brain refreshes tomorrow's pitch
+        # bank now, never during a call (5 Aug fix).
+        import asyncio as _asyncio
+
+        task = _asyncio.create_task(self.refresh_bank())
+        self._bank_tasks: set = getattr(self, "_bank_tasks", set())
+        self._bank_tasks.add(task)
+        task.add_done_callback(self._bank_tasks.discard)
         prefix = "🧪 TEST complete — drill over, nothing recorded. " if state.get("test") else ""
         return prefix + WELLDONE_LINES[now.minute % len(WELLDONE_LINES)]
+
+    async def refresh_bank(self) -> None:
+        """Offline only (after a completed morning): the brain writes fresh
+        motivation lines for tomorrow's bank — same why (Eva, Kiefer, dream
+        life, best shape, the two-futures contrast), new words."""
+        try:
+            raw = await self.jobs.claude.converse(
+                "You write wake-up call motivation lines for Paul, in Jarvis's "
+                "voice: short (max 14 words each), punchy, warm, direct — never "
+                "guilt-tripping, never sniping. Draw on his why: Eva, Kiefer, the "
+                "dream life, best shape of his life, the two-futures contrast "
+                "(the day he wants vs the flat day). Reply ONLY a JSON array of "
+                "6 strings.",
+                [{"role": "user", "content": "Six fresh lines for tomorrow's wake call."}],
+                max_tokens=300,
+            )
+            match = re.search(r"\[.*\]", raw, re.DOTALL)
+            lines = (
+                [str(x).strip() for x in json.loads(match.group(0)) if str(x).strip()]
+                if match else []
+            )
+            if lines:
+                await self.store.set("wake2_pitch_bank", json.dumps(lines[:12]))
+                logger.info("Wake pitch bank refreshed: %d lines", len(lines))
+        except Exception:
+            logger.exception("Pitch-bank refresh failed — the standing bank carries on")
 
     # ------------------------------------------------ §2 the rotating code
 

@@ -37,6 +37,9 @@ class FakePhone:
         self.calls.append(greeting)
         return True
 
+    def prewarm(self, lines):
+        self.prewarmed = list(lines)
+
 
 class Harness:
     def __init__(self, db, phone=None):
@@ -191,14 +194,38 @@ class TestTheScriptedCall(WakeBase):
         self.assertIsNotNone(reply)
         self.assertIn("are you getting up now?", reply)
 
-    async def test_three_silences_sign_off(self):
-        await self._put_state()
-        first = await self.h.routine.call_turn("")
-        self.assertIn("you with me", first.lower() + " you with me")  # a pitch line, not a farewell
-        await self.h.routine.call_turn("")
-        third = await self.h.routine.call_turn("")
-        self.assertTrue(third.startswith("[[bye]]"))
-        self.assertIn("call back", third)
+    async def test_silence_never_ends_the_call_jarvis_leads(self):
+        # Paul is ASLEEP — silence is expected. Within the per-call cap every
+        # silent turn gets the next motivation line, never a hangup.
+        now = datetime.now(TZ)
+        await self._put_state(call_started=now.isoformat(timespec="seconds"))
+        for _ in range(8):
+            reply = await self.h.routine.call_turn("")
+            self.assertIsNotNone(reply)
+            self.assertFalse(reply.startswith("[[bye]]"), reply)
+
+    async def test_call_cap_ends_gracefully_loop_recalls(self):
+        now = datetime.now(TZ)
+        await self._put_state(
+            call_started=(now - timedelta(seconds=80)).isoformat(timespec="seconds")
+        )
+        reply = await self.h.routine.call_turn("")
+        self.assertTrue(reply.startswith("[[bye]]"))
+        self.assertIn("call back", reply)
+        # the sequence itself is still live — only proof or override ends it
+        self.assertEqual((await self._state())["phase"], "up")
+
+    async def test_pitch_bank_extends_the_rotation(self):
+        await self.h.jobs.store.set(
+            "wake2_pitch_bank", json.dumps(["Fresh line from the overnight brain."])
+        )
+        lines = await self.h.routine._pitch_lines()
+        self.assertIn("Fresh line from the overnight brain.", lines)
+
+    async def test_placing_a_call_prewarms_the_bank(self):
+        await self.h.routine.start(test=True)
+        self.assertTrue(any("Eva" in line for line in self.phone.prewarmed))
+        self.assertTrue(any("call back" in line for line in self.phone.prewarmed))
 
     async def test_spoken_override_ends_everything(self):
         await self._put_state()

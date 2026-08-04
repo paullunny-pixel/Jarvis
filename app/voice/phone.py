@@ -121,6 +121,29 @@ class PhoneChannel:
             return None
         return entry[1]
 
+    def prewarm(self, lines: list[str]) -> None:
+        """Wake v2 (5 Aug fix): synthesize the scripted bank into the memo
+        BEFORE the call needs it — standard lines then play with zero model
+        latency. Background task; failures just mean the live path synthesizes
+        as usual."""
+        import asyncio
+
+        async def _warm() -> None:
+            for line in lines:
+                if line and line not in self._tts_memo:
+                    try:
+                        self._tts_memo[line] = await self._elevenlabs.synthesize(
+                            line, model="eleven_flash_v2_5", output_format="mp3_22050_32"
+                        )
+                    except Exception:
+                        logger.exception("TTS prewarm stopped — live synth carries on")
+                        return
+
+        task = asyncio.create_task(_warm())
+        self._warm_tasks: set = getattr(self, "_warm_tasks", set())
+        self._warm_tasks.add(task)
+        task.add_done_callback(self._warm_tasks.discard)
+
     # ------------------------------------------------------------ TwiML
 
     @staticmethod
