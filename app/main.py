@@ -46,7 +46,7 @@ from app.memory.seed import load_day_one_brain
 from app.memory.store import LivingFacts, MemoryStore
 from app.private.service import PrivateTrack
 from app.voice.engine import VoiceEngine
-from app.voice.phone import PhoneChannel
+from app.voice.phone import PhoneChannel, error_twiml
 from app.voice.tools import VoiceTools
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -489,6 +489,17 @@ def _phone_gate(router: "JarvisRouter", secret: str):
     return phone
 
 
+async def _twilio_form(request: Request) -> dict[str, str]:
+    """Twilio posts application/x-www-form-urlencoded. Parsed by hand (same
+    pattern as the cockpit login) — request.form() needs the python-multipart
+    package this project deliberately doesn't ship, and the AssertionError it
+    raises took down the first live call (4 Aug: 'application error')."""
+    from urllib.parse import parse_qs
+
+    body = (await request.body()).decode("utf-8", "replace")
+    return {k: v[0] for k, v in parse_qs(body).items()}
+
+
 def _twilio_signed(router: "JarvisRouter", request: Request, params: dict) -> bool:
     """Verify X-Twilio-Signature against the public URL Twilio actually hit.
     Without PUBLIC_URL (local dev) there's nothing to sign against — the
@@ -511,11 +522,16 @@ async def twilio_answer(secret: str, request: Request):
 
     router: JarvisRouter = request.app.state.router
     phone = _phone_gate(router, secret)
-    params = {k: str(v) for k, v in (await request.form()).items()}
+    params = await _twilio_form(request)
     if not _twilio_signed(router, request, params):
         raise HTTPException(status_code=403, detail="nope")
     params["g"] = request.query_params.get("g", "")
-    return Response(content=await phone.handle_answer(params), media_type="text/xml")
+    try:
+        twiml = await phone.handle_answer(params)
+    except Exception:
+        logger.exception("Twilio answer handler failed — speaking the error instead")
+        twiml = error_twiml()
+    return Response(content=twiml, media_type="text/xml")
 
 
 @app.post("/twilio/voice/{secret}/turn")
@@ -525,10 +541,15 @@ async def twilio_turn(secret: str, request: Request):
 
     router: JarvisRouter = request.app.state.router
     phone = _phone_gate(router, secret)
-    params = {k: str(v) for k, v in (await request.form()).items()}
+    params = await _twilio_form(request)
     if not _twilio_signed(router, request, params):
         raise HTTPException(status_code=403, detail="nope")
-    return Response(content=await phone.handle_turn(params), media_type="text/xml")
+    try:
+        twiml = await phone.handle_turn(params)
+    except Exception:
+        logger.exception("Twilio turn handler failed — speaking the error instead")
+        twiml = error_twiml()
+    return Response(content=twiml, media_type="text/xml")
 
 
 @app.get("/twilio/audio/{secret}/{audio_id}.mp3")

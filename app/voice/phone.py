@@ -25,6 +25,17 @@ DEFAULT_GREETING = "Paul. Jarvis here. What do you need?"
 FAREWELL = "Speak soon, sir."
 BRAIN_STUMBLE = "I lost my thread there — give me that once more?"
 
+def error_twiml() -> str:
+    """The last-resort TwiML: whatever broke, Jarvis owns it out loud instead
+    of Twilio's stock 'an application error has occurred' (invariant 5)."""
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Brian">'
+        "Something choked in my pipeline there, sir. Give me a minute and try "
+        "again — or message me on Telegram, I'm fine over there."
+        "</Say><Hangup/></Response>"
+    )
+
+
 GOODBYE = re.compile(
     r"\b(good\s*bye|bye|hang\s+up|that('|’)?s\s+(all|everything)|good\s*night|"
     r"cheers\s+jarvis|thanks\s+jarvis|nothing\s+else)\b",

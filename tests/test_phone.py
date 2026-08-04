@@ -246,6 +246,100 @@ class TestPhoneChannel(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Profit &lt;up&gt; &amp; rising", twiml)
 
 
+# ------------------------------------------------------------ the HTTP layer
+# (the first live call died in request parsing, not the channel — so the
+# endpoints get exercised end-to-end, signature and all)
+
+
+class TestTwilioEndpoints(unittest.TestCase):
+    def setUp(self):
+        from fastapi.testclient import TestClient
+
+        from app import main as app_main
+
+        self.settings = Settings(
+            telegram_bot_token="TOK", twilio_account_sid="AC1", twilio_auth_token="tok",
+            twilio_from_number="+18574206042", paul_phone_number="+447498847149",
+            public_url="https://j.example", _env_file=None,
+        )
+        self.secret = self.settings.effective_phone_secret
+        self.channel = PhoneChannel(
+            FakeTwilio(), FakeTTS(), from_number="+18574206042",
+            paul_number="+447498847149", public_url="https://j.example", secret=self.secret,
+        )
+
+        async def brain(text):
+            return f"Heard: {text}"
+
+        self.channel.brain = brain
+        stub = type("StubRouter", (), {})()
+        stub.settings = self.settings
+        stub.phone_channel = self.channel
+        self._app = app_main.app
+        self._app.state.router = stub
+        self.client = TestClient(self._app)
+
+    def tearDown(self):
+        del self._app.state.router
+
+    def _signed(self, path, params):
+        payload = f"https://j.example{path}" + "".join(k + v for k, v in sorted(params.items()))
+        return base64.b64encode(hmac.new(b"tok", payload.encode(), hashlib.sha1).digest()).decode()
+
+    def test_answer_parses_twilio_form_and_speaks(self):
+        path = f"/twilio/voice/{self.secret}/answer?g=missing"
+        params = {"CallSid": "CA1", "CallStatus": "in-progress", "From": "+18574206042"}
+        response = self.client.post(
+            path, data=params, headers={"X-Twilio-Signature": self._signed(path, params)}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("<Gather", response.text)
+        self.assertIn("text/xml", response.headers["content-type"])
+
+    def test_turn_round_trips_speech_to_the_brain(self):
+        path = f"/twilio/voice/{self.secret}/turn"
+        params = {"CallSid": "CA1", "SpeechResult": "what's on the board", "Confidence": "0.92"}
+        response = self.client.post(
+            path, data=params, headers={"X-Twilio-Signature": self._signed(path, params)}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Heard: what's on the board", "".join(self.channel._elevenlabs.texts))
+
+    def test_forged_signature_is_refused(self):
+        path = f"/twilio/voice/{self.secret}/turn"
+        response = self.client.post(
+            path, data={"SpeechResult": "hi"}, headers={"X-Twilio-Signature": "forged"}
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_wrong_secret_404s(self):
+        response = self.client.post("/twilio/voice/WRONG/turn", data={"SpeechResult": "hi"})
+        self.assertEqual(response.status_code, 404)
+
+    def test_handler_crash_speaks_instead_of_500ing(self):
+        async def broken(params):
+            raise RuntimeError("boom")
+
+        self.channel.handle_turn = broken
+        path = f"/twilio/voice/{self.secret}/turn"
+        params = {"SpeechResult": "hello"}
+        response = self.client.post(
+            path, data=params, headers={"X-Twilio-Signature": self._signed(path, params)}
+        )
+        self.assertEqual(response.status_code, 200)   # Twilio must get TwiML, never a 500
+        self.assertIn("<Say", response.text)
+        self.assertIn("<Hangup/>", response.text)
+
+    def test_audio_endpoint_serves_and_misses(self):
+        audio_id = self.channel.stash_audio(b"MP3BYTES")
+        hit = self.client.get(f"/twilio/audio/{self.secret}/{audio_id}.mp3")
+        self.assertEqual(hit.status_code, 200)
+        self.assertEqual(hit.content, b"MP3BYTES")
+        self.assertEqual(hit.headers["content-type"], "audio/mpeg")
+        miss = self.client.get(f"/twilio/audio/{self.secret}/deadbeef.mp3")
+        self.assertEqual(miss.status_code, 404)
+
+
 # ------------------------------------------------------------ wake escalation
 
 
