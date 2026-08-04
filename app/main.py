@@ -46,7 +46,7 @@ from app.memory.seed import load_day_one_brain
 from app.memory.store import LivingFacts, MemoryStore
 from app.private.service import PrivateTrack
 from app.voice.engine import VoiceEngine
-from app.voice.phone import PhoneChannel, error_twiml
+from app.voice.phone import SIGNATURE_ERROR_LINE, PhoneChannel, error_twiml
 from app.voice.tools import VoiceTools
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -523,8 +523,19 @@ async def twilio_answer(secret: str, request: Request):
     router: JarvisRouter = request.app.state.router
     phone = _phone_gate(router, secret)
     params = await _twilio_form(request)
+    logger.info(
+        "Twilio answer webhook: CallSid=%s status=%s direction=%s",
+        params.get("CallSid", "?"), params.get("CallStatus", "?"), params.get("Direction", "?"),
+    )
     if not _twilio_signed(router, request, params):
-        raise HTTPException(status_code=403, detail="nope")
+        # A signature mismatch is config trouble, not an attack to die on —
+        # the unguessable path already gates the door (the Telegram-webhook
+        # trust model). Say so out loud, take no instructions, log the why.
+        logger.warning(
+            "Twilio signature check FAILED on %s (header %s) — refusing politely",
+            request.url.path, "present" if request.headers.get("X-Twilio-Signature") else "MISSING",
+        )
+        return Response(content=error_twiml(SIGNATURE_ERROR_LINE), media_type="text/xml")
     params["g"] = request.query_params.get("g", "")
     try:
         twiml = await phone.handle_answer(params)
@@ -542,8 +553,17 @@ async def twilio_turn(secret: str, request: Request):
     router: JarvisRouter = request.app.state.router
     phone = _phone_gate(router, secret)
     params = await _twilio_form(request)
+    logger.info(
+        "Twilio turn webhook: CallSid=%s heard %d chars (confidence %s)",
+        params.get("CallSid", "?"), len(params.get("SpeechResult", "")),
+        params.get("Confidence", "?"),
+    )
     if not _twilio_signed(router, request, params):
-        raise HTTPException(status_code=403, detail="nope")
+        logger.warning(
+            "Twilio signature check FAILED on %s (header %s) — refusing politely",
+            request.url.path, "present" if request.headers.get("X-Twilio-Signature") else "MISSING",
+        )
+        return Response(content=error_twiml(SIGNATURE_ERROR_LINE), media_type="text/xml")
     try:
         twiml = await phone.handle_turn(params)
     except Exception:

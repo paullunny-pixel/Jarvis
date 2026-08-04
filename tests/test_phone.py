@@ -305,12 +305,19 @@ class TestTwilioEndpoints(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("Heard: what's on the board", "".join(self.channel._elevenlabs.texts))
 
-    def test_forged_signature_is_refused(self):
+    def test_forged_signature_gets_refusal_twiml_not_instructions(self):
+        from app.voice.phone import SIGNATURE_ERROR_LINE
+
         path = f"/twilio/voice/{self.secret}/turn"
         response = self.client.post(
             path, data={"SpeechResult": "hi"}, headers={"X-Twilio-Signature": "forged"}
         )
-        self.assertEqual(response.status_code, 403)
+        # Spoken refusal, hangup, and crucially NO conversation content —
+        # the brain is never consulted on an unverified request.
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(SIGNATURE_ERROR_LINE.split(",")[0], response.text)
+        self.assertIn("<Hangup/>", response.text)
+        self.assertNotIn("Heard:", "".join(self.channel._elevenlabs.texts))
 
     def test_wrong_secret_404s(self):
         response = self.client.post("/twilio/voice/WRONG/turn", data={"SpeechResult": "hi"})
