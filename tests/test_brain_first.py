@@ -283,6 +283,46 @@ class TestBrainHands(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Clocks: Europe/London", opus["system"])
         self.assertIn("timezone_place", opus["system"])
 
+    async def test_paul_saying_no_meds_this_week_stands_the_chase_down(self):
+        # 4 Aug, 11:16: 'Run and meds were skipping today and we will for this
+        # week while I recover' — the run had a lever, meds had none, and the
+        # chase kept coming. Paul's no is final now: skip_gates + skip_days.
+        import json as _json
+        from datetime import datetime as dt, timedelta as td
+        from zoneinfo import ZoneInfo as _Z
+
+        from app.heartbeat.gates import GateKeeper
+        from app.heartbeat.streaks import Streaks
+
+        b = BrainHarness(
+            self.db,
+            opus_responses=[
+                [tool_use("rhythm", skip_gates=["run", "meds"], skip_days=7,
+                          skip_reason="recovery week — walking instead")],
+                [text_block("Done — no run or meds chasing this week. Walking counts, "
+                            "and I'm with you.")],
+            ],
+        )
+        gates = GateKeeper(self.db, Streaks(self.db))
+        b.h.router.gates = gates
+        b.jobs.gates = gates
+        from app.core.store import SettingsStore
+
+        await SettingsStore(self.db).set("gates_config", _json.dumps(
+            [{"id": "run", "label": "the 5km run", "by": "00:00"},
+             {"id": "meds", "label": "supplements & medication", "by": "00:00"}]
+        ))
+        await b.h.router.handle_update(text_update(
+            "Run and meds were skipping today and we will for this week I think "
+            "while I recover just walking", OWNER,
+        ))
+        now = dt.now(_Z("Europe/London"))
+        self.assertEqual(await gates.outstanding(now), [])                    # today settled
+        self.assertTrue(await gates.is_overridden("meds", now.date() + td(days=6)))
+        self.assertFalse(await gates.is_overridden("meds", now.date() + td(days=7)))
+        # outstanding == [] means the chaser and the owed-NOTE both stand down.
+        self.assertIn("no run or meds chasing", b.sent())
+
     async def test_brain_system_carries_the_hands_rules(self):
         b = BrainHarness(self.db, opus_responses=[[text_block("Evening, sir.")]])
         await b.h.router.handle_update(text_update("evening mate, how are we", OWNER))

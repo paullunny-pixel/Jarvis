@@ -1876,12 +1876,15 @@ class JarvisRouter:
                     "wake_skip_tomorrow skips tomorrow's wake sequence; wake_hour_tomorrow "
                     "(4-11) delays it; goodnight closes the day and stands the bedtime "
                     "chasers down; timezone_place moves ALL the clocks to where Paul "
-                    "actually is. WHENEVER Paul states what time he's getting up — however "
-                    "casually ('waking up with Steph at seven') — set wake_hour_tomorrow; "
-                    "whenever he's turning in, in any words, set goodnight; the MOMENT his "
-                    "location and your clocks disagree, set timezone_place. Saying any of "
-                    "it back without the tool changes nothing. Only claim a rhythm change "
-                    "the result confirms."
+                    "actually is; skip_gates excuses the run and/or meds so the chasing "
+                    "STOPS — use it the MOMENT Paul says he's not doing one of them "
+                    "(his body, his call: one acknowledgement, never argue, never "
+                    "re-raise), with skip_days for 'this week' (max 7). WHENEVER Paul "
+                    "states what time he's getting up — however casually — set "
+                    "wake_hour_tomorrow; whenever he's turning in, in any words, set "
+                    "goodnight; the MOMENT his location and your clocks disagree, set "
+                    "timezone_place. Saying any of it back without the tool changes "
+                    "nothing. Only claim a rhythm change the result confirms."
                 ),
                 "input_schema": {
                     "type": "object",
@@ -1894,6 +1897,12 @@ class JarvisRouter:
                             "type": "string",
                             "enum": sorted(self.TIMEZONE_MAP),
                         },
+                        "skip_gates": {
+                            "type": "array",
+                            "items": {"type": "string", "enum": ["run", "meds"]},
+                        },
+                        "skip_days": {"type": "integer"},
+                        "skip_reason": {"type": "string"},
                     },
                 },
             })
@@ -1964,6 +1973,16 @@ class JarvisRouter:
                          datetime.now(ZoneInfo("UTC")).isoformat(timespec="seconds"), tz_name),
                     )
                 done.append("day closed — goodnight logged, bedtime chasers stand down")
+            skip = [g for g in (tool_input.get("skip_gates") or []) if g in ("run", "meds")]
+            if skip and self.gates is not None:
+                days = tool_input.get("skip_days")
+                days = days if isinstance(days, int) and 1 <= days <= 7 else 1
+                reason = str(tool_input.get("skip_reason") or "Paul's call — excused via Jarvis")
+                start = datetime.now(ZoneInfo(tz_name)).date()
+                for offset in range(days):
+                    await self.gates.override(skip, reason, start + timedelta(days=offset))
+                span = "today" if days == 1 else f"{days} days"
+                done.append(f"{' and '.join(skip)} excused for {span} — chasing stands down")
             if tool_input.get("quiet_today") is not None:
                 await self.heartbeat.set_quiet_today(bool(tool_input["quiet_today"]))
                 done.append(
