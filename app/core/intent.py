@@ -14,9 +14,12 @@ logger = logging.getLogger(__name__)
 # Messages longer than this are conversation, not commands — skip the triage.
 TRIAGE_MAX_CHARS = 200
 
+# build_list_add is deliberately NOT here (4 Aug): a garbled voice note
+# ('add to Trello' transcribed as 'Activate') got confidently filed as a
+# build-list wish. Additions need judgement and context — brain only.
 INTENTS = (
     "quiet_day", "notifications_on", "wake_skip", "wake_delay", "status_check",
-    "group_digest", "trello_sync", "update_brief", "build_list_add",
+    "group_digest", "trello_sync", "update_brief",
     "build_list_show", "timezone_change", "none",
 )
 
@@ -31,12 +34,13 @@ COMMANDS:
 - group_digest — summarise the work groups now
 - trello_sync — refresh/resync the board
 - update_brief — rebuild your brief/picture of Paul
-- build_list_add — add a wish to the build list (set "wish", cleaned up but in Paul's words)
 - build_list_show — read the build list back
 - timezone_change — Paul says where he is now (set "place", e.g. "dubai", "uk")
 - none — ordinary conversation, a question, or anything you are not SURE about
 
-Task/board/card talk, email talk, logging things as done, water/meds/run logging: ALWAYS "none" — other machinery owns those.
+Task/board/card talk, email talk, logging things as done, water/meds/run logging, adding wishes to the build list: ALWAYS "none" — other machinery owns those.
+
+Voice transcripts GARBLE badly — 'add to Trello' can arrive as 'Activate'. If the wording looks mangled, or you have to guess at what any word was meant to be, it is "none": the brain reads it with full context instead. Acting confidently on a garble is the worst outcome.
 
 Reply with ONLY JSON:
 {"intent": "<command or none>", "hour": <int|null>, "wish": <string|null>, "place": <string|null>, "confident": <true|false>}

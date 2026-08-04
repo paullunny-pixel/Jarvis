@@ -106,15 +106,20 @@ class TestRouterTriage(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await jobs.jobs.store.get("wake_delay"), f"{tomorrow.isoformat()}:6")
         self.assertIn("06:00", self.texts(h))
 
-    async def test_build_wish_lands_via_triage(self):
+    async def test_build_list_add_is_no_longer_a_triage_intent(self):
+        # 4 Aug: 'add to Trello' garbled to 'Activate' and triage confidently
+        # filed it as a build-list wish. Additions are brain-only now — even
+        # a model that answers build_list_add gets rejected and the message
+        # falls through to the brain with full context.
         from app.core.store import SettingsStore
 
         h, _ = self.harness(
-            intent_json(intent="build_list_add", wish="read my WhatsApp messages", confident=True)
+            intent_json(intent="build_list_add", wish="Activate to buy a second number", confident=True)
         )
-        await h.router.handle_update(text_update("ad reading my whatsap to the bild list", OWNER))
-        wishes = json.loads(await SettingsStore(self.db).get("build_list"))
-        self.assertEqual(wishes[0]["wish"], "read my WhatsApp messages")
+        await h.router.handle_update(text_update("Activate to buy a second number", OWNER))
+        self.assertEqual(await SettingsStore(self.db).get("build_list", ""), "")  # nothing filed
+        models = [r["model"] for r in h.claude_requests]
+        self.assertIn("claude-opus-5", models)   # the brain took it instead
 
     async def test_none_falls_through_to_the_brain(self):
         h, _ = self.harness(intent_json(intent="none", confident=True))

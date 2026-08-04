@@ -668,8 +668,6 @@ class JarvisRouter:
                 if brief
                 else "That rebuild failed mid-flight — I've kept the previous brief; try again shortly."
             )
-        elif intent == "build_list_add" and (data.get("wish") or "").strip():
-            reply = await self._build_list_add(str(data["wish"]).strip())
         elif intent == "build_list_show":
             try:
                 wishes = _json.loads(await self.store.get("build_list", "[]"))
