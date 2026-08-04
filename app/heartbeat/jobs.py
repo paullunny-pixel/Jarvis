@@ -229,10 +229,28 @@ class HeartbeatJobs:
 
     # ------------------------------------------------------------ 06:30 run
 
-    async def run_protect(self) -> None:
-        today = await self._today()
+    async def wake_floor_hour(self, today: date) -> int | None:
+        """The hour Paul declared he's getting up today, if he did ('wake me
+        at 7'). NOTHING proactive fires before it — 4 Aug: run o'clock hit at
+        06:29 after he'd said seven."""
+        delay = await self.store.get(WAKE_DELAY_KEY, "")
+        if delay:
+            day, _, hour = delay.partition(":")
+            if day == today.isoformat():
+                try:
+                    return int(hour)
+                except ValueError:
+                    pass
+        return None
+
+    async def run_protect(self, now: datetime | None = None) -> None:
+        now = now or datetime.now(await self._tz())
+        today = now.date()
         if await self.streaks.done_today("run", today):
             return
+        floor = await self.wake_floor_hour(today)
+        if floor is not None and now.hour < floor:
+            return  # he told us his morning — let him sleep; the chaser picks it up
         if not await self._once(f"runprotect:{today.isoformat()}"):
             return
         snapshot = await self.streaks.snapshot(today)
@@ -244,11 +262,18 @@ class HeartbeatJobs:
 
     # ------------------------------------------------------------ 07:00 brief
 
-    async def morning_brief(self) -> None:
-        today = await self._today()
+    async def morning_brief(self, now: datetime | None = None) -> None:
+        tz = await self._tz()
+        now = now or datetime.now(tz)
+        today = now.date()
+        # The brief lands when PAUL's morning starts, not at a fixed seven:
+        # scheduled hourly 07:00–10:00, it holds (without burning the once-
+        # guard) until his declared wake hour, then fires on the next slot.
+        floor = await self.wake_floor_hour(today)
+        if floor is not None and now.hour < floor:
+            return
         if not await self._once(f"brief:{today.isoformat()}"):
             return
-        tz = await self._tz()
         plan_text = ""
         if self.daily12 is not None:
             try:

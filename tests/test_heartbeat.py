@@ -485,6 +485,27 @@ class TestDayRhythmRouter(unittest.IsolatedAsyncioTestCase):
             if method in ("sendMessage", "sendVoice")
         ]
 
+    async def test_declared_wake_hour_holds_the_morning(self):
+        # 4 Aug, 06:29: 'Run o'clock' hit after Paul had said he's up at seven,
+        # and the brief wandered in at 07:51. The rule now: nothing proactive
+        # before his declared wake hour; the brief lands on the next slot after.
+        await self.jobs.delay_wake(at_local("06:30").date(), 7)
+        await self.jobs.run_protect(at_local("06:30"))
+        self.assertEqual(self.jobs_sent(), [])            # he said seven — silence
+        await self.jobs.morning_brief(at_local("07:00"))  # 07:00 slot = his seven
+        self.assertEqual(len(self.jobs_sent()), 1)        # brief at HIS seven
+        self.assertIn("YOUR+DAY", self.jobs_sent()[0])
+
+    async def test_wake_floor_holds_the_brief_until_the_declared_hour(self):
+        await self.jobs.delay_wake(at_local("07:00").date(), 9)
+        await self.jobs.morning_brief(at_local("07:00"))
+        await self.jobs.morning_brief(at_local("08:00"))
+        self.assertEqual(self.jobs_sent(), [])            # once-guard NOT burned
+        await self.jobs.morning_brief(at_local("09:00"))
+        self.assertEqual(len(self.jobs_sent()), 1)        # lands at his nine
+        await self.jobs.morning_brief(at_local("10:00"))
+        self.assertEqual(len(self.jobs_sent()), 1)        # and only once
+
     async def test_bedtime_protection_pierces_a_quiet_day(self):
         # 4 Aug, 00:39: Paul awake at half midnight on a quiet day and nothing
         # said a word — the quiet day had swallowed lights-out. Never again:

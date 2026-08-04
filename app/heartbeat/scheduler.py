@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 
 JOB_TIMES = {
     "run_protect": (6, 30),
-    "morning_brief": (7, 0),
     "midday_nudge": (13, 30),
     "hound_1530": (15, 30),
     "hound_1730": (17, 30),
@@ -45,7 +44,6 @@ class Heartbeat:
         )
         callables = {
             "run_protect": self.jobs.run_protect,
-            "morning_brief": self.jobs.morning_brief,
             "midday_nudge": self.jobs.midday_nudge,
             "hound_1530": self.jobs.hound_ping,
             "hound_1730": self.jobs.hound_ping,
@@ -63,6 +61,9 @@ class Heartbeat:
             )
         # Master Update day-rhythm jobs — all in Paul's CURRENT timezone.
         extras = [
+            # Brief lands when Paul's morning starts: hourly slots, the job
+            # holds until his declared wake hour, once-guard stops doubles.
+            ("morning_brief", self.jobs.morning_brief, CronTrigger(hour="7-10", minute=0, timezone=timezone), 1800),
             # §4: escalating wake loop, ~every 3 min from 05:00 (no-op until enabled)
             ("wake_tick", self.jobs.wake_tick, CronTrigger(hour="5-8", minute="*/3", timezone=timezone), 120),
             # §5: hourly move + water through the waking day
