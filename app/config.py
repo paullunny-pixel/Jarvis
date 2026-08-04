@@ -119,6 +119,7 @@ class Settings(BaseSettings):
     max_call_seconds: int = 75            # one call's motivation run, then re-call
     wake_callback_interval_min: int = 2   # minutes between callbacks until proof
     test_callback_interval_sec: int = 30  # 'test alarm' iterates fast
+    test_max_min: int = 10                # a drill self-expires — never chases all night
     hydration_ml: int = 500
     electrolytes: bool = True
     hydrate_grace_min: int = 5            # minutes before the water re-nudge

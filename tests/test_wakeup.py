@@ -227,6 +227,26 @@ class TestTheScriptedCall(WakeBase):
         self.assertTrue(any("Eva" in line for line in self.phone.prewarmed))
         self.assertTrue(any("call back" in line for line in self.phone.prewarmed))
 
+    async def test_misspelled_override_still_counts(self):
+        # 2:19am, 5 Aug: Paul typed 'overide' and the chase carried on. Never again.
+        for word in ("overide", "over ride", "overrride"):
+            await self._put_state()
+            reply = await self.h.routine.call_turn(word)
+            self.assertTrue(reply.startswith("[[bye]]"), word)
+            self.assertEqual((await self._state())["phase"], "stood_down", word)
+
+    async def test_a_drill_times_itself_out(self):
+        now = datetime.now(TZ)
+        await self._put_state(
+            test=True,
+            started=(now - timedelta(minutes=11)).isoformat(timespec="seconds"),
+            last_action=(now - timedelta(minutes=1)).isoformat(timespec="seconds"),
+        )
+        await self.h.routine.tick(now)
+        self.assertEqual((await self._state())["phase"], "stood_down")
+        self.assertEqual(self.phone.calls, [])
+        self.assertTrue(any("Drill timed out" in t for t in self.h.texts()))
+
     async def test_spoken_override_ends_everything(self):
         await self._put_state()
         reply = await self.h.routine.call_turn("override, I'm ill")
@@ -309,6 +329,20 @@ class TestRouterLaneAndV1Handover(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("🧪" in t for t in self.h.texts()))
         state = json.loads(await self.h.jobs.store.get(STATE_KEY, "") or "{}")
         self.assertEqual(state.get("phase"), "up")
+
+    async def test_typed_overide_stops_a_live_sequence_instantly(self):
+        # The universal lane knows v2 now, tolerates the spelling, and obeys
+        # with no confirm dance.
+        await self.h.jobs.store.set(STATE_KEY, json.dumps({
+            "date": datetime.now(TZ).date().isoformat(), "phase": "hydrate",
+            "test": True, "started": datetime.now(TZ).isoformat(timespec="seconds"),
+            "last_action": datetime.now(TZ).isoformat(timespec="seconds"),
+            "calls": 3, "silences": 0, "pitch_i": 0,
+        }))
+        await self.router.handle_update(text_update("overide", OWNER))
+        state = json.loads(await self.h.jobs.store.get(STATE_KEY, "") or "{}")
+        self.assertEqual(state.get("phase"), "stood_down")
+        self.assertTrue(any("stood down instantly" in t for t in self.h.texts()))
 
     async def test_v1_wake_tick_stands_down_when_gospel_set(self):
         await self.h.jobs.set_wake_enabled(True)
