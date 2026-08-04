@@ -46,7 +46,9 @@ YES = re.compile(
     r"\b(yes|yeah|yep|i'?m up|i am up|getting up|up now|on it|i'?m getting up)\b",
     re.IGNORECASE,
 )
-OVERRIDE = re.compile(r"\boverride\b", re.IGNORECASE)
+# Dyslexia rule: 'overide', 'over ride', 'overrride' all count — a safety
+# word that demands perfect spelling isn't a safety word (2:19am, 5 Aug).
+OVERRIDE = re.compile(r"\bover\s*r*i+d+e+\b", re.IGNORECASE)
 
 # ---------------------------------------------------------------- the copy
 # Short, punchy, his 'why' — Eva, Kiefer, the dream life, best shape of his
@@ -355,6 +357,13 @@ class WakeRoutine:
             return
         started = datetime.fromisoformat(state["started"])
         minutes_in = (now - started).total_seconds() / 60
+        # A DRILL IS BOUNDED (2:18am, 5 Aug): a half-finished test must never
+        # chase Paul at 30s intervals until someone remembers it — it times
+        # itself out quietly.
+        if state.get("test") and minutes_in >= self.settings.test_max_min:
+            await self.stand_down("test drill timed out")
+            await self._tell("🧪 Drill timed out — stood down, all quiet. Nothing was recorded.")
+            return
         if minutes_in >= self.settings.max_escalation_min:
             await self.stand_down("welfare backstop — no response")
             await self._tell(

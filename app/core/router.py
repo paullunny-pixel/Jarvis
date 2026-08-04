@@ -427,6 +427,20 @@ class JarvisRouter:
             rhythm_lines.append(f"WAKE OVERRIDE SET: the wake sequence on {d} holds until {int(hh):02d}:00 — this switch is the truth, not remembered conversation.")
         if await self.store.get("wake_skip_date", "") >= now_local.date().isoformat():
             rhythm_lines.append(f"WAKE SKIP SET for {await self.store.get('wake_skip_date')}.")
+        wake2_live = getattr(self.heartbeat, "wake2", None) if self.heartbeat is not None else None
+        if wake2_live is not None:
+            try:
+                live_phase = await wake2_live.active_phase()
+            except Exception:
+                live_phase = ""
+            if live_phase:
+                rhythm_lines.append(
+                    f"WAKE SEQUENCE LIVE RIGHT NOW (phase: {live_phase}). The machinery "
+                    "chases until PHOTO proof lands — you have NO switch and saying it's "
+                    "closed does not close it. NEVER claim the sequence is done or stood "
+                    "down. What actually stops it: the required photo, or the word "
+                    "'override' (any spelling close to it counts)."
+                )
         rhythm_lines.append(
             "Bedtime machinery EXISTS and is wired: wind-down nudge 21:45, lights-out "
             "22:30, chaser 23:00 (all local, all pierce a quiet day). Never tell Paul "
@@ -1323,9 +1337,27 @@ class JarvisRouter:
                 await self.telegram.send_text(message.chat_id, reply)
                 await self._replay_gated_request(message)  # override opens everything
                 return True
+        # Spelling-tolerant on purpose: 'overide' at 2am must count (dyslexia
+        # rule — a safety word can't demand perfect spelling).
+        wake2 = getattr(self.heartbeat, "wake2", None) if self.heartbeat is not None else None
+        _ovr = r"over\s*r*i+d+e+"
         override_hit = re.search(
-            r"^\s*override[,.!]?(\s+jarvis)?\s*$|\boverride,?\s+jarvis\b|\bmove on\b", lowered
+            rf"^\s*{_ovr}[,.!]?(\s+jarvis)?\s*$|\b{_ovr},?\s+jarvis\b|\bmove on\b", lowered
         )
+        if override_hit and wake2 is not None and await wake2.active_phase():
+            # Wake v2 obeys INSTANTLY — no confirm dance at 5am (or 2am).
+            if self.gates is not None:
+                await self.gates.override(["wake"], transcript, datetime.now(
+                    ZoneInfo(await self.store.get(TIMEZONE_KEY, self.settings.timezone_default))
+                ).date())
+            await wake2.stand_down("override (Telegram)")
+            reply = (
+                "Override taken — wake sequence stood down instantly, no penalty. "
+                "All quiet now; rest easy, sir."
+            )
+            await self.log.log("out", reply, chat_id=message.chat_id, meta={"override": True})
+            await self.telegram.send_text(message.chat_id, reply)
+            return True
         if override_hit and self.gates is not None:
             tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
             now_local = datetime.now(ZoneInfo(tz_name))
