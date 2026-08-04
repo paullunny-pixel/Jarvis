@@ -122,9 +122,13 @@ class PhoneChannel:
         return f'<?xml version="1.0" encoding="UTF-8"?><Response>{inner}</Response>'
 
     async def _voiced(self, text: str) -> str:
-        """<Play> in Jarvis's own voice, or <Say> if ElevenLabs is down."""
+        """<Play> in Jarvis's own voice, or <Say> if ElevenLabs is down.
+        Flash model + low bitrate: still his voice, a fraction of the
+        synthesis time, and a phone line can't hear the difference."""
         try:
-            audio = await self._elevenlabs.synthesize(text)
+            audio = await self._elevenlabs.synthesize(
+                text, model="eleven_flash_v2_5", output_format="mp3_22050_32"
+            )
             return f"<Play>{escape(self._audio_url(self.stash_audio(audio)))}</Play>"
         except Exception:
             logger.exception("Phone TTS failed — Twilio <Say> carries the line")
@@ -137,6 +141,7 @@ class PhoneChannel:
         voiced = await self._voiced(text)
         return self._document(
             f'<Gather input="speech" language="en-GB" speechTimeout="auto" '
+            f'speechModel="experimental_conversations" profanityFilter="false" '
             f'action="{escape(self._turn_url())}" method="POST">{voiced}</Gather>'
             f'<Say voice="Polly.Brian">{escape(FAREWELL)}</Say><Hangup/>'
         )

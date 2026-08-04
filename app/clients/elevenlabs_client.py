@@ -35,15 +35,23 @@ class ElevenLabsClient:
     async def close(self) -> None:
         await self._client.aclose()
 
-    async def synthesize(self, text: str) -> bytes:
-        """Speak `text` in Jarvis's voice; returns MP3 audio bytes."""
+    async def synthesize(
+        self,
+        text: str,
+        *,
+        model: str | None = None,
+        output_format: str = "mp3_44100_128",
+    ) -> bytes:
+        """Speak `text` in Jarvis's voice; returns MP3 audio bytes. The phone
+        channel overrides `model`/`output_format` for latency — a phone line
+        is 8kHz anyway, the full-fat model buys nothing there."""
         url = f"{API_BASE}/text-to-speech/{self.voice_id}"
         response = await self._client.post(
             url,
-            params={"output_format": "mp3_44100_128"},
+            params={"output_format": output_format},
             json={
                 "text": text,
-                "model_id": self.model,
+                "model_id": model or self.model,
                 "voice_settings": {
                     # Tuned for composed, even delivery (the unflappable-aide register)
                     "stability": 0.62,
