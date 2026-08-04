@@ -201,6 +201,28 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("Day-One Brain seeding failed (service continues)")
 
+    # One-off (guarded, inert after 10 Aug 2026): Paul's standing instruction
+    # from 4 Aug 11:16 — 'Run and meds were skipping today and we will for
+    # this week while I recover' — predated the skip lever, so the engineer
+    # applies it here rather than making Paul repeat himself.
+    if router.gates is not None:
+        try:
+            store = SettingsStore(router.db)
+            if not await store.get("oneoff_recovery_week_2026_08"):
+                from datetime import date as _date, timedelta as _td
+
+                start = _date(2026, 8, 4)
+                for offset in range(7):
+                    await router.gates.override(
+                        ["run", "meds"],
+                        "Recovery week — Paul's instruction, 4 Aug 2026 11:16 (applied by engineer)",
+                        start + _td(days=offset),
+                    )
+                await store.set("oneoff_recovery_week_2026_08", "applied")
+                logger.info("Recovery week excusal applied (4-10 Aug 2026)")
+        except Exception:
+            logger.exception("Recovery-week one-off failed (service continues)")
+
     settings = router.settings
     if settings.public_url and settings.telegram_bot_token:
         url = f"{settings.public_url.rstrip('/')}/webhook/telegram/{settings.effective_webhook_secret}"
