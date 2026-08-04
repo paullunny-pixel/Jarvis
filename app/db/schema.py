@@ -254,6 +254,19 @@ TABLES: list[str] = [
     """,
     "CREATE INDEX IF NOT EXISTS idx_tg_ingest_company ON telegram_ingest (company_tag, ts)",
     "CREATE INDEX IF NOT EXISTS idx_tg_ingest_chat ON telegram_ingest (chat_id, ts)",
+    # --- WhatsApp read-only ingestion (official Cloud API, second number; 4 Aug) ---
+    """
+    CREATE TABLE IF NOT EXISTS whatsapp_ingest (
+        id {pk},
+        ts TEXT NOT NULL,
+        wa_id TEXT NOT NULL DEFAULT '',
+        sender TEXT NOT NULL DEFAULT '',
+        company_tag TEXT NOT NULL DEFAULT '',
+        kind TEXT NOT NULL DEFAULT 'text',    -- text | voice | image | document
+        message TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_wa_ingest ON whatsapp_ingest (wa_id, ts)",
     # --- Milestone 6: the private sobriety track (content encrypted at rest) ---
     """
     CREATE TABLE IF NOT EXISTS sobriety (

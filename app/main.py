@@ -434,6 +434,79 @@ async def voice_tool(secret: str, tool_name: str, request: Request) -> dict:
     return {"result": await tools.dispatch(tool_name, args)}
 
 
+async def merge_water_total(db, day_iso: str, water_ml: int) -> bool:
+    """Apple Health (WaterMinder, the Watch, any water app) sends the day's
+    CUMULATIVE total — merge by MAX so manual '300ml' logging and the export
+    never double-count."""
+    if water_ml <= 0:
+        return False
+    row = await db.fetch_one("SELECT ml FROM water_log WHERE day = ?", (day_iso,))
+    total = max(int(row["ml"]) if row else 0, water_ml)
+    if db.dialect == "postgres":
+        await db.execute(
+            "INSERT INTO water_log (day, ml) VALUES (?, ?)"
+            " ON CONFLICT (day) DO UPDATE SET ml = EXCLUDED.ml",
+            (day_iso, total),
+        )
+    else:
+        await db.execute(
+            "INSERT OR REPLACE INTO water_log (day, ml) VALUES (?, ?)", (day_iso, total)
+        )
+    return True
+
+
+@app.get("/webhook/whatsapp")
+async def whatsapp_verify(request: Request):
+    """Meta's webhook verification handshake — echo the challenge when the
+    verify token matches. No token configured = endpoint shut."""
+    from fastapi.responses import PlainTextResponse
+
+    settings = request.app.state.router.settings
+    params = request.query_params
+    if (
+        settings.whatsapp_verify_token
+        and params.get("hub.mode") == "subscribe"
+        and hmac.compare_digest(
+            params.get("hub.verify_token", ""), settings.whatsapp_verify_token
+        )
+    ):
+        return PlainTextResponse(params.get("hub.challenge", ""))
+    raise HTTPException(status_code=403, detail="nope")
+
+
+@app.post("/webhook/whatsapp")
+async def whatsapp_inbound(request: Request) -> dict:
+    """READ-ONLY Phase 1 (Paul, 4 Aug): messages arriving on Jarvis's second
+    number are ingested for digests and recall. Nothing is ever sent back."""
+    import json as _json
+    from datetime import datetime, timezone as _tz
+
+    from app.clients.whatsapp_client import parse_webhook, valid_signature
+
+    router: JarvisRouter = request.app.state.router
+    if not router.settings.whatsapp_verify_token:
+        raise HTTPException(status_code=403, detail="nope")
+    body = await request.body()
+    if not valid_signature(
+        router.settings.whatsapp_app_secret, body,
+        request.headers.get("X-Hub-Signature-256", ""),
+    ):
+        raise HTTPException(status_code=403, detail="nope")
+    try:
+        payload = _json.loads(body or b"{}")
+    except Exception:
+        return {"ok": True, "ingested": 0}
+    messages = parse_webhook(payload)
+    now_iso = datetime.now(_tz.utc).isoformat(timespec="seconds")
+    for m in messages:
+        await router.db.execute(
+            "INSERT INTO whatsapp_ingest (ts, wa_id, sender, company_tag, kind, message)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (now_iso, m.wa_id, m.name[:120], "", m.kind, m.text),
+        )
+    return {"ok": True, "ingested": len(messages)}
+
+
 @app.post("/webhook/apple-health")
 async def apple_health(request: Request) -> dict:
     """Daily push from the iOS Shortcut: run, sleep, weight, steps, HR/HRV."""
@@ -473,4 +546,7 @@ async def apple_health(request: Request) -> dict:
             (stat_date, run_km, float(payload.get("run_min") or 0)),
         )
         recorded_run = True
-    return {"ok": True, "run_recorded": recorded_run}
+    water_recorded = await merge_water_total(
+        router.db, stat_date, int(payload.get("water_ml") or 0)
+    )
+    return {"ok": True, "run_recorded": recorded_run, "water_recorded": water_recorded}

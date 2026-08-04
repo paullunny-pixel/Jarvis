@@ -88,6 +88,14 @@ class Settings(BaseSettings):
     apple_health_webhook_secret: str = ""
     private_room_key: str = ""   # encryption key for the sobriety room (Milestone 6)
 
+    # --- WhatsApp Business Cloud API (official; Jarvis's own second number).
+    # PHASE 1 IS READ-ONLY (Paul, 4 Aug): sending stays off until he flips it.
+    whatsapp_verify_token: str = ""      # webhook verification handshake (Meta dashboard)
+    whatsapp_app_secret: str = ""        # X-Hub-Signature-256 validation
+    whatsapp_access_token: str = ""      # Graph API token (send seam, unused in Phase 1)
+    whatsapp_phone_number_id: str = ""   # the number's id on Meta (send seam)
+    whatsapp_sending_enabled: bool = False
+
     # --- Live voice (Build Slice: Voice Access) — rides on the ElevenLabs key ---
     # Phone-call surface: the Twilio number registered in ElevenLabs (its
     # phone_number_id) + Paul's own number for outbound wake calls.

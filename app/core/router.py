@@ -921,7 +921,21 @@ class JarvisRouter:
                 else "- Email inboxes: not connected yet"
             ),
             f"- Kiefer nightly email: {'configured' if (s.gmail_address and s.kiefer_email) else 'not configured yet'}",
-            f"- Apple Health webhook: {'configured' if s.apple_health_webhook_secret else 'not configured yet'}",
+            (
+                "- Apple Health webhook: configured — sleep, steps, HR and WATER flow in "
+                "(WaterMinder and any water app land via Apple Health; totals merge with "
+                "his manual '300ml' logging, never double-counted)"
+                if s.apple_health_webhook_secret
+                else "- Apple Health webhook: not configured yet"
+            ),
+            (
+                "- WhatsApp (Jarvis's own second number, official API): READ-ONLY — "
+                "messages arriving there are ingested and summarised in digests / "
+                "'catch me up'. You NEVER send on WhatsApp in this phase; if Paul asks "
+                "you to reply there, say sending is a later phase he'll switch on."
+                if s.whatsapp_verify_token
+                else "- WhatsApp: not connected yet (planned: read-only on the second number)"
+            ),
             "- Day rhythm: wake-up sequence built (05:00 local; Paul arms it with 'start the "
             "wake-ups', skips one day with 'no wake-up tomorrow'); hourly move+water nudges; "
             "med reminders (ADHD 09:30, supplements 14:00, TRT Saturdays); bedtime "
@@ -1005,6 +1019,11 @@ class JarvisRouter:
             "✅ Kiefer email: configured" if (s.gmail_address and s.kiefer_email)
             else "▫️ Kiefer email: not configured"
         )
+        if s.whatsapp_verify_token:
+            wa = await self.db.fetch_one("SELECT COUNT(*) AS n FROM whatsapp_ingest")
+            lines.append(f"✅ WhatsApp: read-only on the second number — {wa['n']} message(s) ingested")
+        else:
+            lines.append("▫️ WhatsApp: not configured")
         lines.append(
             "✅ Apple Health: webhook ready" if s.apple_health_webhook_secret
             else "▫️ Apple Health: not configured"

@@ -785,7 +785,14 @@ class HeartbeatJobs:
             " WHERE id > ? ORDER BY id ASC LIMIT 400",
             (last_id,),
         )
-        if not rows:
+        # WhatsApp (read-only, second number) rides the same digest.
+        wa_last = int(await self.store.get("whatsapp_digest_last_id", "0") or 0)
+        wa_rows = await self.db.fetch_all(
+            "SELECT id, ts, wa_id, sender, kind, message FROM whatsapp_ingest"
+            " WHERE id > ? ORDER BY id ASC LIMIT 200",
+            (wa_last,),
+        )
+        if not rows and not wa_rows:
             return False
         now = datetime.now(await self._tz())
         if not force and not await self._once(
@@ -793,7 +800,11 @@ class HeartbeatJobs:
         ):
             return False
         corpus = "\n".join(
-            f"[{r['chat_title']}] {r['sender']}: {r['message'][:300]}" for r in rows
+            [f"[{r['chat_title']}] {r['sender']}: {r['message'][:300]}" for r in rows]
+            + [
+                f"[WhatsApp] {r['sender'] or r['wa_id']}: {r['message'][:300]}"
+                for r in wa_rows
+            ]
         )[:24000]
         try:
             digest = await self.claude.converse(
@@ -807,9 +818,12 @@ class HeartbeatJobs:
                 f"[{r['chat_title']}] {r['sender']}: {r['message'][:120]}" for r in rows[-10:]
             )
             digest = f"Summary engine hiccuped — the raw tail instead:\n{tail}"
-        header = f"GROUP DIGEST — {len(rows)} message(s) since the last one\n\n"
+        header = f"GROUP DIGEST — {len(rows) + len(wa_rows)} message(s) since the last one\n\n"
         await self._send_text(header + digest)
-        await self.store.set("group_digest_last_id", str(rows[-1]["id"]))
+        if rows:
+            await self.store.set("group_digest_last_id", str(rows[-1]["id"]))
+        if wa_rows:
+            await self.store.set("whatsapp_digest_last_id", str(wa_rows[-1]["id"]))
         return True
 
     # -------------------------------------------- hourly Trello re-sync
