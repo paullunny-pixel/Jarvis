@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     # --- Models (latest as of July 2026; override via env when new ones ship) ---
     brain_model: str = "claude-opus-5"          # judgement, coaching, conversation
     fast_model: str = "claude-haiku-4-5"        # routing, parsing, classification
+    # Live phone calls trade Opus's depth for Sonnet's speed — same persona,
+    # memory and tools; seconds shorter per spoken turn (Paul, 5 Aug: the lag
+    # was the complaint, not the answers). Override via PHONE_MODEL.
+    phone_model: str = "claude-sonnet-5"
     deepgram_model: str = "nova-3"
     elevenlabs_model: str = "eleven_multilingual_v2"
 

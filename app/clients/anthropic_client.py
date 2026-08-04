@@ -83,11 +83,12 @@ class ClaudeClient:
         messages: list[dict[str, Any]],  # content may be text or vision blocks
         max_tokens: int = 1024,
         timeout: float | None = None,  # long-corpus jobs (email research) need more than chat
+        model: str | None = None,      # latency-sensitive surfaces (phone) override the brain
     ) -> str:
         """Full-quality Jarvis reply (brain model)."""
         data = await self._call(
             {
-                "model": self.brain_model,
+                "model": model or self.brain_model,
                 "max_tokens": max_tokens,
                 "system": system,
                 "messages": messages,
@@ -105,6 +106,7 @@ class ClaudeClient:
         max_rounds: int = 6,
         max_tokens: int = 1024,
         timeout: float | None = None,
+        model: str | None = None,      # latency-sensitive surfaces (phone) override the brain
     ) -> str:
         """Brain-first (Phase A2): the tool-use loop. The brain model answers
         with text and/or tool calls; each call runs through `handler` (the
@@ -115,7 +117,7 @@ class ClaudeClient:
         for _ in range(max_rounds):
             data = await self._call(
                 {
-                    "model": self.brain_model,
+                    "model": model or self.brain_model,
                     "max_tokens": max_tokens,
                     "system": system,
                     "messages": convo,
