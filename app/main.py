@@ -455,6 +455,41 @@ async def merge_water_total(db, day_iso: str, water_ml: int) -> bool:
     return True
 
 
+@app.post("/webhook/location")
+async def phone_location(request: Request) -> dict:
+    """Paul's iPhone Shortcut posts {secret, lat, lon} a few times a day.
+    Shares the Apple Health webhook secret (same phone, same PDF step).
+    Moving timezone switches every clock and tells him once."""
+    router: JarvisRouter = request.app.state.router
+    payload = await request.json()
+    secret = router.settings.apple_health_webhook_secret
+    if not secret or not hmac.compare_digest(str(payload.get("secret", "")), secret):
+        raise HTTPException(status_code=403, detail="nope")
+    try:
+        lat = float(payload.get("lat") if payload.get("lat") is not None else payload.get("latitude"))
+        lon = float(payload.get("lon") if payload.get("lon") is not None else payload.get("longitude"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="lat/lon required")
+
+    from app.heartbeat.location import apply_location
+
+    result = await apply_location(router.store, router.living, lat, lon)
+    if result["changed"]:
+        try:
+            await request.app.state.heartbeat.reschedule()
+        except Exception:
+            logger.exception("Reschedule after GPS timezone change failed")
+        if router.heartbeat is not None:
+            try:
+                await router.heartbeat._send_text(
+                    f"Clocks followed you to {result['place']} — briefs, nudges, "
+                    "bedtime and wake-ups all moved with you."
+                )
+            except Exception:
+                logger.exception("Timezone-change note failed — clocks moved anyway")
+    return {"ok": True, **result}
+
+
 @app.get("/webhook/whatsapp")
 async def whatsapp_verify(request: Request):
     """Meta's webhook verification handshake — echo the challenge when the

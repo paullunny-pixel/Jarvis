@@ -16,7 +16,7 @@ chasing gates (run + meds — remind hourly, never block; Paul's call 3 Aug).
 
 ## Commands
 
-- Tests: `python -m unittest discover -s tests` (459 tests; stdlib unittest,
+- Tests: `python -m unittest discover -s tests` (463 tests; stdlib unittest,
   NOT pytest — keep it that way. Only `requirements.txt` is needed; two PDF
   tests also use `reportlab` and skip automatically when it isn't installed)
 - No local run needed for most work; local dev uses SQLite automatically

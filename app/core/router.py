@@ -1024,6 +1024,18 @@ class JarvisRouter:
             lines.append(f"✅ WhatsApp: read-only on the second number — {wa['n']} message(s) ingested")
         else:
             lines.append("▫️ WhatsApp: not configured")
+        try:
+            import json as _json
+
+            from app.heartbeat.location import LAST_LOCATION_KEY
+
+            fix = _json.loads(await self.store.get(LAST_LOCATION_KEY, "") or "{}")
+            lines.append(
+                f"✅ Phone GPS: last fix {fix['place']} ({fix['ts'][:16]})"
+                if fix.get("place") else "▫️ Phone GPS: no fix yet (Shortcut not set up)"
+            )
+        except Exception:
+            lines.append("▫️ Phone GPS: no fix yet")
         lines.append(
             "✅ Apple Health: webhook ready" if s.apple_health_webhook_secret
             else "▫️ Apple Health: not configured"
