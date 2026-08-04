@@ -61,6 +61,17 @@ class TestParseWebhook(unittest.TestCase):
         self.assertEqual(parse_webhook({"entry": None}), [])
 
 
+class TestLegacyGhostTable(unittest.TestCase):
+    def test_schema_never_reuses_the_old_whatsapp_table_name(self):
+        # The removed pre-Telegram route left 'whatsapp_ingest' (group_id
+        # shape) in prod; reusing the name crash-looped the 4 Aug deploys.
+        from app.db import schema
+
+        joined = " ".join(schema.TABLES)
+        self.assertNotIn(" whatsapp_ingest", joined)
+        self.assertIn("wa_direct_ingest", joined)
+
+
 class TestSignature(unittest.TestCase):
     def test_signature_checks_out_and_rejects_wrong(self):
         import hashlib
@@ -121,7 +132,7 @@ class TestIngestAndDigest(unittest.IsolatedAsyncioTestCase):
 
         h = JobsHarness(self.db, flourish="DIGEST TEXT")
         await self.db.execute(
-            "INSERT INTO whatsapp_ingest (ts, wa_id, sender, company_tag, kind, message)"
+            "INSERT INTO wa_direct_ingest (ts, wa_id, sender, company_tag, kind, message)"
             " VALUES ('2026-08-04T10:00:00+00:00', '447700900001', 'Kiefer Brindle', '',"
             " 'text', 'invoices signed, pack incoming')"
         )

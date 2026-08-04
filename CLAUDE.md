@@ -16,7 +16,7 @@ chasing gates (run + meds — remind hourly, never block; Paul's call 3 Aug).
 
 ## Commands
 
-- Tests: `python -m unittest discover -s tests` (463 tests; stdlib unittest,
+- Tests: `python -m unittest discover -s tests` (464 tests; stdlib unittest,
   NOT pytest — keep it that way. Only `requirements.txt` is needed; two PDF
   tests also use `reportlab` and skip automatically when it isn't installed)
 - No local run needed for most work; local dev uses SQLite automatically
@@ -34,7 +34,7 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
 - `app/main.py` — FastAPI app, webhooks (Telegram, Apple Health incl. water_ml
   max-merge into water_log — WaterMinder etc. arrive via Apple Health, never
   double-counted with manual logging; WhatsApp Cloud API verify + inbound,
-  READ-ONLY Phase 1 into whatsapp_ingest, signature-checked), cockpit routes
+  READ-ONLY Phase 1 into wa_direct_ingest (NOT whatsapp_ingest — a prod ghost of that name predates the Telegram move), signature-checked), cockpit routes
 - `app/core/router.py` — the message pipeline. ORDER MATTERS: owner check →
   documents → photos (vision + run-proof) → voice STT → PRIVATE ROOM (before
   general logging!) → life signals (status/timezone/hound/streaks/meds) →

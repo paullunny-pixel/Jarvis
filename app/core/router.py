@@ -1020,7 +1020,7 @@ class JarvisRouter:
             else "▫️ Kiefer email: not configured"
         )
         if s.whatsapp_verify_token:
-            wa = await self.db.fetch_one("SELECT COUNT(*) AS n FROM whatsapp_ingest")
+            wa = await self.db.fetch_one("SELECT COUNT(*) AS n FROM wa_direct_ingest")
             lines.append(f"✅ WhatsApp: read-only on the second number — {wa['n']} message(s) ingested")
         else:
             lines.append("▫️ WhatsApp: not configured")

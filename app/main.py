@@ -535,7 +535,7 @@ async def whatsapp_inbound(request: Request) -> dict:
     now_iso = datetime.now(_tz.utc).isoformat(timespec="seconds")
     for m in messages:
         await router.db.execute(
-            "INSERT INTO whatsapp_ingest (ts, wa_id, sender, company_tag, kind, message)"
+            "INSERT INTO wa_direct_ingest (ts, wa_id, sender, company_tag, kind, message)"
             " VALUES (?, ?, ?, ?, ?, ?)",
             (now_iso, m.wa_id, m.name[:120], "", m.kind, m.text),
         )

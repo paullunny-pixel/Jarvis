@@ -788,7 +788,7 @@ class HeartbeatJobs:
         # WhatsApp (read-only, second number) rides the same digest.
         wa_last = int(await self.store.get("whatsapp_digest_last_id", "0") or 0)
         wa_rows = await self.db.fetch_all(
-            "SELECT id, ts, wa_id, sender, kind, message FROM whatsapp_ingest"
+            "SELECT id, ts, wa_id, sender, kind, message FROM wa_direct_ingest"
             " WHERE id > ? ORDER BY id ASC LIMIT 200",
             (wa_last,),
         )

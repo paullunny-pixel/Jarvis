@@ -254,9 +254,13 @@ TABLES: list[str] = [
     """,
     "CREATE INDEX IF NOT EXISTS idx_tg_ingest_company ON telegram_ingest (company_tag, ts)",
     "CREATE INDEX IF NOT EXISTS idx_tg_ingest_chat ON telegram_ingest (chat_id, ts)",
-    # --- WhatsApp read-only ingestion (official Cloud API, second number; 4 Aug) ---
+    # --- WhatsApp read-only ingestion (official Cloud API, second number; 4 Aug).
+    # NOT named 'whatsapp_ingest': the removed pre-Telegram route left a table
+    # of that name (group_id/group_name shape) in prod, and reusing the name
+    # crash-looped the 4 Aug deploys (UndefinedColumnError on wa_id). Schema
+    # never drops, so the ghost stays; this table sidesteps it. ---
     """
-    CREATE TABLE IF NOT EXISTS whatsapp_ingest (
+    CREATE TABLE IF NOT EXISTS wa_direct_ingest (
         id {pk},
         ts TEXT NOT NULL,
         wa_id TEXT NOT NULL DEFAULT '',
@@ -266,7 +270,7 @@ TABLES: list[str] = [
         message TEXT NOT NULL
     )
     """,
-    "CREATE INDEX IF NOT EXISTS idx_wa_ingest ON whatsapp_ingest (wa_id, ts)",
+    "CREATE INDEX IF NOT EXISTS idx_wa_direct_ingest ON wa_direct_ingest (wa_id, ts)",
     # --- Milestone 6: the private sobriety track (content encrypted at rest) ---
     """
     CREATE TABLE IF NOT EXISTS sobriety (
