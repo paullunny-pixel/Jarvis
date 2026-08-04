@@ -90,7 +90,19 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
 - `app/heartbeat/` — scheduler jobs, streaks, gates, ICS calendar, SMTP email,
   day rhythm: wake sequence (OFF until Paul arms it; escalates to a real
   Twilio phone call via `wake_channels.py` when the Twilio keys are set),
-  hourly move+water, med reminders, nudge dedupe.
+  hourly move+water, med reminders, nudge dedupe. WAKE & HYDRATE v2
+  (`wakeup.py`, 5 Aug, call-led): 'set wake 05:00' locks a gospel time
+  (inviolable router lane, first look at every message; 'test alarm' drills
+  the full sequence with short intervals and NO real data written) — at the
+  gospel time Jarvis rings Paul via the Twilio channel with SCRIPTED short
+  turns (no LLM lag; `PhoneChannel.script_handler` + TTS memo; off-script
+  speech falls through to the brain), calls back every 2 min until photo
+  proof (selfie / desktop / rotating cockpit code — `code_for` HMAC,
+  anti-cheat), then holds for the 500ml electrolyte water photo, then opens
+  the day warmly. 'override' (spoken on the call or via the universal lane)
+  stands it down instantly, no penalty; welfare backstop stops calling after
+  `max_escalation_min` silence and can email `welfare_contact`. v1 wake_tick
+  stands down while a gospel time is set. All tunables in config.py.
   Quiet day (3 Aug): 'cancel my notifications today' → QUIET_KEY suppresses
   every non-essential send at the `_send_text`/`_send_voice` funnel for the
   local day (meds fire regardless, `essential=True`); 'notifications back

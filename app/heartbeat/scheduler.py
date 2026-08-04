@@ -66,6 +66,9 @@ class Heartbeat:
             ("morning_brief", self.jobs.morning_brief, CronTrigger(hour="7-10", minute=0, timezone=timezone), 1800),
             # §4: escalating wake loop, ~every 3 min from 05:00 (no-op until enabled)
             ("wake_tick", self.jobs.wake_tick, CronTrigger(hour="5-8", minute="*/3", timezone=timezone), 120),
+            # Wake & Hydrate v2: minute beat, any hour — fires at the gospel
+            # time, then drives the callback/hydration loop (cheap no-op idle)
+            ("wake2_tick", self.jobs.wake2_tick, CronTrigger(minute="*", timezone=timezone), 55),
             # §5: hourly move + water through the waking day
             ("move_water", self.jobs.move_water_nudge, CronTrigger(hour="8-20", minute=5, timezone=timezone), 900),
             # §6: meds/supplements/TRT (TRT job self-checks for Saturday)

@@ -107,6 +107,11 @@ class HeartbeatJobs:
         # Phone-call escalation joins in when a number is wired up. The custom
         # Twilio pipeline is the live one; the ElevenLabs-Agents seam stays as
         # the alternative when only that route is configured.
+        self.phone_channel = phone_channel
+        # Wake & Hydrate v2 (5 Aug): the call-led morning routine.
+        from app.heartbeat.wakeup import WakeRoutine
+
+        self.wake2 = WakeRoutine(self)
         self.phone_wake = None
         if phone_channel is not None and phone_channel.configured:
             self.phone_wake = TwilioCallWakeChannel(phone_channel)
@@ -536,8 +541,20 @@ class HeartbeatJobs:
                 return False
         return not await self.woke_today(today)
 
+    async def wake2_tick(self, now: datetime | None = None) -> None:
+        """Wake & Hydrate v2's minute beat — fires at the gospel time, drives
+        callbacks, hydration, override and the welfare backstop."""
+        try:
+            await self.wake2.tick(now)
+        except Exception:
+            logger.exception("Wake v2 tick failed (next minute retries)")
+
     async def wake_tick(self, now: datetime | None = None) -> None:
         """Every ~3 minutes from 05:00 local until the mirror selfie lands."""
+        from app.heartbeat.wakeup import WAKE_TIME_KEY
+
+        if await self.store.get(WAKE_TIME_KEY, ""):
+            return  # v2 owns the morning once a gospel wake time is set
         now = now or datetime.now(await self._tz())
         if not await self.wake_pending(now):
             return
