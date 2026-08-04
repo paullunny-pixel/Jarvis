@@ -305,6 +305,22 @@ class TestTwilioEndpoints(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("Heard: what's on the board", "".join(self.channel._elevenlabs.texts))
 
+    def test_blank_twilio_fields_survive_parsing_and_the_signature(self):
+        # Twilio sends blank fields (CallerName=, FromCity= — empty for UK
+        # mobiles) and signs them as key+nothing. Dropping blanks in parsing
+        # failed every REAL signature check while tests stayed green (the
+        # 4 Aug third-call failure) — so this pins the honest payload.
+        path = f"/twilio/voice/{self.secret}/answer?g=x"
+        params = {
+            "CallSid": "CA9", "CallStatus": "ringing", "From": "+18574206042",
+            "CallerName": "", "FromCity": "", "FromState": "", "FromZip": "",
+        }
+        response = self.client.post(
+            path, data=params, headers={"X-Twilio-Signature": self._signed(path, params)}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("<Gather", response.text)   # a real greeting, not the refusal line
+
     def test_forged_signature_gets_refusal_twiml_not_instructions(self):
         from app.voice.phone import SIGNATURE_ERROR_LINE
 

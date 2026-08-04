@@ -493,11 +493,14 @@ async def _twilio_form(request: Request) -> dict[str, str]:
     """Twilio posts application/x-www-form-urlencoded. Parsed by hand (same
     pattern as the cockpit login) — request.form() needs the python-multipart
     package this project deliberately doesn't ship, and the AssertionError it
-    raises took down the first live call (4 Aug: 'application error')."""
+    raises took down the first live call (4 Aug: 'application error').
+    keep_blank_values matters: Twilio sends blank fields (CallerName=,
+    FromCity= — usually empty for UK mobiles) and includes them in the
+    signature; dropping them failed every real signature check (third call)."""
     from urllib.parse import parse_qs
 
     body = (await request.body()).decode("utf-8", "replace")
-    return {k: v[0] for k, v in parse_qs(body).items()}
+    return {k: v[0] for k, v in parse_qs(body, keep_blank_values=True).items()}
 
 
 def _twilio_signed(router: "JarvisRouter", request: Request, params: dict) -> bool:
