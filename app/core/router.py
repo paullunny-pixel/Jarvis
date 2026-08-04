@@ -220,6 +220,26 @@ class JarvisRouter:
             if not transcript:
                 return  # stickers, photos etc. — Phase 2
 
+        # 1a-wake. WAKE GOSPEL (v2 §0/§0.5, 5 Aug): 'set wake 05:00' / 'wake
+        # me at 5' and 'test alarm' get first look, before every other lane —
+        # no gate, quiet day or state can swallow them, and a matched command
+        # answers honestly on failure, never silently (handle_command's rule).
+        wake2 = getattr(self.heartbeat, "wake2", None) if self.heartbeat is not None else None
+        if wake2 is not None:
+            try:
+                wake_ack = await wake2.handle_command(transcript)
+            except Exception:
+                logger.exception("Wake command lane errored — falling through")
+                wake_ack = None
+            if wake_ack:
+                await self.log.log(
+                    "in", transcript, chat_id=message.chat_id,
+                    kind="voice" if message.is_voice else "text",
+                )
+                await self.log.log("out", wake_ack, chat_id=message.chat_id, meta={"wake2": True})
+                await self.telegram.send_text(message.chat_id, wake_ack)
+                return
+
         # 1b. THE PRIVATE ROOM (Milestone 6) — checked before anything is
         # written to the general log. Private exchanges live only in the
         # encrypted sobriety store; the business brain never sees them.
@@ -820,6 +840,41 @@ class JarvisRouter:
             "in", f"[photo] {caption}".strip(), chat_id=message.chat_id, meta={"photo": True}
         )
 
+        # Wake & Hydrate v2 (5 Aug): while a sequence is live, a photo IS the
+        # proof — selfie/desktop/rotating-code to prove he's up, then the
+        # water shot. Vision classifies; the routine records (never in test
+        # mode); an unrecognised photo falls through to normal handling.
+        wake2 = getattr(self.heartbeat, "wake2", None) if self.heartbeat is not None else None
+        if wake2 is not None:
+            try:
+                wake_phase = await wake2.active_phase()
+            except Exception:
+                wake_phase = ""
+            if wake_phase:
+                verdict = await self._classify_wake_proof(_b64.b64encode(photo).decode()) or {}
+                ack = None
+                if wake_phase == "up":
+                    kind = verdict.get("kind", "")
+                    if kind == "code":
+                        if await wake2.valid_code(verdict.get("code_text", "")):
+                            ack = await wake2.proof_up("code", message.photo_file_id)
+                        else:
+                            from app.heartbeat.wakeup import STALE_CODE_LINE
+
+                            ack = STALE_CODE_LINE
+                    elif kind in ("selfie", "desktop"):
+                        ack = await wake2.proof_up(kind, message.photo_file_id)
+                elif verdict.get("kind") == "water":
+                    ack = await wake2.proof_hydration()
+                if ack:
+                    await self.log.log("out", ack, chat_id=message.chat_id, meta={"wake2": True})
+                    try:
+                        audio = await self.elevenlabs.synthesize(strip_for_speech(ack))
+                        await self.telegram.send_voice(message.chat_id, audio, transcript=ack)
+                    except SynthesisError:
+                        await self.telegram.send_text(message.chat_id, ack)
+                    return
+
         # Gate proof: if today's run is unconfirmed, check whether this photo
         # IS the run stats — vision reads the numbers and logs the real thing.
         if self.gates is not None:
@@ -929,6 +984,31 @@ class JarvisRouter:
         'Convert miles to km. If it is not exercise stats, is_run_stats is false.'
     )
 
+    WAKE_PROOF_SYSTEM = (
+        "You verify morning proof photos for a wake-up routine. Reply ONLY with "
+        'JSON: {"kind": "selfie"|"desktop"|"code"|"water"|"other", "code_text": ""}. '
+        "selfie = a person visible (mirror selfie counts); desktop = a computer "
+        "screen or monitor showing a desktop; code = a dashboard displaying a "
+        "short 6-character code (copy the characters into code_text exactly); "
+        "water = a drinking glass, water bottle or electrolyte sachet, full OR "
+        "empty. Anything else is other. No prose, JSON only."
+    )
+
+    async def _classify_wake_proof(self, image_b64: str) -> dict | None:
+        import json as _json
+        import re as _re
+
+        try:
+            raw = await self.claude.quick_vision(
+                "Which morning proof is this photo?", image_b64,
+                system=self.WAKE_PROOF_SYSTEM, max_tokens=100,
+            )
+            match = _re.search(r"\{.*\}", raw, _re.DOTALL)
+            return _json.loads(match.group(0)) if match else None
+        except Exception:
+            logger.exception("Wake-proof vision check failed")
+            return None
+
     async def _read_run_stats(self, image_b64: str) -> dict | None:
         """Vision check of run-proof photos. Returns stats when the image shows
         a completed run of at least ~5km, else None (photo handled normally)."""
@@ -1015,6 +1095,15 @@ class JarvisRouter:
                 if s.whatsapp_verify_token
                 else "- WhatsApp: not connected yet (planned: read-only on the second number)"
             ),
+            "- WAKE & HYDRATE v2 (5 Aug): 'set wake 05:00' (or 'wake me at 5') locks a "
+            "gospel wake time — at that time Jarvis CALLS Paul's phone, talks him "
+            "upright with short scripted lines, and calls back every couple of minutes "
+            "until photo proof lands (mirror selfie, desktop screenshot, or the "
+            "rotating code on the cockpit), then holds for the 500ml electrolyte "
+            "water photo before the day opens. 'test alarm' drills the whole sequence "
+            "harmlessly. 'override' always stands it down. These phrases are levers "
+            "the machinery catches BEFORE you — never claim to set or stop a wake "
+            "yourself.",
             "- Day rhythm: wake-up sequence built (05:00 local; Paul arms it with 'start the "
             "wake-ups', skips one day with 'no wake-up tomorrow'); hourly move+water nudges; "
             "med reminders (ADHD 09:30, supplements 14:00, TRT Saturdays); bedtime "

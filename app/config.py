@@ -114,6 +114,17 @@ class Settings(BaseSettings):
     twilio_auth_token: str = ""
     twilio_from_number: str = ""
 
+    # --- Wake & Hydrate v2 (Paul's brief, 5 Aug) — all tunable via env ---
+    wake_response_wait: int = 12          # seconds the call waits for his reply
+    wake_callback_interval_min: int = 2   # minutes between callbacks until proof
+    test_callback_interval_sec: int = 30  # 'test alarm' iterates fast
+    hydration_ml: int = 500
+    electrolytes: bool = True
+    hydrate_grace_min: int = 5            # minutes before the water re-nudge
+    max_escalation_min: int = 90          # welfare backstop: total silence limit
+    welfare_contact: str = ""             # optional email to notify on backstop
+    wake_code_refresh_min: int = 5        # cockpit anti-cheat code rotation
+
     def email_accounts(self) -> list[tuple[str, str]]:
         """(address, app_password) for every configured inbox slot."""
         slots = [

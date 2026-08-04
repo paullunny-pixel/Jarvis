@@ -79,8 +79,14 @@ class PhoneChannel:
         # constructor-time injection would be circular (router needs main's
         # components, main builds this before the router).
         self.brain = None
+        # Wake v2: while a wake sequence runs, its scripted handler intercepts
+        # every turn (instant, no LLM); returning None falls through to the
+        # brain. '[[bye]]'-prefixed replies are spoken and then hung up.
+        self.script_handler = None
+        self.listen_timeout = None   # Gather 'timeout' override (wake waits ~12s)
         self._audio: dict[str, tuple[float, bytes]] = {}
         self._greetings: dict[str, str] = {}
+        self._tts_memo: dict[str, bytes] = {}   # scripted lines synth once, replay free
 
     # ------------------------------------------------------------ URLs
 
@@ -126,24 +132,34 @@ class PhoneChannel:
         Flash model + low bitrate: still his voice, a fraction of the
         synthesis time, and a phone line can't hear the difference."""
         try:
-            audio = await self._elevenlabs.synthesize(
-                text, model="eleven_flash_v2_5", output_format="mp3_22050_32"
-            )
+            audio = self._tts_memo.get(text)
+            if audio is None:
+                audio = await self._elevenlabs.synthesize(
+                    text, model="eleven_flash_v2_5", output_format="mp3_22050_32"
+                )
+                if len(self._tts_memo) >= 60:
+                    self._tts_memo.clear()   # blunt cap; scripted lines re-warm fast
+                self._tts_memo[text] = audio
             return f"<Play>{escape(self._audio_url(self.stash_audio(audio)))}</Play>"
         except Exception:
             logger.exception("Phone TTS failed — Twilio <Say> carries the line")
             return f'<Say voice="Polly.Brian">{escape(text)}</Say>'
 
     async def _speak_and_listen(self, text: str) -> str:
-        """Say `text`, then listen for Paul's next utterance. If he stays
-        silent past the Gather, the call ends politely instead of hanging
-        (plain <Say> there — not worth an extra TTS round-trip per turn)."""
+        """Say `text`, then listen for Paul's next utterance. Silence past the
+        Gather normally ends the call politely; while a wake script is driving
+        (script_handler set), silence REDIRECTS back to the turn endpoint so
+        the script can pitch — the script bounds its own silence loop."""
         voiced = await self._voiced(text)
+        wait = f' timeout="{int(self.listen_timeout)}"' if self.listen_timeout else ""
+        if self.script_handler is not None:
+            after = f"<Redirect method='POST'>{escape(self._turn_url())}</Redirect>"
+        else:
+            after = f'<Say voice="Polly.Brian">{escape(FAREWELL)}</Say><Hangup/>'
         return self._document(
-            f'<Gather input="speech" language="en-GB" speechTimeout="auto" '
+            f'<Gather input="speech" language="en-GB" speechTimeout="auto"{wait} '
             f'speechModel="experimental_conversations" profanityFilter="false" '
-            f'action="{escape(self._turn_url())}" method="POST">{voiced}</Gather>'
-            f'<Say voice="Polly.Brian">{escape(FAREWELL)}</Say><Hangup/>'
+            f'action="{escape(self._turn_url())}" method="POST">{voiced}</Gather>{after}'
         )
 
     async def _speak_and_hangup(self, text: str) -> str:
@@ -173,8 +189,20 @@ class PhoneChannel:
         return await self._speak_and_listen(greeting)
 
     async def handle_turn(self, params: dict[str, str]) -> str:
-        """One conversational turn: Paul's utterance in, Jarvis's reply out."""
+        """One conversational turn: Paul's utterance in, Jarvis's reply out.
+        A live wake script gets first refusal — instant scripted lines, no
+        LLM; its None means 'off-script, give it to the brain'."""
         speech = (params.get("SpeechResult") or "").strip()
+        if self.script_handler is not None:
+            try:
+                scripted = await self.script_handler(speech)
+            except Exception:
+                logger.exception("Wake script turn failed — falling through")
+                scripted = None
+            if scripted is not None:
+                if scripted.startswith("[[bye]]"):
+                    return await self._speak_and_hangup(scripted[len("[[bye]]"):])
+                return await self._speak_and_listen(scripted)
         if not speech:
             return await self._speak_and_listen("Didn't catch that — say it once more?")
         if GOODBYE.search(speech) and len(speech) <= 60:

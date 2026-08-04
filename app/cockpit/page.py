@@ -274,6 +274,23 @@ function render(d){
   document.getElementById('sob-count').innerHTML = d.sobriety.days !== null
     ? `<span class="big">${d.sobriety.days}</span><span class="u">days strong</span>`
     : `<span class="big">—</span><span class="u">check in with Jarvis tonight</span>`;
+
+  // Wake & Hydrate v2: the rotating anti-cheat code — photograph THIS to
+  // prove you're up. Only shows while a wake sequence is live.
+  let wb = document.getElementById('wake-badge');
+  if (d.wake && d.wake.live) {
+    if (!wb) {
+      wb = document.createElement('div');
+      wb.id = 'wake-badge';
+      wb.style.cssText = 'position:fixed;top:12px;right:12px;z-index:999;background:#111;color:#fff;'
+        + 'border:3px solid #e0b400;border-radius:14px;padding:14px 20px;text-align:center;'
+        + 'font-family:monospace;box-shadow:0 6px 24px rgba(0,0,0,.45)';
+      document.body.appendChild(wb);
+    }
+    wb.innerHTML = `<div style="font-size:11px;letter-spacing:1px;opacity:.75">WAKE CODE — photograph me</div>`
+      + `<div style="font-size:34px;font-weight:700;letter-spacing:6px">${esc(d.wake.code)}</div>`
+      + `<div style="font-size:10px;opacity:.6">rotates every few minutes — old screenshots won't count</div>`;
+  } else if (wb) { wb.remove(); }
 }
 
 fetch('DATA_URL').then(r => r.json()).then(render)

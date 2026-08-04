@@ -59,6 +59,7 @@ class CockpitService:
             "today": await self._timeline(today, tz),
             "kiefer": await self._kiefer_preview(today),
             "sobriety": await self._sobriety(),
+            "wake": await self._wake(today),
             "rhythm": await self._rhythm(today),
             # §11: physical training is recovery-aware and monthly, never a
             # broken streak; a rest day is a valid entry.
@@ -212,6 +213,27 @@ class CockpitService:
             "workout": snapshot["workout"]["done_today"],
             "twelve": f"{twelve['done']} / {twelve['total'] or 12}",
         }
+
+    async def _wake(self, today: date) -> dict[str, Any]:
+        """Wake & Hydrate v2: the rotating anti-cheat code, shown only while a
+        sequence is live so a photo of the dashboard can prove Paul's up."""
+        import json as _json
+
+        try:
+            state = _json.loads(await self._settings.get("wake2_state", "") or "{}")
+            live = (
+                state.get("date") == today.isoformat()
+                and state.get("phase") in ("up", "hydrate")
+            )
+            secret = await self._settings.get("wake2_code_secret", "")
+            if not (live and secret):
+                return {"live": False}
+            from app.config import get_settings
+            from app.heartbeat.wakeup import code_for
+
+            return {"live": True, "code": code_for(secret, get_settings().wake_code_refresh_min)}
+        except Exception:
+            return {"live": False}
 
     async def _sobriety(self) -> dict[str, Any]:
         """Day count only — the panel is supportive, not a dossier."""
