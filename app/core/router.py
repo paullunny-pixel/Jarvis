@@ -1186,7 +1186,9 @@ class JarvisRouter:
                 "- Phone calls (Twilio): CONNECTED — 'call me' rings Paul's actual "
                 "phone in your voice; Paul calling the Twilio number reaches you; the "
                 "wake-up sequence can escalate to a real call. Turn-based on the line: "
-                "he speaks, you answer."
+                "he speaks, you answer. TIMED CALLS: 'call me in 40 minutes and "
+                "remind me to X' — use your schedule_call tool; the machinery rings "
+                "him on the minute."
                 if (self.phone_channel is not None and self.phone_channel.configured)
                 else "- Phone calls: not connected yet (Twilio keys pending in Render)."
             ),
@@ -2263,6 +2265,29 @@ class JarvisRouter:
                     },
                 },
             })
+        if self.phone_channel is not None and self.phone_channel.configured:
+            tools.append({
+                "name": "schedule_call",
+                "description": (
+                    "Ring Paul's ACTUAL PHONE later — 'call me in 40 minutes and "
+                    "remind me to call Ella', 'ring me at 5', 'phone me before the "
+                    "school run'. Give minutes_from_now (1-1440) OR at ('HH:MM' "
+                    "local); reminder = what you'll say when he answers. list=true "
+                    "shows pending calls; cancel=true clears them all. The machinery "
+                    "rings him on time even if you're mid-conversation elsewhere. "
+                    "Only claim it's scheduled when the result confirms."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "minutes_from_now": {"type": "integer"},
+                        "at": {"type": "string"},
+                        "reminder": {"type": "string"},
+                        "list": {"type": "boolean"},
+                        "cancel": {"type": "boolean"},
+                    },
+                },
+            })
         tools.append({
             "name": "build_list",
             "description": (
@@ -2359,6 +2384,50 @@ class JarvisRouter:
                 await self.heartbeat.delay_wake(wake_date, hour)
                 done.append(f"the {wake_date.strftime('%d %b')} wake-up moved to {hour:02d}:00")
             return ("Confirmed: " + ", ".join(done) + ".") if done else "NO CHANGE — no valid switch given."
+        if name == "schedule_call" and self.heartbeat is not None:
+            import re as _sre
+
+            key = self.heartbeat.SCHEDULED_CALLS_KEY
+            tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
+            now_local = datetime.now(ZoneInfo(tz_name))
+            try:
+                items = _json.loads(await self.store.get(key, "[]"))
+            except Exception:
+                items = []
+            if tool_input.get("cancel"):
+                await self.store.set(key, "[]")
+                return f"Cleared — {len(items)} scheduled call(s) cancelled."
+            if tool_input.get("list"):
+                if not items:
+                    return "No calls scheduled."
+                return "Scheduled: " + "; ".join(
+                    f"{i['due'][11:16]} — {i.get('message', '')}" for i in items
+                )
+            phone = self.phone_channel
+            if phone is None or not phone.configured:
+                return "SCHEDULE FAILED — no phone line is configured on this deployment."
+            due = None
+            minutes = tool_input.get("minutes_from_now")
+            if isinstance(minutes, int) and 1 <= minutes <= 1440:
+                due = now_local + timedelta(minutes=minutes)
+            else:
+                at_hit = _sre.match(r"^\s*(\d{1,2}):(\d{2})\s*$", str(tool_input.get("at") or ""))
+                if at_hit:
+                    due = now_local.replace(
+                        hour=int(at_hit.group(1)), minute=int(at_hit.group(2)),
+                        second=0, microsecond=0,
+                    )
+                    if due <= now_local:
+                        due += timedelta(days=1)
+            if due is None:
+                return "SCHEDULE FAILED — give minutes_from_now (1-1440) or at 'HH:MM'."
+            reminder = str(tool_input.get("reminder") or "").strip() or "You asked me to ring you."
+            items.append({"due": due.isoformat(timespec="seconds"), "message": reminder})
+            await self.store.set(key, _json.dumps(items))
+            return (
+                f"Locked — the phone rings at {due.strftime('%H:%M')} ({tz_name}) "
+                f"and I'll say: {reminder}"
+            )
         if name == "build_list":
             if (tool_input.get("add") or "").strip():
                 return await self._build_list_add(str(tool_input["add"]).strip())

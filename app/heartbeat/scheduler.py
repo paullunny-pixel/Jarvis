@@ -69,6 +69,8 @@ class Heartbeat:
             # Wake & Hydrate v2: minute beat, any hour — fires at the gospel
             # time, then drives the callback/hydration loop (cheap no-op idle)
             ("wake2_tick", self.jobs.wake2_tick, CronTrigger(minute="*", timezone=timezone), 55),
+            # Timed reminder calls ('call me in 40 minutes...') — minute beat
+            ("call_tick", self.jobs.scheduled_calls_tick, CronTrigger(minute="*", timezone=timezone), 55),
             # §5: hourly move + water through the waking day
             ("move_water", self.jobs.move_water_nudge, CronTrigger(hour="8-20", minute=5, timezone=timezone), 900),
             # §6: meds/supplements/TRT (TRT job self-checks for Saturday)
