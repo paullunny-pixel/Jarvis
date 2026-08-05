@@ -613,14 +613,65 @@ class HeartbeatJobs:
             )
         return total
 
+    async def _wake_start_hour(self, today: date) -> float:
+        """When Paul's waking day started, as a local decimal hour: the proven
+        wake if there is one, else the gospel wake time, else 08:00."""
+        row = await self.db.fetch_one(
+            "SELECT wake_time FROM wake_log WHERE day = ?", (today.isoformat(),)
+        )
+        if row:
+            try:
+                woke = datetime.fromisoformat(row["wake_time"]).astimezone(await self._tz())
+                return woke.hour + woke.minute / 60
+            except Exception:
+                pass
+        from app.heartbeat.wakeup import WAKE_TIME_KEY
+
+        gospel = await self.store.get(WAKE_TIME_KEY, "")
+        if gospel:
+            try:
+                hh, _, mm = gospel.partition(":")
+                return int(hh) + int(mm or 0) / 60
+            except Exception:
+                pass
+        return 8.0
+
+    async def water_pace_status(self, now: datetime) -> dict:
+        """The intelligent water curve (5 Aug): expected = hours awake × pace.
+        Run days and declared heat days ('water_heat_day' = today) pace up."""
+        today = now.date()
+        pace = self.settings.water_pace_ml_per_hour
+        if await self.store.get("water_heat_day", "") == today.isoformat():
+            pace = self.settings.water_heat_pace_ml
+        elif await self.db.fetch_one(
+            "SELECT id FROM runs WHERE run_date = ?", (today.isoformat(),)
+        ):
+            pace = self.settings.water_heat_pace_ml
+        hours_awake = max(
+            0.0, (now.hour + now.minute / 60) - await self._wake_start_hour(today)
+        )
+        expected = int(hours_awake * pace)
+        actual = await self.water_total(today)
+        return {
+            "pace": pace, "hours_awake": hours_awake,
+            "expected": expected, "actual": actual, "behind": expected - actual,
+        }
+
     async def move_water_nudge(self, now: datetime | None = None) -> None:
-        """One combined move + 300ml nudge per waking hour."""
+        """Pace-aware water (5 Aug): ahead of the curve = SILENCE — that's the
+        reward. Only a full hour's worth behind earns one honest line (with
+        the movement count riding along). Never before he's up, never after
+        goodnight."""
         if await self.store.get("hourly_nudges", "on") != "on":
             return
         now = now or datetime.now(await self._tz())
         today = now.date()
         if await self.wake_enabled() and not await self.woke_today(today) and now.hour < 12:
             return  # still asleep — the wake system owns the morning
+        from app.heartbeat.wakeup import WAKE_TIME_KEY
+
+        if await self.store.get(WAKE_TIME_KEY, "") and not await self.woke_today(today):
+            return  # gospel set but not proven up yet — the wake call owns this
         gone_to_bed = await self.db.fetch_one(
             "SELECT id FROM sleep_log WHERE day = ?", (today.isoformat(),)
         )
@@ -628,13 +679,15 @@ class HeartbeatJobs:
             return  # day already closed with "goodnight"
         if not await self._once(f"movewater:{today.isoformat()}:{now.hour}", hours=0.9):
             return
-        water = await self.water_total(today)
-        target = self.settings.water_target_ml
+        status = await self.water_pace_status(now)
+        if status["behind"] < status["pace"]:
+            return  # on or near the curve — silence is the reward
         moves = await self.movement_total(today)
         await self._send_text(
-            f"{now.strftime('%H:%M')}, sir — one minute on your feet and 300ml down. "
-            f"Water {water / 1000:.1f}L of {target / 1000:.1f}L · movements {moves}. "
-            f"Say 'moved' and '300ml' and I'll log them."
+            f"{now.strftime('%H:%M')}, sir — water's {status['behind']}ml behind the curve "
+            f"({status['actual']}ml down, {status['expected']}ml expected at "
+            f"{status['pace']}ml an hour). A glass now squares it — tell me the amount "
+            f"and I'll log it. One minute on your feet too (movements {moves})."
         )
 
     # --------------------------------------------------- §6 meds & supplements
