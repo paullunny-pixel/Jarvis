@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     # was the complaint, not the answers). Override via PHONE_MODEL.
     phone_model: str = "claude-sonnet-5"
     deepgram_model: str = "nova-3"
+    deepgram_language: str = "en-GB"    # Paul's accent — tuned 5 Aug
     elevenlabs_model: str = "eleven_multilingual_v2"
 
     # --- Second brain (Milestone 2) ---

@@ -19,10 +19,12 @@ class DeepgramClient:
         self,
         api_key: str,
         model: str = "nova-3",
+        language: str = "en-GB",
         transport: httpx.AsyncBaseTransport | None = None,
         timeout: float = 60.0,
     ) -> None:
         self.model = model
+        self.language = language
         self._client = httpx.AsyncClient(
             transport=transport,
             timeout=timeout,
@@ -32,14 +34,21 @@ class DeepgramClient:
     async def close(self) -> None:
         await self._client.aclose()
 
-    async def transcribe(self, audio: bytes, mimetype: str = "audio/ogg") -> str:
+    async def transcribe(
+        self, audio: bytes, mimetype: str = "audio/ogg", keyterms: list[str] | None = None
+    ) -> str:
         """Transcribe a voice note. Telegram voice notes are OGG/Opus — Deepgram
-        decodes them natively, so no audio conversion step is needed."""
-        params = {
-            "model": self.model,
-            "smart_format": "true",
-            "language": "en",
-        }
+        decodes them natively, so no audio conversion step is needed.
+        `keyterms` rides nova-3's keyterm prompting (5 Aug): Paul's people,
+        companies, products and meds, so 'Prodermis' never comes back as
+        'pro dermis' — the router builds the list live from the second brain."""
+        params: list[tuple[str, str]] = [
+            ("model", self.model),
+            ("smart_format", "true"),
+            ("language", self.language),
+        ]
+        for term in (keyterms or [])[:60]:
+            params.append(("keyterm", term))
         response = await self._client.post(
             API_URL, params=params, content=audio, headers={"Content-Type": mimetype}
         )
