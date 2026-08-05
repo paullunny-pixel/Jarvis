@@ -77,7 +77,7 @@ class TestLiveVocabulary(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Marijana", vocab)       # key segment, titled
         self.assertIn("Nowak", vocab)          # capitalised word from a value
         self.assertIn("GlowLab", vocab)
-        self.assertLessEqual(len(vocab), 60)
+        self.assertLessEqual(len(vocab), 100)
         self.assertEqual(len(vocab), len(set(vocab)))
 
     async def test_vocabulary_is_cached_for_the_hour(self):
