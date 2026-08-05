@@ -360,6 +360,18 @@ class TestRouterLaneAndV1Handover(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.get("phase"), "stood_down")
         self.assertTrue(any("stood down instantly" in t for t in self.h.texts()))
 
+    async def test_status_shows_the_gospel_wake_time(self):
+        await self.router.handle_update(text_update("set wake 08:30", OWNER))
+        await self.router.handle_update(text_update("status", OWNER))
+        report = next(t for t in self.h.texts() if "SYSTEM CHECK" in t)
+        self.assertIn("Wake-up call: 08:30", report)
+        self.assertIn("gospel", report)
+
+    async def test_status_honest_when_no_wake_set(self):
+        await self.router.handle_update(text_update("status", OWNER))
+        report = next(t for t in self.h.texts() if "SYSTEM CHECK" in t)
+        self.assertIn("Wake-up: not set", report)
+
     async def test_v1_wake_tick_stands_down_when_gospel_set(self):
         await self.h.jobs.set_wake_enabled(True)
         await self.h.jobs.store.set(WAKE_TIME_KEY, "05:00")
