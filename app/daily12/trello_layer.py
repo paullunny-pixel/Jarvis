@@ -86,6 +86,7 @@ class BoardMap:
     def __init__(self, key: str, name: str, board_id: str) -> None:
         self.key, self.name, self.id = key, name, board_id
         self.lists: dict[str, str] = {}
+        self.archive_lists: dict[str, str] = {}   # '(Archive)' lists — visible for cleanup
         self.fields: dict[str, str] = {}
         self.options: dict[str, dict[str, str]] = {}   # fieldName → {option → id}
         self.labels: dict[str, str] = {}
@@ -132,7 +133,12 @@ class TrelloLayer:
         for spec in self.registry["boards"]:
             bmap = BoardMap(spec["key"], spec["name"], spec["id"])
             for row in await self.client.board_lists(spec["id"]):
-                if not str(row["name"]).endswith("(Archive)"):
+                # Paul's override (5 Aug eve): archive lists are READABLE —
+                # the cleanup operation pulls cards back out of them — but
+                # stay out of `lists` so nothing ever routes INTO one.
+                if str(row["name"]).endswith("(Archive)"):
+                    bmap.archive_lists[row["name"]] = row["id"]
+                else:
                     bmap.lists[row["name"]] = row["id"]
             for field in await self.client.board_custom_fields(spec["id"]):
                 bmap.fields[field["name"]] = field["id"]

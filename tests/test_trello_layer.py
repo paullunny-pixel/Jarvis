@@ -74,10 +74,13 @@ class TestTrelloLayer(unittest.IsolatedAsyncioTestCase):
         self.h = Harness()
         await self.h.layer.bootstrap()
 
-    async def test_bootstrap_resolves_by_name_and_skips_archives(self):
+    async def test_bootstrap_resolves_by_name_and_separates_archives(self):
         master = self.h.layer.board("master")
         self.assertIn("Inbox", master.lists)
+        # Paul's cleanup override (5 Aug eve): archive lists readable, but
+        # never a routing destination.
         self.assertNotIn("Old Stuff (Archive)", master.lists)
+        self.assertIn("Old Stuff (Archive)", master.archive_lists)
         self.assertIn("Domain", master.fields)
         self.assertIn("Personal", master.options["Domain"])
         self.assertIn("Urgent", master.labels)
