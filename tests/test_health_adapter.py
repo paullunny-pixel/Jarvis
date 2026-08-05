@@ -79,6 +79,26 @@ class TestFlatten(unittest.TestCase):
     def test_empty_payload_is_harmless(self):
         self.assertEqual(flatten_export({"data": {}}, NOW), {"date": TODAY})
 
+    def test_water_name_and_unit_variants_all_land(self):
+        # Display-name metric, fl_oz units — WaterMinder/HAE version drift.
+        payload = {"data": {"metrics": [
+            {"name": "Dietary Water", "units": "fl_oz", "data": [
+                {"date": f"{TODAY} 09:00:00 +0400", "qty": 25.36}]},
+        ]}}
+        self.assertEqual(flatten_export(payload, NOW)["water_ml"], 750)
+
+    def test_foreign_timezone_stamp_still_counts(self):
+        # A 'Today' export stamped in UTC can look like yesterday — the range
+        # is already Today, so what was sent is what counts (the 750ml bug).
+        payload = {"data": {"metrics": [
+            {"name": "dietary_water", "units": "mL", "data": [
+                {"date": f"{YESTERDAY} 20:30:00 +0000", "qty": 750}]},
+        ]}}
+        self.assertEqual(flatten_export(payload, NOW)["water_ml"], 750)
+
+    def test_parsed_summary_rides_the_response(self):
+        pass  # covered in TestEndpointAuth below
+
 
 class TestEndpointAuth(unittest.TestCase):
     def setUp(self):
@@ -121,7 +141,10 @@ class TestEndpointAuth(unittest.TestCase):
             headers={"X-Health-Secret": "SHHH"},
         )
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.json()["water_recorded"])
+        body = response.json()
+        self.assertTrue(body["water_recorded"])
+        self.assertEqual(body["parsed"]["water_ml"], 800)   # visible in the app's log
+        self.assertEqual(body["parsed"]["steps"], 2000)
 
     def test_query_auth_works_too(self):
         response = self.client.post(
