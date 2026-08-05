@@ -155,6 +155,18 @@ class TestTrelloLayer(unittest.IsolatedAsyncioTestCase):
         master = next(b for b in self.h.layer.registry["boards"] if b["key"] == "master")
         self.assertFalse(master["partner"]["nudge"])
 
+    async def test_learned_rulings_beat_the_unresolved_set(self):
+        # 'BMI is Prodermis' said once → BMI resolves forever, no more asking.
+        self.assertEqual(classify_domain("BMI paperwork"), (None, "bmi"))
+        self.assertEqual(
+            classify_domain("BMI paperwork", learned={"bmi": "Prodermis"}),
+            ("Prodermis", None),
+        )
+        self.assertEqual(
+            classify_domain("Revolax restock", learned={"revolax": "Aesthetics Supply"}),
+            ("Aesthetics Supply", None),
+        )
+
     async def test_ordinals_match_pauls_convention(self):
         self.assertEqual(_ordinal(3), "3rd")
         self.assertEqual(_ordinal(11), "11th")

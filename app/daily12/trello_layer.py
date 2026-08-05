@@ -53,9 +53,17 @@ class ResolutionError(RuntimeError):
     """A name didn't resolve on that board — always loud, never silent."""
 
 
-def classify_domain(text: str) -> tuple[str | None, str | None]:
-    """(domain, unresolved_alias). Unresolved wins — ask before guessing."""
+KNOWN_DOMAINS = ("Personal", "Prodermis", "Derma", "Derma EU", "Aesthetics Supply", "Business Ops")
+
+
+def classify_domain(text: str, learned: dict[str, str] | None = None) -> tuple[str | None, str | None]:
+    """(domain, unresolved_alias). Paul's LEARNED rulings win over everything
+    — 'BMI is Prodermis' said once resolves BMI forever; the unresolved set
+    only trips for names he hasn't ruled on yet (ask, never guess)."""
     lowered = f" {text.lower()} "
+    for alias, domain in (learned or {}).items():
+        if alias.lower().strip() and alias.lower().strip() in lowered:
+            return domain, None
     for alias in UNRESOLVED_ALIASES:
         if alias in lowered:
             return None, alias
