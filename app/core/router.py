@@ -2428,7 +2428,12 @@ class JarvisRouter:
                 "name": "rhythm",
                 "description": (
                     "The reminder machinery's ONLY levers: quiet_today silences today's "
-                    "non-essential nudges (meds and bedtime still fire — non-negotiable); "
+                    "non-essential nudges (meds still fire — non-negotiable). "
+                    "quiet_today ONLY on an EXPLICIT ask ('quiet day', 'cancel my "
+                    "notifications', 'stop all nudges today') — NEVER inferred from "
+                    "frustration with one specific reminder (23:36, 5 Aug: Paul "
+                    "complained about held cards and got a whole quiet day he never "
+                    "asked for). Annoyed at one thing = deal with THAT thing; "
                     "wake_skip_tomorrow skips tomorrow's wake sequence; wake_hour_tomorrow "
                     "(4-11) delays it; goodnight closes the day and stands the bedtime "
                     "chasers down; timezone_place moves ALL the clocks to where Paul "
@@ -2593,7 +2598,8 @@ class JarvisRouter:
             if tool_input.get("quiet_today") is not None:
                 await self.heartbeat.set_quiet_today(bool(tool_input["quiet_today"]))
                 done.append(
-                    "quiet day ON (meds still fire)" if tool_input["quiet_today"] else "nudges back ON"
+                    "quiet day ON (meds still fire; 'notifications back on' reverses it)"
+                    if tool_input["quiet_today"] else "nudges back ON"
                 )
             if tool_input.get("wake_skip_tomorrow"):
                 await self.heartbeat.skip_next_wake(wake_date)
