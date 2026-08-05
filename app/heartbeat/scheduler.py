@@ -71,6 +71,9 @@ class Heartbeat:
             ("wake2_tick", self.jobs.wake2_tick, CronTrigger(minute="*", timezone=timezone), 55),
             # Timed reminder calls ('call me in 40 minutes...') — minute beat
             ("call_tick", self.jobs.scheduled_calls_tick, CronTrigger(minute="*", timezone=timezone), 55),
+            # Phase 2 chase engine: per-person sweeps/nudges in THEIR timezone
+            # + Paul's 22:00 Dubai digest — the beat checks, the guards gate
+            ("chase_tick", self.jobs.chase_tick, CronTrigger(minute="*", timezone=timezone), 55),
             # §5: hourly move + water through the waking day
             ("move_water", self.jobs.move_water_nudge, CronTrigger(hour="8-20", minute=5, timezone=timezone), 900),
             # §6: meds/supplements/TRT (TRT job self-checks for Saturday)

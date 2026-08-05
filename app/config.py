@@ -120,6 +120,11 @@ class Settings(BaseSettings):
     twilio_auth_token: str = ""
     twilio_from_number: str = ""
 
+    # --- Chase engine (Phase 2, 5 Aug) ---
+    # Dry-run ON by default (spec §13): every would-be nudge is shown to Paul
+    # instead of sent. Flip CHASE_DRY_RUN=false after the test sequence.
+    chase_dry_run: bool = True
+
     # --- Wake & Hydrate v2 (Paul's brief, 5 Aug) — all tunable via env ---
     wake_response_wait: int = 5           # listen window before Jarvis leads (he's asleep)
     max_call_seconds: int = 75            # one call's motivation run, then re-call

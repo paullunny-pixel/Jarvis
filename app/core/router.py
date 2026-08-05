@@ -227,6 +227,42 @@ class JarvisRouter:
             return
 
         if not await self._is_owner(message.chat_id):
+            # Phase 2 (5 Aug): a LINKED participant's reply drives the chase
+            # engine and NOTHING else — it never touches Paul's message log,
+            # brain context or private machinery. Unknown chats get flagged to
+            # Paul once so he can link them ('that's Harry').
+            chase = getattr(self.heartbeat, "chase", None) if self.heartbeat is not None else None
+            if chase is not None:
+                participant = await chase.participant_for_chat(message.chat_id)
+                if participant is not None:
+                    text = message.text or ""
+                    if message.is_voice:
+                        try:
+                            audio = await self.telegram.download_file(message.voice_file_id)
+                            text = await self.deepgram.transcribe(audio, "audio/ogg")
+                        except Exception:
+                            logger.exception("Participant voice transcription failed")
+                    try:
+                        reply = await chase.handle_reply(participant["key"], text)
+                    except Exception:
+                        logger.exception("Chase reply handling failed")
+                        reply = "That didn't go through cleanly — say it once more?"
+                    await self.telegram.send_text(message.chat_id, reply)
+                    return
+                notified_key = f"chase_unknown_notified:{message.chat_id}"
+                if not await self.store.get(notified_key, ""):
+                    await self.store.set(notified_key, "1")
+                    await self.store.set("chase_pending_link", str(message.chat_id))
+                    owner = self.settings.telegram_owner_chat_id or int(
+                        await self.store.get(OWNER_KEY, "0") or 0
+                    )
+                    if owner:
+                        await self.telegram.send_text(
+                            owner,
+                            f"Someone new started the bot: {message.from_name or 'unknown'} "
+                            f"(chat {message.chat_id}). If that's a chase participant, tell "
+                            "me 'that's Harry' and I'll link them.",
+                        )
             logger.warning("Ignoring stranger %s (chat %s)", message.from_name, message.chat_id)
             await self.telegram.send_text(message.chat_id, STRANGER_REPLY)
             return
@@ -1340,6 +1376,32 @@ class JarvisRouter:
 
         lowered = transcript.lower()
 
+        # Phase 2 linking: Paul confirms who a new chat belongs to.
+        link_hit = re.match(r"^\s*that'?s\s+(\w+)\s*[.!]?\s*$", lowered)
+        if link_hit and self.heartbeat is not None and getattr(self.heartbeat, "chase", None):
+            chase = self.heartbeat.chase
+            pending = await self.store.get("chase_pending_link", "")
+            named = link_hit.group(1)
+            key = next(
+                (k for k, p in chase.participants.items()
+                 if named in p["name"].lower().split() or named == k),
+                "",
+            )
+            if key and pending:
+                result = await chase.link_chat(key, int(pending))
+                await self.store.set("chase_pending_link", "")
+                await self.log.log("out", result, chat_id=message.chat_id, meta={"chase": True})
+                await self.telegram.send_text(message.chat_id, result)
+                return True
+            if key and not pending:
+                reply = (
+                    "No new chat waiting to link — have them open the bot and tap "
+                    "Start first, then tell me again."
+                )
+                await self.log.log("out", reply, chat_id=message.chat_id)
+                await self.telegram.send_text(message.chat_id, reply)
+                return True
+
         # 'Call me' → a real phone call on the Twilio channel (4 Aug). Short
         # messages only, so 'call me when the invoices land' stays conversation.
         deferral = r"(?!\s*(?:when|after|once|if|at|in|on|about|later|tomorrow|tonight|next)\b)"
@@ -1535,6 +1597,21 @@ class JarvisRouter:
             reply = "Done, sir — " + "; ".join(parts) + "."
             await self.log.log("out", reply, chat_id=message.chat_id, meta={"rhythm": True})
             await self.telegram.send_text(message.chat_id, reply)
+            return True
+
+        # Phase 2 on-demand (§11): the chase view whenever Paul asks.
+        if re.search(
+            r"\bchase digest\b|\bwhat'?s\s+(?:harry|kiefer)\s+got\s+open\b"
+            r"|\banything stalled\b|\bwhat'?s overdue\b",
+            lowered,
+        ) and self.heartbeat is not None and getattr(self.heartbeat, "chase", None):
+            try:
+                report = await self.heartbeat.chase.digest()
+            except Exception:
+                logger.exception("On-demand chase digest failed")
+                report = "The chase view wouldn't compose — Trello may be unreachable; logs have it."
+            await self.log.log("out", report, chat_id=message.chat_id, meta={"chase": True})
+            await self.telegram.send_text(message.chat_id, report)
             return True
 
         # On-demand group digest: "group digest (now)".
