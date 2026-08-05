@@ -71,6 +71,35 @@ RULES (each matters):
 - Nothing actionable at all -> {"cards":[],"unassignedRemarks":[...]}."""
 
 
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+
+
+def resolve_due(raw: str, now: datetime) -> datetime | None:
+    """ISO first; then the relative words humans (and models) actually use —
+    'tomorrow' in a due field must become a date, never a crash (00:16,
+    6 Aug: a card failed partway on Invalid isoformat 'tomorrow')."""
+    raw = str(raw or "").strip().lower()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("z", "+00:00"))
+    except ValueError:
+        pass
+    from datetime import timedelta
+
+    if raw in ("today", "tonight", "end of day", "eod"):
+        return now.replace(hour=18, minute=0, second=0, microsecond=0)
+    if raw in ("tomorrow", "tomorow", "tommorow", "tommorrow"):
+        return (now + timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
+    for i, day in enumerate(WEEKDAYS):
+        if day in raw:
+            ahead = (i - now.weekday()) % 7 or 7
+            return (now + timedelta(days=ahead)).replace(hour=18, minute=0, second=0, microsecond=0)
+    if raw in ("next week",):
+        return (now + timedelta(days=7)).replace(hour=18, minute=0, second=0, microsecond=0)
+    return None
+
+
 def title_similarity(a: str, b: str) -> float:
     """Token-set overlap — the programmatic half of two-stage dedup (§6)."""
     ta = {w for w in re.findall(r"[a-z0-9]+", a.lower()) if len(w) > 2}
@@ -296,12 +325,20 @@ class VoiceIntake:
                 "is still held; say OK again once Trello's back."
             )
         results = []
+        now_dubai = datetime.now(ZoneInfo("Asia/Dubai"))
         for n, card in enumerate(pend["batch"].get("cards", []), 1):
             title = card.get("title", "(untitled)")
             try:
                 due = None
+                due_note = ""
                 if card.get("due"):
-                    due = datetime.fromisoformat(str(card["due"]).replace("Z", "+00:00"))
+                    due = resolve_due(card["due"], now_dubai)
+                    if due is None:
+                        # A bad date never kills the card — write without it, say so.
+                        due_note = (
+                            f" (couldn't make a date of '{card['due']}' — created "
+                            "WITHOUT a deadline; tell me the date and I'll set it)"
+                        )
                 if card.get("action") == "archive":
                     if not card.get("matchedCardId"):
                         results.append(
@@ -332,10 +369,7 @@ class VoiceIntake:
                     checklist = [
                         {"name": i.get("text", ""),
                          "member": i.get("owner") or "",
-                         "due_local": (
-                             datetime.fromisoformat(str(i["due"]).replace("Z", "+00:00"))
-                             if i.get("due") else None
-                         )}
+                         "due_local": resolve_due(i.get("due"), now_dubai)}
                         for i in (card.get("checklist") or []) if i.get("text")
                     ]
                     owner = card.get("owner") or ""
@@ -351,7 +385,7 @@ class VoiceIntake:
                         priority=card.get("priority") or "",
                         checklist=checklist or None,
                     )
-                    results.append(f"{n}. ✅ created '{title}'")
+                    results.append(f"{n}. ✅ created '{title}'{due_note}")
             except Exception as exc:
                 logger.exception("Intake write failed for '%s'", title)
                 results.append(f"{n}. ⚠️ '{title}' FAILED PARTWAY: {str(exc)[:150]}")

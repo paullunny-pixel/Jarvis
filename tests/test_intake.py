@@ -204,11 +204,12 @@ class TestConfirmLoop(IntakeBase):
             FakeLayer.created.append((board, list_name, title, kwargs))
             return {"id": "NEW1"}
 
+        original = FakeLayer.create_card_full
         FakeLayer.create_card_full = broken_create
         try:
             result = await self.intake.handle_reply("yes")
         finally:
-            del FakeLayer.create_card_full   # restore class default
+            FakeLayer.create_card_full = original
         self.assertIn("✅ created 'Chase printers", result)
         self.assertIn("⚠️ 'Book flights for Korea' FAILED PARTWAY", result)
         self.assertIn("custom field write refused", result)
@@ -275,6 +276,43 @@ class TestConversationIsNotCapture(unittest.IsolatedAsyncioTestCase):
             await router.handle_update(text_update(text, 1))
             self.assertIn("Ghost+card", " ".join(sent))
             await db.close()
+
+
+class TestRelativeDues(IntakeBase):
+    async def test_tomorrow_resolves_instead_of_crashing(self):
+        # 00:16, 6 Aug: due 'tomorrow' → Invalid isoformat → card lost. Never again.
+        card = dict(EXTRACTION["cards"][0])
+        card["due"] = "tomorrow"
+        self.responses = [json.dumps({"cards": [card], "unassignedRemarks": []})]
+        await self.intake.start_batch("ramble " * 30)
+        result = await self.intake.handle_reply("OK")
+        self.assertIn("✅ created", result)
+        self.assertNotIn("FAILED", result)
+        (_, _, _, kwargs) = FakeLayer.created[0]
+        self.assertIsNotNone(kwargs["due_local"])   # a real resolved date
+
+    async def test_unparseable_due_creates_without_deadline_honestly(self):
+        card = dict(EXTRACTION["cards"][0])
+        card["due"] = "whenever suits"
+        self.responses = [json.dumps({"cards": [card], "unassignedRemarks": []})]
+        await self.intake.start_batch("ramble " * 30)
+        result = await self.intake.handle_reply("OK")
+        self.assertIn("✅ created", result)
+        self.assertIn("WITHOUT a deadline", result)
+        (_, _, _, kwargs) = FakeLayer.created[0]
+        self.assertIsNone(kwargs["due_local"])
+
+    def test_resolve_due_words(self):
+        from zoneinfo import ZoneInfo
+
+        from app.daily12.intake import resolve_due
+
+        now = datetime(2026, 8, 6, 0, 16, tzinfo=ZoneInfo("Asia/Dubai"))   # Thursday
+        self.assertEqual(resolve_due("tomorrow", now).day, 7)
+        self.assertEqual(resolve_due("today", now).hour, 18)
+        self.assertEqual(resolve_due("friday", now).weekday(), 4)
+        self.assertEqual(resolve_due("2026-08-09T13:00:00Z", now).day, 9)
+        self.assertIsNone(resolve_due("whenever suits", now))
 
 
 class TestTimeoutAndAccuracy(IntakeBase):
