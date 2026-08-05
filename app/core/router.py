@@ -1338,6 +1338,31 @@ class JarvisRouter:
         """'status' / 'are you connected to Trello?' → run REAL live checks."""
         s = self.settings
         lines = ["SYSTEM CHECK"]
+        # The wake-up cycle, first — Paul triple-checks this one (5 Aug 23:2x).
+        try:
+            from app.heartbeat.wakeup import WAKE_TIME_KEY
+
+            tz_name = await self.store.get(TIMEZONE_KEY, s.timezone_default)
+            gospel = await self.store.get(WAKE_TIME_KEY, "")
+            wake2 = getattr(self.heartbeat, "wake2", None) if self.heartbeat is not None else None
+            if gospel:
+                wake_line = f"⏰ Wake-up call: {gospel} ({tz_name}) — gospel, rings until proof"
+                today_iso = datetime.now(ZoneInfo(tz_name)).date().isoformat()
+                skip = await self.store.get("wake_skip_date", "")
+                if skip >= today_iso and skip:
+                    wake_line += f" · SKIPPING {skip}"
+                if wake2 is not None:
+                    phase = await wake2.active_phase()
+                    if phase:
+                        wake_line += f" · SEQUENCE LIVE NOW (phase: {phase})"
+                lines.append(wake_line)
+            elif self.heartbeat is not None and await self.heartbeat.wake_enabled():
+                lines.append(f"⏰ Wake-up: v1 Telegram loop from 05:00 ({tz_name}) — no gospel time set")
+            else:
+                lines.append("⏰ Wake-up: not set — 'set wake 07:00' locks one in")
+        except Exception:
+            logger.exception("Wake status line failed")
+            lines.append("⏰ Wake-up: state unreadable just now — logs have why")
         if self.daily12 is not None:
             health = await self.daily12.health()
             if health["ok"]:
