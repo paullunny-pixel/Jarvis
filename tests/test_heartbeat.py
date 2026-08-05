@@ -946,6 +946,39 @@ class TestDayRhythmRouter(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.jobs.group_digest(force=True))
         self.assertIn("1 message(s)", self.h_jobs_texts()[-1])
 
+    async def test_group_digest_falls_back_to_the_fast_model_not_raw_tail(self):
+        # 5 Aug: the brain model hiccuped once and Paul got a raw transcript.
+        # Now the fast model summarises when the brain fails; the tail is
+        # only for both engines failing.
+        import json as _json
+        from datetime import datetime as dt, timezone as tz
+
+        from app.clients.anthropic_client import ClaudeClient
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _json.loads(request.content)
+            if "haiku" in body["model"]:
+                return httpx.Response(
+                    200, json={"content": [{"type": "text", "text": "Fast summary, sir."}]}
+                )
+            return httpx.Response(529, json={"error": {"type": "overloaded_error"}})
+
+        original = self.jobs.claude
+        self.jobs.claude = ClaudeClient("K", transport=httpx.MockTransport(handler))
+        try:
+            await self.db.execute(
+                "INSERT INTO telegram_ingest (ts, chat_id, chat_title, company_tag, sender,"
+                " sender_id, kind, message) VALUES (?, -3, 'Prodermis Ops', 'prodermis',"
+                " 'Alicia', 778, 'text', 'Docs went to the ministry')",
+                (dt.now(tz.utc).isoformat(timespec="seconds"),),
+            )
+            self.assertTrue(await self.jobs.group_digest(force=True))
+            digest = self.h_jobs_texts()[-1]
+            self.assertIn("Fast summary, sir.", digest)
+            self.assertNotIn("hiccuped", digest)
+        finally:
+            self.jobs.claude = original
+
     async def test_group_digest_command_honest_when_caught_up(self):
         from tests.test_router import OWNER
         from tests.test_telegram_client import text_update
