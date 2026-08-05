@@ -33,7 +33,10 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
 
 - `app/main.py` — FastAPI app, webhooks (Telegram, Apple Health incl. water_ml
   max-merge into water_log — WaterMinder etc. arrive via Apple Health, never
-  double-counted with manual logging; WhatsApp Cloud API verify + inbound,
+  double-counted with manual logging; accepts the flat Shortcut JSON (secret
+  in body) AND Health Auto Export's nested format via `health_import.py`
+  (secret as X-Health-Secret header or ?secret=; export range 'Today';
+  hourly-safe — runs log once); WhatsApp Cloud API verify + inbound,
   READ-ONLY Phase 1 into wa_direct_ingest (NOT whatsapp_ingest — a prod ghost of that name predates the Telegram move), signature-checked), cockpit routes
 - `app/core/router.py` — the message pipeline. ORDER MATTERS: owner check →
   documents → photos (vision + run-proof) → voice STT → PRIVATE ROOM (before

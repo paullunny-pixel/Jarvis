@@ -698,11 +698,19 @@ async def whatsapp_inbound(request: Request) -> dict:
 
 @app.post("/webhook/apple-health")
 async def apple_health(request: Request) -> dict:
-    """Daily push from the iOS Shortcut: run, sleep, weight, steps, HR/HRV."""
+    """Health data in: the iOS Shortcut's flat JSON (secret in the body) or
+    the Health Auto Export app's nested format (secret as the X-Health-Secret
+    header or ?secret= — the app can't put fields in its body, 5 Aug).
+    Hourly posts are safe: water max-merges, the run logs once."""
     router: JarvisRouter = request.app.state.router
     payload = await request.json()
     secret = router.settings.apple_health_webhook_secret
-    if not secret or not hmac.compare_digest(str(payload.get("secret", "")), secret):
+    provided = (
+        str(payload.get("secret") or "")
+        or request.headers.get("X-Health-Secret", "")
+        or request.query_params.get("secret", "")
+    )
+    if not secret or not hmac.compare_digest(provided, secret):
         raise HTTPException(status_code=403, detail="nope")
 
     from datetime import datetime
@@ -711,6 +719,11 @@ async def apple_health(request: Request) -> dict:
     import json as _json
 
     tz = ZoneInfo(await router.store.get("current_timezone", router.settings.timezone_default))
+    raw_payload = payload
+    if isinstance(payload.get("data"), dict):
+        from app.heartbeat.health_import import flatten_export
+
+        payload = flatten_export(payload, datetime.now(tz))
     stat_date = payload.get("date") or datetime.now(tz).date().isoformat()
     await router.db.execute(
         "INSERT INTO health_stats (stat_date, weight_kg, sleep_hours, steps, resting_hr, hrv, raw)"
@@ -722,19 +735,23 @@ async def apple_health(request: Request) -> dict:
             int(payload.get("steps") or 0),
             int(payload.get("resting_hr") or 0),
             float(payload.get("hrv") or 0),
-            _json.dumps(payload)[:4000],
+            _json.dumps(raw_payload)[:4000],
         ),
     )
     run_km = float(payload.get("run_km") or 0)
     recorded_run = False
     if run_km >= 4.5:  # the daily 5k, with GPS wobble tolerance
         day = datetime.fromisoformat(stat_date).date()
-        await router.streaks.record("run", day)
-        await router.db.execute(
-            "INSERT INTO runs (run_date, distance_km, duration_min, source) VALUES (?, ?, ?, 'apple_health')",
-            (stat_date, run_km, float(payload.get("run_min") or 0)),
+        already = await router.db.fetch_one(
+            "SELECT id FROM runs WHERE run_date = ?", (stat_date,)
         )
-        recorded_run = True
+        if already is None:  # hourly re-posts must not duplicate the run
+            await router.streaks.record("run", day)
+            await router.db.execute(
+                "INSERT INTO runs (run_date, distance_km, duration_min, source) VALUES (?, ?, ?, 'apple_health')",
+                (stat_date, run_km, float(payload.get("run_min") or 0)),
+            )
+            recorded_run = True
     water_recorded = await merge_water_total(
         router.db, stat_date, int(payload.get("water_ml") or 0)
     )
