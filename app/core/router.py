@@ -468,8 +468,16 @@ class JarvisRouter:
         # work → extraction → numbered confirm-before-write summary. The
         # 'Jarvis add to Trello' escape hatch above keeps priority; anything
         # extraction can't see as cards flows on to conversation untouched.
+        # Answering a question Jarvis asked is CONVERSATION, never dictation
+        # (21:54, 5 Aug: 'how are you in yourself?' → Paul's reply became a
+        # Trello card. Poor form — his words, and he was right).
+        raw_msg = (message.raw or {}).get("message") or {}
+        replying_to_jarvis = bool(
+            ((raw_msg.get("reply_to_message") or {}).get("from") or {}).get("is_bot")
+        )
         if (
             intake is not None and self.settings.intake_enabled
+            and not replying_to_jarvis
             and (message.is_voice or len(transcript) > 120)
             and mentions_tasks(transcript)
         ):
@@ -581,23 +589,31 @@ class JarvisRouter:
                     "down. What actually stops it: the required photo, or the word "
                     "'override' (any spelling close to it counts)."
                 )
-        rhythm_lines.append(
-            "Bedtime machinery EXISTS and is wired: wind-down nudge 21:45, lights-out "
-            "22:30, chaser 23:00 (all local, all pierce a quiet day). Never tell Paul "
-            "there's no bedtime reminder."
-        )
-        if (now_local.hour >= 22 and now_local.minute >= 30 or now_local.hour == 23 or now_local.hour < 4):
-            night_date = now_local.date() if now_local.hour >= 22 else (now_local.date() - timedelta(days=1))
-            asleep = await self.db.fetch_one(
-                "SELECT id FROM sleep_log WHERE day = ?", (night_date.isoformat(),)
+        if getattr(self.settings, "bedtime_enabled", False):
+            rhythm_lines.append(
+                "Bedtime machinery EXISTS and is wired: wind-down nudge 21:45, lights-out "
+                "22:30, chaser 23:00 (all local, all pierce a quiet day). Never tell Paul "
+                "there's no bedtime reminder."
             )
-            if not asleep:
-                rhythm_lines.append(
-                    f"PAST LIGHTS-OUT: it is {now_local.strftime('%H:%M')} and Paul has "
-                    "not said goodnight. He should be asleep — his own 22:30 rule. OPEN "
-                    "your reply by telling him so (warm, one line, no lecture) before "
-                    "anything else, every message until he goes."
+            if (now_local.hour >= 22 and now_local.minute >= 30 or now_local.hour == 23 or now_local.hour < 4):
+                night_date = now_local.date() if now_local.hour >= 22 else (now_local.date() - timedelta(days=1))
+                asleep = await self.db.fetch_one(
+                    "SELECT id FROM sleep_log WHERE day = ?", (night_date.isoformat(),)
                 )
+                if not asleep:
+                    rhythm_lines.append(
+                        f"PAST LIGHTS-OUT: it is {now_local.strftime('%H:%M')} and Paul has "
+                        "not said goodnight. He should be asleep — his own 22:30 rule. OPEN "
+                        "your reply by telling him so (warm, one line, no lecture) before "
+                        "anything else, every message until he goes."
+                    )
+        else:
+            rhythm_lines.append(
+                "BEDTIME PROTECTION IS OFF (Paul's call, 5 Aug — his workload makes it "
+                "counterproductive right now). Do NOT push sleep, comment on the hour, "
+                "or open replies with bedtime talk. 'goodnight' still closes the day "
+                "when HE says it. He can bring the 22:30 rule back any time."
+            )
         system_status += "\n\nRHYTHM STATE (switch truth beats memory):\n- " + "\n- ".join(rhythm_lines)
         # The Continuous Mind's nightly notes ride today's turns (Phase A3).
         try:
@@ -1265,8 +1281,11 @@ class JarvisRouter:
             "only a full hour behind earns one line, and nothing fires before he's up or "
             "after goodnight. Paul logs by telling you amounts ('300ml') any time; "
             "med reminders (ADHD 09:30, supplements 14:00, TRT Saturdays); bedtime "
-            "protection (wind-down 21:45, lights-out 22:30, chaser 23:00 — pierces quiet "
-            "days; 'goodnight' stands it down). The run/meds "
+            "protection is "
+            + ("ON (wind-down 21:45, lights-out 22:30, chaser 23:00; 'goodnight' "
+               "stands it down)" if getattr(self.settings, "bedtime_enabled", False)
+               else "OFF — Paul killed it 5 Aug (workload); never push sleep")
+            + ". The run/meds "
             "gates CHASE, they never block (Paul's rule, 3 Aug): board work always "
             "proceeds; anything owed is reminded hourly until confirmed; a declared rest "
             "day settles the run; 'override' quiets the chase for the day.",

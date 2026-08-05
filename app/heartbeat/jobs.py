@@ -897,6 +897,8 @@ class HeartbeatJobs:
     # -------------------------------------------- §10 bedtime nudge (~21:45)
 
     async def bedtime_nudge(self) -> None:
+        if not getattr(self.settings, "bedtime_enabled", False):
+            return  # bedtime protection OFF — Paul's call, 5 Aug 23:07
         """The 9-o'clock-ish check-in Paul asked for: wind down towards a
         05:00-friendly bedtime and arm tomorrow's wake with the goodnight."""
         today = await self._today()
@@ -922,6 +924,8 @@ class HeartbeatJobs:
         )
 
     async def lights_out(self) -> None:
+        if not getattr(self.settings, "bedtime_enabled", False):
+            return  # bedtime protection OFF — Paul's call, 5 Aug 23:07
         """22:30 sharp, Paul's rule: lights out, no negotiation — protects the
         six hours before the 05:00 wake."""
         today = await self._today()
@@ -939,6 +943,8 @@ class HeartbeatJobs:
         )
 
     async def lights_out_chaser(self) -> None:
+        if not getattr(self.settings, "bedtime_enabled", False):
+            return  # bedtime protection OFF — Paul's call, 5 Aug 23:07
         """23:00: still up? One firmer word — then Jarvis lets the man sleep."""
         today = await self._today()
         gone = await self.db.fetch_one(

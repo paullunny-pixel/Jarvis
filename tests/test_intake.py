@@ -214,6 +214,69 @@ class TestConfirmLoop(IntakeBase):
         self.assertIn("custom field write refused", result)
 
 
+class TestConversationIsNotCapture(unittest.IsolatedAsyncioTestCase):
+    async def test_replying_to_jarvis_question_never_becomes_a_card(self):
+        # 21:54, 5 Aug: 'how are you in yourself?' → Paul's answer became a
+        # Trello card proposal. A quote-reply to the bot is conversation.
+        from app.clients.deepgram_client import DeepgramClient
+        from app.clients.elevenlabs_client import ElevenLabsClient
+        from app.clients.telegram_client import TelegramClient
+        from app.core.router import JarvisRouter
+        from app.heartbeat.jobs import HeartbeatJobs
+        from tests.test_telegram_client import text_update
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SqliteDatabase(os.path.join(tmp, "t.db"))
+            await db.init()
+            sent = []
+
+            def telegram_handler(request: httpx.Request) -> httpx.Response:
+                if request.url.path.endswith("sendMessage"):
+                    sent.append(request.content.decode())
+                return httpx.Response(200, json={"ok": True, "result": {}})
+
+            def claude_handler(request: httpx.Request) -> httpx.Response:
+                body = json.loads(request.content)
+                if "extract Trello card intents" in body.get("system", ""):
+                    return httpx.Response(200, json={"content": [{"type": "text", "text": json.dumps({
+                        "cards": [{"action": "create", "matchedCardId": None,
+                                   "matchConfidence": 0, "title": "Ghost card",
+                                   "board": "master", "list": "Inbox", "domain": None,
+                                   "priority": None, "owner": None, "due": None,
+                                   "checklist": [], "confidence": 0.9, "uncertainties": []}],
+                        "unassignedRemarks": []})}]})
+                return httpx.Response(200, json={"content": [{"type": "text", "text": "Noted, sir."}]})
+
+            settings = Settings(telegram_bot_token="TOK", telegram_owner_chat_id=1, _env_file=None)
+            claude = ClaudeClient("K", transport=httpx.MockTransport(claude_handler))
+            jobs = HeartbeatJobs(
+                settings=settings, db=db,
+                telegram=TelegramClient("TOK", transport=httpx.MockTransport(telegram_handler)),
+                claude=claude,
+            )
+            router = JarvisRouter(
+                settings=settings, db=db, telegram=jobs.telegram, claude=claude,
+                deepgram=DeepgramClient("K", transport=httpx.MockTransport(lambda r: httpx.Response(500))),
+                elevenlabs=ElevenLabsClient("K", voice_id="V", transport=httpx.MockTransport(lambda r: httpx.Response(500))),
+                heartbeat=jobs,
+            )
+            text = (
+                "Positive a little tired but feeling like I'm really close to hitting "
+                "some major milestones on my task list and a lot of big decisions"
+            )
+            update = text_update(text, 1)
+            update["message"]["reply_to_message"] = {"from": {"is_bot": True, "id": 9}}
+            await router.handle_update(update)
+            combined = " ".join(sent)
+            self.assertNotIn("Ghost+card", combined)     # no card proposal
+            self.assertIn("Noted", combined)             # conversational reply
+            # Same text NOT as a reply → capture is allowed to propose.
+            sent.clear()
+            await router.handle_update(text_update(text, 1))
+            self.assertIn("Ghost+card", " ".join(sent))
+            await db.close()
+
+
 class TestTimeoutAndAccuracy(IntakeBase):
     async def test_reminds_then_parks_never_drops(self):
         await self.intake.start_batch("ramble " * 30)
