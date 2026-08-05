@@ -50,6 +50,10 @@ RULES (each matters):
   with matchedCardId and matchConfidence; describe only the CHANGES in the
   fields. When unsure whether it's that card, keep action=create with the
   matchedCardId and a LOW matchConfidence so the system asks.
+- Cards on '(Archive)' lists are FAIR GAME to update, move or archive — the
+  cleanup operation is exactly about pulling them back onto live lists.
+  Route their moves to a LIVE list (Inbox if unspecified); never INTO an
+  archive list.
 - DELETE LANGUAGE: 'delete/archive/get rid of/bin/don't need X any more'
   -> action=archive with matchedCardId from the index (title in "title").
   No confident match -> keep action=archive, matchedCardId=null, and put
@@ -93,9 +97,10 @@ class VoiceIntake:
         for key in ("master", "harry"):
             try:
                 bmap = layer.board(key)
+                all_lists = {**bmap.lists, **getattr(bmap, "archive_lists", {})}
                 for card in await layer.client.board_cards(bmap.id):
                     list_name = next(
-                        (n for n, i in bmap.lists.items() if i == card.get("idList")), "?"
+                        (n for n, i in all_lists.items() if i == card.get("idList")), "?"
                     )
                     index.append({"id": card["id"], "title": card["name"],
                                   "list": list_name, "board": key})
