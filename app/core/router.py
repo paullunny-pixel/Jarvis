@@ -2003,8 +2003,11 @@ class JarvisRouter:
             if arm_hit:
                 await self.heartbeat.arm_wake_for(today_local + timedelta(days=1))
 
+            # ONLY 'goodnight' closes the night (Paul's rule, 5 Aug 23:4x) —
+            # close spellings count (dyslexia), but 'off to bed', 'going to
+            # sleep' and every other phrasing is conversation, not a close.
             if re.search(
-                r"\bgood\s?night\b|\bnight,? jarvis\b|\b(off|going) to (bed|sleep)\b", lowered
+                r"\bg(oo|u)d\s?ni(ght|te|ht|gth)\b|\bnight,? jarvis\b", lowered
             ):
                 await self.db.execute(
                     "INSERT INTO sleep_log (day, goodnight_time, tz) VALUES (?, ?, ?)",
@@ -2442,8 +2445,11 @@ class JarvisRouter:
                     "(his body, his call: one acknowledgement, never argue, never "
                     "re-raise), with skip_days for 'this week' (max 7). WHENEVER Paul "
                     "states what time he's getting up — however casually — set "
-                    "wake_hour_tomorrow; whenever he's turning in, in any words, set "
-                    "goodnight; the MOMENT his location and your clocks disagree, set "
+                    "wake_hour_tomorrow. goodnight: ONLY when Paul says the word "
+                    "'goodnight' (close spellings count) — HIS RULE, 5 Aug: NOTHING "
+                    "else closes the night; 'off to bed', 'heading up', 'done for "
+                    "today' are conversation — answer warmly, leave the day open. "
+                    "The MOMENT his location and your clocks disagree, set "
                     "timezone_place. heat_day marks today as an outdoor/heat day so the "
                     "water pace steps up — set it when Paul says he's out in the sun. "
                     "Saying any of it back without the tool changes "
