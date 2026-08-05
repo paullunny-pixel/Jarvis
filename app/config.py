@@ -120,6 +120,11 @@ class Settings(BaseSettings):
     twilio_auth_token: str = ""
     twilio_from_number: str = ""
 
+    # Bedtime protection OFF (Paul, 5 Aug 23:07: 'based on my workload it's
+    # not working — kill that for now'). The machinery stays built; flip
+    # BEDTIME_ENABLED=true when he wants the 22:30 rule back.
+    bedtime_enabled: bool = False
+
     # --- Chase engine (Phase 2, 5 Aug) ---
     # DORMANT until Paul switches it on (CHASE_ENABLED=true): built and
     # tested, but the tick never fires — his call, 5 Aug eve.

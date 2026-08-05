@@ -173,7 +173,7 @@ class JobsHarness:
             return httpx.Response(200, json={"content": [{"type": "text", "text": flourish}]})
 
         self.jobs = HeartbeatJobs(
-            settings=Settings(telegram_owner_chat_id=111, _env_file=None),
+            settings=Settings(telegram_owner_chat_id=111, bedtime_enabled=True, _env_file=None),
             db=db,
             telegram=TelegramClient("TOK", transport=httpx.MockTransport(telegram_handler)),
             claude=ClaudeClient("K", transport=httpx.MockTransport(claude_handler)),
@@ -532,6 +532,7 @@ class TestDayRhythmRouter(unittest.IsolatedAsyncioTestCase):
             def now(cls, tz=None):
                 return real_dt(2026, 8, 4, 0, 39, tzinfo=tz or LONDON)
 
+        self.h.router.settings.bedtime_enabled = True   # the rule only speaks when ON
         with patch("app.core.router.datetime", LateNight):
             await self.h.router.handle_update(text_update("still up, watching the football", OWNER))
         system = self.h.claude_requests[-1]["system"]
@@ -755,6 +756,17 @@ class TestDayRhythmRouter(unittest.IsolatedAsyncioTestCase):
         today = await self.jobs._today()
         self.assertTrue(await self.h.router.streaks.done_today("portuguese", today))
         self.assertIn("Portuguese streak: 1", " ".join(self.texts()))
+
+    async def test_bedtime_machinery_silent_when_killed(self):
+        # Paul, 5 Aug 23:07: 'kill the whole going to bed thing for now.'
+        self.jobs.settings.bedtime_enabled = False
+        try:
+            await self.jobs.bedtime_nudge()
+            await self.jobs.lights_out()
+            await self.jobs.lights_out_chaser()
+            self.assertEqual(self.jobs_harness.sent_texts(), [])
+        finally:
+            self.jobs.settings.bedtime_enabled = True
 
     async def test_bedtime_nudge_once_and_respects_goodnight(self):
         await self.jobs.bedtime_nudge()

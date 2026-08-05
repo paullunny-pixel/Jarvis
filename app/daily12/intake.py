@@ -62,6 +62,12 @@ RULES (each matters):
   never in owner.
 - Relative dates resolve against Paul's timezone shown below, output UTC ISO.
 - Speech that maps to no card goes in unassignedRemarks, never dropped.
+- CONVERSATION IS NOT CAPTURE: if the message reads as an answer to a
+  question, a mood/state report, reflection, or general chat — even when it
+  mentions work words — return ZERO cards. Only concrete work instructions
+  become cards.
+- NEVER invent: no card may contain a person, task or detail that is not in
+  Paul's actual words. When in doubt, unassignedRemarks.
 - Nothing actionable at all -> {"cards":[],"unassignedRemarks":[...]}."""
 
 
