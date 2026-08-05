@@ -89,7 +89,12 @@ def resolve_due(raw: str, now: datetime) -> datetime | None:
 
     try:
         parsed = datetime.fromisoformat(raw.replace("z", "+00:00"))
-        if parsed.tzinfo is None:
+        if len(raw) <= 10:
+            # Date only → 18:00 Paul-local, matching the word resolutions —
+            # never midnight-UTC drift (01:52, 6 Aug: summary said 14 Aug,
+            # Trello showed 15 Aug 00:00).
+            parsed = parsed.replace(hour=18, minute=0, tzinfo=now.tzinfo)
+        elif parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=now.tzinfo)
         # Model slip guard (01:01, 6 Aug: 'due 2025-08-14' — a year AGO):
         # a due more than 2 days past gets its year bumped when that lands
@@ -219,6 +224,8 @@ class VoiceIntake:
                     lines.append(f"   ⚠ {question}")
                 continue
             resolved = resolve_due(card.get("due"), datetime.now(ZoneInfo("Asia/Dubai")))
+            if resolved is not None:
+                resolved = resolved.astimezone(ZoneInfo("Asia/Dubai"))
             due_bit = (
                 f"due {resolved.strftime('%a %-d %b %Y')}" if resolved
                 else (f"due unclear ('{card['due']}')" if card.get("due") else "no deadline")
@@ -367,22 +374,55 @@ class VoiceIntake:
                     await layer.client.archive_card(card["matchedCardId"])
                     results.append(f"{n}. ✅ archived '{title}'")
                 elif card.get("action") == "update" and card.get("matchedCardId"):
+                    # The FULL schema on updates too — 01:52, 6 Aug: a six-item
+                    # checklist in an update vanished silently; only creates
+                    # carried checklists, owners and notes.
+                    from app.daily12.trello_layer import match_members
+
+                    card_id = card["matchedCardId"]
                     steps = []
                     if card.get("domain"):
-                        await layer.set_domain(card["board"], card["matchedCardId"], card["domain"])
+                        await layer.set_domain(card["board"], card_id, card["domain"])
                         steps.append("domain")
                     if card.get("priority"):
-                        await layer.set_priority(card["board"], card["matchedCardId"], card["priority"])
+                        await layer.set_priority(card["board"], card_id, card["priority"])
                         steps.append("priority")
                     if due:
-                        await layer.client.update_card(
-                            card["matchedCardId"], due=layer._due_utc(due)
-                        )
+                        await layer.client.update_card(card_id, due=layer._due_utc(due))
                         steps.append("due")
+                    if card.get("owner"):
+                        bmap = layer.board(card["board"])
+                        member_ids, unknown = match_members(bmap, card["owner"])
+                        for member_id in member_ids:
+                            await layer.client.assign_member(card_id, member_id)
+                        steps.append(
+                            "owner" + (f" (no match: {', '.join(unknown)})" if unknown else "")
+                        )
+                    if card.get("description"):
+                        await layer.client.update_card(card_id, desc=str(card["description"]))
+                        steps.append("notes")
+                    update_items = [
+                        i for i in (card.get("checklist") or []) if i.get("text")
+                    ]
+                    if update_items:
+                        checklist_obj = await layer.client.create_checklist(card_id, "Steps")
+                        bmap = layer.board(card["board"])
+                        for item in update_items:
+                            member_id = ""
+                            if item.get("owner"):
+                                ids, _ = match_members(bmap, item["owner"])
+                                member_id = ids[0] if ids else ""
+                            item_due = resolve_due(item.get("due"), now_dubai)
+                            await layer.client.add_check_item(
+                                checklist_obj["id"], item["text"],
+                                due_iso=layer._due_utc(item_due) if item_due else "",
+                                member_id=member_id,
+                            )
+                        steps.append(f"checklist ({len(update_items)} items)")
                     if card.get("list"):
-                        await layer.move_card(card["board"], card["matchedCardId"], card["list"])
+                        await layer.move_card(card["board"], card_id, card["list"])
                         steps.append("list")
-                    results.append(f"{n}. ✅ updated '{title}' ({', '.join(steps) or 'no changes'})")
+                    results.append(f"{n}. ✅ updated '{title}' ({', '.join(steps) or 'no changes'}){due_note}")
                 else:
                     checklist = [
                         {"name": i.get("text", ""),

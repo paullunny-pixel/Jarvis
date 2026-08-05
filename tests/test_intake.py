@@ -38,6 +38,9 @@ EXTRACTION = {
 
 class FakeLayerClient:
     archived: list = []
+    checklists: list = []
+    items: list = []
+    assigned: list = []
 
     async def board_cards(self, board_id):
         return [{"id": "EX1", "name": "Review Derma Ads", "idList": "L1"}]
@@ -48,10 +51,21 @@ class FakeLayerClient:
     async def archive_card(self, card_id):
         FakeLayerClient.archived.append(card_id)
 
+    async def create_checklist(self, card_id, name):
+        FakeLayerClient.checklists.append((card_id, name))
+        return {"id": "CHK9"}
+
+    async def add_check_item(self, checklist_id, name, due_iso="", member_id=""):
+        FakeLayerClient.items.append((checklist_id, name, due_iso, member_id))
+
+    async def assign_member(self, card_id, member_id):
+        FakeLayerClient.assigned.append((card_id, member_id))
+
 
 class FakeBoardMap:
     id = "B1"
     lists = {"Paul Today": "L1"}
+    members = {"Paul Lunny": "PID", "Kiefer Brindle": "KID"}
 
 
 class FakeLayer:
@@ -331,6 +345,36 @@ class TestRelativeDues(IntakeBase):
             FakeLayer.create_card_full = original
         self.assertIn("✅ created", result)
         self.assertIn("couldn't assign Steph", result)
+
+    async def test_update_carries_checklist_owners_and_notes(self):
+        # 01:52, 6 Aug: a six-item checklist on an UPDATE vanished silently.
+        FakeLayerClient.checklists = []
+        FakeLayerClient.items = []
+        FakeLayerClient.assigned = []
+        card = {"action": "update", "matchedCardId": "EX1", "matchConfidence": 0.9,
+                "title": "Review Derma Ads", "board": "master", "list": None,
+                "domain": None, "priority": "P3", "owner": "Paul, Kiefer",
+                "due": None, "description": "New notes",
+                "checklist": [{"text": "Speak to Harry"}, {"text": "Create adverts"}],
+                "confidence": 0.9, "uncertainties": []}
+        self.responses = [json.dumps({"cards": [card], "unassignedRemarks": []})]
+        await self.intake.start_batch("ramble " * 30)
+        result = await self.intake.handle_reply("OK")
+        self.assertIn("checklist (2 items)", result)
+        self.assertIn("owner", result)
+        self.assertIn("notes", result)
+        self.assertEqual(len(FakeLayerClient.items), 2)
+        self.assertEqual(len(FakeLayerClient.assigned), 2)   # both of them
+
+    def test_date_only_iso_lands_at_1800_paul_time(self):
+        from zoneinfo import ZoneInfo
+
+        from app.daily12.intake import resolve_due
+
+        now = datetime(2026, 8, 6, 1, 52, tzinfo=ZoneInfo("Asia/Dubai"))
+        resolved = resolve_due("2026-08-14", now)
+        self.assertEqual((resolved.day, resolved.hour), (14, 18))
+        self.assertEqual(str(resolved.tzinfo), "Asia/Dubai")   # no midnight-UTC drift
 
     def test_resolve_due_words(self):
         from zoneinfo import ZoneInfo
