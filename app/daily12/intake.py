@@ -28,7 +28,7 @@ DISCARD = re.compile(r"^\s*(cancel|drop (it|them|the lot|all)|scrap (it|them)|fo
 
 EXTRACTION_SYSTEM = """You extract Trello card intents from Paul's spoken ramble.
 Reply ONLY with JSON matching:
-{"cards":[{"action":"create|update","matchedCardId":null,"matchConfidence":0.0,
+{"cards":[{"action":"create|update|archive","matchedCardId":null,"matchConfidence":0.0,
 "title":"","description":null,"board":"master|harry","list":"","domain":null,
 "priority":null,"owner":null,"due":null,
 "checklist":[{"text":"","owner":null,"due":null}],
@@ -50,6 +50,10 @@ RULES (each matters):
   with matchedCardId and matchConfidence; describe only the CHANGES in the
   fields. When unsure whether it's that card, keep action=create with the
   matchedCardId and a LOW matchConfidence so the system asks.
+- DELETE LANGUAGE: 'delete/archive/get rid of/bin/don't need X any more'
+  -> action=archive with matchedCardId from the index (title in "title").
+  No confident match -> keep action=archive, matchedCardId=null, and put
+  'which card?' in uncertainties. Archiving is safe — never refuse it.
 - People not on the boards (Sarah, Steph, Marko...) go in the description,
   never in owner.
 - Relative dates resolve against Paul's timezone shown below, output UTC ISO.
@@ -152,8 +156,14 @@ class VoiceIntake:
             return ""
         lines = [f"Got {len(cards)} thing{'s' if len(cards) != 1 else ''} from that:", ""]
         for n, card in enumerate(cards, 1):
-            kind = "UPDATE" if card.get("action") == "update" else "NEW"
+            kind = {"update": "UPDATE", "archive": "ARCHIVE"}.get(
+                card.get("action") or "", "NEW"
+            )
             lines.append(f"{n}. {kind} · {card.get('title', '(untitled)')}")
+            if kind == "ARCHIVE":
+                for question in card.get("uncertainties", []) or []:
+                    lines.append(f"   ⚠ {question}")
+                continue
             bits = [b for b in (
                 card.get("domain"), card.get("priority"), card.get("owner"),
                 f"due {card['due'][:10]}" if card.get("due") else "no deadline",
@@ -281,7 +291,16 @@ class VoiceIntake:
                 due = None
                 if card.get("due"):
                     due = datetime.fromisoformat(str(card["due"]).replace("Z", "+00:00"))
-                if card.get("action") == "update" and card.get("matchedCardId"):
+                if card.get("action") == "archive":
+                    if not card.get("matchedCardId"):
+                        results.append(
+                            f"{n}. ⚠️ couldn't archive '{title}' — no matching card found; "
+                            "tell me its exact title."
+                        )
+                        continue
+                    await layer.client.archive_card(card["matchedCardId"])
+                    results.append(f"{n}. ✅ archived '{title}'")
+                elif card.get("action") == "update" and card.get("matchedCardId"):
                     steps = []
                     if card.get("domain"):
                         await layer.set_domain(card["board"], card["matchedCardId"], card["domain"])
