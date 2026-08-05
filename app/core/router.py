@@ -2826,13 +2826,14 @@ class JarvisRouter:
                     await layer.client.update_card(card["id"], due=layer._due_utc(due))
                     changed.append(f"due {due.strftime('%d %b %H:%M')}")
                 if tool_input.get("owner"):
+                    from app.daily12.trello_layer import match_members
+
                     bmap = layer.board(board)
-                    owner = str(tool_input["owner"])
-                    owner_full = {"Kiefer": "Kiefer Brindle", "Paul": "Paul Lunny"}.get(owner, owner)
-                    await layer.client.assign_member(
-                        card["id"], bmap.resolve("members", owner_full)
-                    )
-                    changed.append(f"owner {owner}")
+                    member_ids, unknown = match_members(bmap, tool_input["owner"])
+                    for member_id in member_ids:
+                        await layer.client.assign_member(card["id"], member_id)
+                    note = f" (no member match for {', '.join(unknown)})" if unknown else ""
+                    changed.append(f"owner {tool_input['owner']}{note}")
                 if tool_input.get("desc"):
                     await layer.client.update_card(card["id"], desc=str(tool_input["desc"]))
                     changed.append("notes")

@@ -30,7 +30,7 @@ EXTRACTION_SYSTEM = """You extract Trello card intents from Paul's spoken ramble
 Reply ONLY with JSON matching:
 {"cards":[{"action":"create|update|archive","matchedCardId":null,"matchConfidence":0.0,
 "title":"","description":null,"board":"master|harry","list":"","domain":null,
-"priority":null,"owner":null,"due":null,
+"priority":null,"owner":null (one name OR several: "Paul, Kiefer"),"due":null,
 "checklist":[{"text":"","owner":null,"due":null}],
 "confidence":0.0,"uncertainties":[]}],"unassignedRemarks":[]}
 
@@ -62,6 +62,10 @@ RULES (each matters):
   never in owner.
 - Relative dates resolve against Paul's timezone shown below, output UTC ISO.
 - Speech that maps to no card goes in unassignedRemarks, never dropped.
+- TOTAL COVERAGE (01:00, 6 Aug: Paul said more than came back): EVERY part
+  of the transcript must be accounted for — in a card, or QUOTED in
+  unassignedRemarks. Before answering, re-read the transcript and check
+  nothing was dropped. Silent omission is the worst failure this system has.
 - CONVERSATION IS NOT CAPTURE: if the message reads as an answer to a
   question, a mood/state report, reflection, or general chat — even when it
   mentions work words — return ZERO cards. Only concrete work instructions
@@ -81,11 +85,21 @@ def resolve_due(raw: str, now: datetime) -> datetime | None:
     raw = str(raw or "").strip().lower()
     if not raw:
         return None
+    from datetime import timedelta
+
     try:
-        return datetime.fromisoformat(raw.replace("z", "+00:00"))
+        parsed = datetime.fromisoformat(raw.replace("z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=now.tzinfo)
+        # Model slip guard (01:01, 6 Aug: 'due 2025-08-14' — a year AGO):
+        # a due more than 2 days past gets its year bumped when that lands
+        # sensibly in the future; otherwise it's no date at all.
+        if parsed < now - timedelta(days=2):
+            bumped = parsed.replace(year=parsed.year + 1)
+            return bumped if now < bumped < now + timedelta(days=400) else None
+        return parsed
     except ValueError:
         pass
-    from datetime import timedelta
 
     if raw in ("today", "tonight", "end of day", "eod"):
         return now.replace(hour=18, minute=0, second=0, microsecond=0)
@@ -204,10 +218,14 @@ class VoiceIntake:
                 for question in card.get("uncertainties", []) or []:
                     lines.append(f"   ⚠ {question}")
                 continue
-            bits = [b for b in (
-                card.get("domain"), card.get("priority"), card.get("owner"),
-                f"due {card['due'][:10]}" if card.get("due") else "no deadline",
-            ) if b]
+            resolved = resolve_due(card.get("due"), datetime.now(ZoneInfo("Asia/Dubai")))
+            due_bit = (
+                f"due {resolved.strftime('%a %-d %b %Y')}" if resolved
+                else (f"due unclear ('{card['due']}')" if card.get("due") else "no deadline")
+            )
+            owner = card.get("owner")
+            owner_bit = ", ".join(owner) if isinstance(owner, list) else owner
+            bits = [b for b in (card.get("domain"), card.get("priority"), owner_bit, due_bit) if b]
             lines.append("   " + " · ".join(bits))
             if card.get("checklist"):
                 lines.append("   " + "  ".join(f"☐ {i.get('text', '')}" for i in card["checklist"][:6]))
@@ -372,20 +390,24 @@ class VoiceIntake:
                          "due_local": resolve_due(i.get("due"), now_dubai)}
                         for i in (card.get("checklist") or []) if i.get("text")
                     ]
-                    owner = card.get("owner") or ""
-                    owner_full = {"Kiefer": "Kiefer Brindle", "Paul": "Paul Lunny"}.get(owner, owner)
-                    await layer.create_card_full(
+                    created = await layer.create_card_full(
                         card.get("board") or "master",
                         card.get("list") or "Inbox",
                         title,
                         desc=card.get("description") or "",
                         due_local=due,
-                        owner_name=owner_full,
+                        owner_name=card.get("owner") or "",   # one name or several
                         domain=card.get("domain") or "",
                         priority=card.get("priority") or "",
                         checklist=checklist or None,
                     )
-                    results.append(f"{n}. ✅ created '{title}'{due_note}")
+                    owner_note = ""
+                    if isinstance(created, dict) and created.get("_unassigned_owners"):
+                        owner_note = (
+                            f" (couldn't assign {', '.join(created['_unassigned_owners'])} "
+                            "— not a board member)"
+                        )
+                    results.append(f"{n}. ✅ created '{title}'{due_note}{owner_note}")
             except Exception as exc:
                 logger.exception("Intake write failed for '%s'", title)
                 results.append(f"{n}. ⚠️ '{title}' FAILED PARTWAY: {str(exc)[:150]}")

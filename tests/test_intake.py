@@ -302,6 +302,36 @@ class TestRelativeDues(IntakeBase):
         (_, _, _, kwargs) = FakeLayer.created[0]
         self.assertIsNone(kwargs["due_local"])
 
+    def test_past_year_iso_bumps_forward(self):
+        # 01:01, 6 Aug: the model wrote 2025-08-14 for 'next week' in 2026.
+        from zoneinfo import ZoneInfo
+
+        from app.daily12.intake import resolve_due
+
+        now = datetime(2026, 8, 6, 1, 1, tzinfo=ZoneInfo("Asia/Dubai"))
+        bumped = resolve_due("2025-08-14", now)
+        self.assertEqual((bumped.year, bumped.month, bumped.day), (2026, 8, 14))
+        self.assertIsNone(resolve_due("2020-01-01", now))   # nonsense stays out
+
+    async def test_unmatched_owner_reported_not_fatal(self):
+        card = dict(EXTRACTION["cards"][0])
+        card["owner"] = "Paul, Kiefer"
+        self.responses = [json.dumps({"cards": [card], "unassignedRemarks": []})]
+
+        async def create_with_unknown(layer_self, board, list_name, title, **kwargs):
+            FakeLayer.created.append((board, list_name, title, kwargs))
+            return {"id": "NEW1", "_unassigned_owners": ["Steph"]}
+
+        original = FakeLayer.create_card_full
+        FakeLayer.create_card_full = create_with_unknown
+        try:
+            await self.intake.start_batch("ramble " * 30)
+            result = await self.intake.handle_reply("OK")
+        finally:
+            FakeLayer.create_card_full = original
+        self.assertIn("✅ created", result)
+        self.assertIn("couldn't assign Steph", result)
+
     def test_resolve_due_words(self):
         from zoneinfo import ZoneInfo
 

@@ -154,6 +154,24 @@ class TestTrelloLayer(unittest.IsolatedAsyncioTestCase):
     async def _none_actions(self, card_id, before=""):
         return []
 
+    async def test_multiple_owners_assign_and_unknowns_surface(self):
+        # 01:01, 6 Aug: 'Paul, Kiefer' treated as one name killed the card.
+        from app.daily12.trello_layer import match_members
+
+        master = self.h.layer.board("master")
+        ids, unknown = match_members(master, "Paul, Kiefer")
+        self.assertEqual(len(ids), 2)
+        self.assertEqual(unknown, [])
+        ids, unknown = match_members(master, "Kiefer and Steph")
+        self.assertEqual(len(ids), 1)
+        self.assertEqual(unknown, ["Steph"])
+        card = await self.h.layer.create_card_full(
+            "master", "Paul Today", "Joint one", owner_name="Paul, Kiefer"
+        )
+        assigns = [p for p in self.h.paths() if p[0] == "POST" and "idMembers" in p[1]]
+        self.assertEqual(len(assigns), 2)          # both really assigned
+        self.assertNotIn("_unassigned_owners", card)
+
     async def test_kiefer_never_nudged_is_in_the_registry(self):
         master = next(b for b in self.h.layer.registry["boards"] if b["key"] == "master")
         self.assertFalse(master["partner"]["nudge"])
