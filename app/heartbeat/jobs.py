@@ -257,14 +257,40 @@ class HeartbeatJobs:
                     pass
         return None
 
+    async def before_wake(self, now: datetime | None = None) -> bool:
+        """True while it is still Paul's night — NOTHING proactive fires:
+        before a declared wake hour ('wake me at 7'), before the gospel wake
+        time (5 Aug: run o'clock hit 06:29 and water 08:04 against an 08:30
+        gospel — his wake time IS the morning's start, minute-accurate), or
+        past the gospel time while the wake call is still chasing proof."""
+        now = now or datetime.now(await self._tz())
+        today = now.date()
+        floor = await self.wake_floor_hour(today)
+        if floor is not None and now.hour < floor:
+            return True
+        from app.heartbeat.wakeup import WAKE_TIME_KEY
+
+        gospel = await self.store.get(WAKE_TIME_KEY, "")
+        if not gospel or await self.woke_today(today):
+            return False
+        try:
+            hh, _, mm = gospel.partition(":")
+            gospel_min = int(hh) * 60 + int(mm or 0)
+        except ValueError:
+            return False
+        if now.hour * 60 + now.minute < gospel_min:
+            return True
+        # Past the gospel time with no proof yet: the wake call owns the
+        # morning while it's live; once stood down, the day is his to start.
+        return bool(await self.wake2.active_phase())
+
     async def run_protect(self, now: datetime | None = None) -> None:
         now = now or datetime.now(await self._tz())
         today = now.date()
         if await self.streaks.done_today("run", today):
             return
-        floor = await self.wake_floor_hour(today)
-        if floor is not None and now.hour < floor:
-            return  # he told us his morning — let him sleep; the chaser picks it up
+        if await self.before_wake(now):
+            return  # his night, not ours — the chaser picks it up later
         if not await self._once(f"runprotect:{today.isoformat()}"):
             return
         snapshot = await self.streaks.snapshot(today)
@@ -282,9 +308,8 @@ class HeartbeatJobs:
         today = now.date()
         # The brief lands when PAUL's morning starts, not at a fixed seven:
         # scheduled hourly 07:00–10:00, it holds (without burning the once-
-        # guard) until his declared wake hour, then fires on the next slot.
-        floor = await self.wake_floor_hour(today)
-        if floor is not None and now.hour < floor:
+        # guard) until his wake — declared hour or gospel time — then fires.
+        if await self.before_wake(now):
             return
         if not await self._once(f"brief:{today.isoformat()}"):
             return
@@ -668,10 +693,8 @@ class HeartbeatJobs:
         today = now.date()
         if await self.wake_enabled() and not await self.woke_today(today) and now.hour < 12:
             return  # still asleep — the wake system owns the morning
-        from app.heartbeat.wakeup import WAKE_TIME_KEY
-
-        if await self.store.get(WAKE_TIME_KEY, "") and not await self.woke_today(today):
-            return  # gospel set but not proven up yet — the wake call owns this
+        if await self.before_wake(now):
+            return  # his night, or the wake call is still chasing — not water's turn
         gone_to_bed = await self.db.fetch_one(
             "SELECT id FROM sleep_log WHERE day = ?", (today.isoformat(),)
         )
@@ -1033,8 +1056,7 @@ class HeartbeatJobs:
         today = now.date()
         if not (7 <= now.hour <= 22):
             return
-        floor = await self.wake_floor_hour(today)
-        if floor is not None and now.hour < floor:
+        if await self.before_wake(now):
             return
         gone = await self.db.fetch_one(
             "SELECT id FROM sleep_log WHERE day = ?", (today.isoformat(),)

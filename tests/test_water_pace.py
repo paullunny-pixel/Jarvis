@@ -103,10 +103,36 @@ class TestWaterPace(unittest.IsolatedAsyncioTestCase):
         self.assertLess(status["hours_awake"], 0.2)   # just woke — nothing expected yet
         self.assertEqual(status["expected"], 0)
 
-    async def test_gospel_set_but_not_up_means_silence(self):
+    async def test_before_gospel_is_his_night_minute_accurate(self):
+        # The 5 Aug bug: gospel 08:30, water nudge at 08:04. Never again.
+        await self.h.jobs.store.set(WAKE_TIME_KEY, "08:30")
+        eight_oh_four = datetime.now(TZ).replace(hour=8, minute=4)
+        self.assertTrue(await self.h.jobs.before_wake(eight_oh_four))
+        await self.h.jobs.move_water_nudge(eight_oh_four)   # zero water, way behind
+        self.assertEqual(self.h.texts(), [])
+        # ...and run o'clock at 06:29 is equally his night
+        self.assertTrue(await self.h.jobs.before_wake(datetime.now(TZ).replace(hour=6, minute=29)))
+
+    async def test_wake_call_chasing_keeps_water_quiet(self):
+        import json
+
         await self.h.jobs.store.set(WAKE_TIME_KEY, "08:00")
-        await self.h.jobs.move_water_nudge(self.noon)   # zero water, way behind
-        self.assertEqual(self.h.texts(), [])            # but he's not proven up
+        await self.h.jobs.store.set("wake2_state", json.dumps({
+            "date": self.today.isoformat(), "phase": "up", "test": False,
+            "started": self.noon.isoformat(timespec="seconds"),
+            "last_action": self.noon.isoformat(timespec="seconds"),
+            "calls": 1, "silences": 0, "pitch_i": 0,
+        }))
+        await self.h.jobs.move_water_nudge(self.noon)
+        self.assertEqual(self.h.texts(), [])   # the wake call owns the morning
+
+    async def test_after_proof_the_day_is_open_again(self):
+        await self.h.jobs.store.set(WAKE_TIME_KEY, "08:00")
+        await self.db.execute(
+            "INSERT INTO wake_log (day, wake_time, photo_ref, method) VALUES (?, ?, '', 'selfie')",
+            (self.today.isoformat(), utc_now_iso()),
+        )
+        self.assertFalse(await self.h.jobs.before_wake(self.noon))
 
     async def test_after_goodnight_means_silence(self):
         await self.db.execute(
