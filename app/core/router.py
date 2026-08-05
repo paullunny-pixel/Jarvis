@@ -90,13 +90,14 @@ class JarvisRouter:
         "Dermaren", "Revitrain", "mesotherapy", "Kiefer", "Harry", "Adriana",
         "Alicia", "Olesia", "Kenny", "BMI", "WaterMinder", "TRT", "Jarvis",
         "Trello", "electrolytes",
-        # Phase 3 §3 roster (5 Aug) — brands, staff, tools, clinical terms.
+        # Phase 3 roster, PRUNED (18:10, 5 Aug): ~100 boost terms garbled two
+        # notes straight — every keyterm biases decoding, and short acronyms
+        # and everyday words (Sarah, Tide, CRM) drag whole sentences toward
+        # nonsense. Distinctive multi-syllable proper nouns ONLY; the model
+        # hears common names fine without help.
         "Derma EU", "Prime Derm", "Sculptide", "Exobelle", "Hydroboost",
-        "ProEye", "Revolax", "Adrianna", "Sarah", "Steph", "Marko", "Frances",
-        "Chelsie", "Laura", "Andrea", "Jordan", "Garry", "Tony", "Ella",
-        "Naila", "LPG", "JD Bio", "AMS", "MAH", "IFU", "NAD", "CRM",
-        "Acmedia", "Wilson and Gunn", "Omnisend", "Thinkific", "Teachable",
-        "Upwork", "Tide", "Revolut", "Shopify", "Dubai Derma",
+        "ProEye", "Revolax", "Adrianna", "Chelsie", "Naila", "Marko",
+        "JD Bio", "Acmedia", "Omnisend", "Thinkific", "Dubai Derma",
         "polynucleotides", "exosomes", "glutathione", "microneedling",
     ]
 
@@ -110,7 +111,9 @@ class JarvisRouter:
             return self._speech_vocab
         import re as _re
 
-        terms: dict[str, None] = dict.fromkeys(self.SPEECH_SEED_VOCAB)
+        # Brain-learned names FIRST — Paul's live world outranks the static
+        # seeds when the cap bites (18:10, 5 Aug: lean list transcribes best).
+        terms: dict[str, None] = {}
         if self.living is not None:
             try:
                 for row in await self.living.all_current():
@@ -123,7 +126,9 @@ class JarvisRouter:
                         terms.setdefault(word)
             except Exception:
                 logger.exception("Speech vocabulary build failed — seeds carry on")
-        self._speech_vocab = list(terms)[:100]
+        for seed in self.SPEECH_SEED_VOCAB:
+            terms.setdefault(seed)
+        self._speech_vocab = list(terms)[:40]
         self._speech_vocab_ts = _time.monotonic()
         return self._speech_vocab
 
