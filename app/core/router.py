@@ -1277,6 +1277,18 @@ class JarvisRouter:
             "✅ Apple Health: webhook ready" if s.apple_health_webhook_secret
             else "▫️ Apple Health: not configured"
         )
+        try:
+            import json as _hj
+
+            crumb = _hj.loads(await self.store.get("health_last_import", "") or "{}")
+            if crumb.get("at"):
+                parsed = crumb.get("parsed") or {}
+                bits = ", ".join(f"{k} {v}" for k, v in parsed.items() if k != "date") or "no fields parsed"
+                lines.append(f"   ↳ last import {crumb['at']} — {bits}")
+            else:
+                lines.append("   ↳ no health import has arrived yet — check the export app's automation")
+        except Exception:
+            pass
         phone = self.phone_channel
         if phone is not None and phone.configured:
             try:
