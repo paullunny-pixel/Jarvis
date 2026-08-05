@@ -353,17 +353,18 @@ class TestDayRhythm(unittest.IsolatedAsyncioTestCase):
         await self.jobs.wake_tick(at_local("05:06"))
         self.assertEqual(self.sent(), [])
 
-    async def test_hourly_nudge_once_per_hour_with_totals(self):
-        day = at_local("10:05").date()
-        await self.jobs.log_water(day, 600)
-        await self.jobs.log_movement(day)
+    async def test_hourly_nudge_once_per_hour_when_behind_the_curve(self):
+        # Pace-aware (5 Aug): zero water by 10:05 is well over an hour behind
+        # the 200ml/hr curve — one line per hour, and ahead means silence
+        # (covered in test_water_pace).
+        await self.jobs.log_movement(at_local("10:05").date())
         await self.jobs.move_water_nudge(at_local("10:05"))
         self.assertEqual(len(self.h.sent_texts()), 1)
-        self.assertIn("0.6L", self.h.sent_texts()[0])
+        self.assertIn("behind+the+curve", self.h.sent_texts()[0])   # raw form-encoded capture
         await self.jobs.move_water_nudge(at_local("10:07"))
         self.assertEqual(len(self.h.sent_texts()), 1)   # same hour → once
         await self.jobs.move_water_nudge(at_local("11:05"))
-        self.assertEqual(len(self.h.sent_texts()), 2)   # next hour → again
+        self.assertEqual(len(self.h.sent_texts()), 2)   # still behind next hour → again
 
     async def test_no_nudges_after_goodnight(self):
         day = at_local("15:05").date()

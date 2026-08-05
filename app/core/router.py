@@ -1119,7 +1119,11 @@ class JarvisRouter:
             "the machinery catches BEFORE you — never claim to set or stop a wake "
             "yourself.",
             "- Day rhythm: wake-up sequence built (05:00 local; Paul arms it with 'start the "
-            "wake-ups', skips one day with 'no wake-up tomorrow'); hourly move+water nudges; "
+            "wake-ups', skips one day with 'no wake-up tomorrow'); WATER runs on a pace "
+            "curve (5 Aug): 200ml per waking hour (275 on run days or declared heat days "
+            "via the rhythm tool's heat_day) — AHEAD of the curve means total silence, "
+            "only a full hour behind earns one line, and nothing fires before he's up or "
+            "after goodnight. Paul logs by telling you amounts ('300ml') any time; "
             "med reminders (ADHD 09:30, supplements 14:00, TRT Saturdays); bedtime "
             "protection (wind-down 21:45, lights-out 22:30, chaser 23:00 — pierces quiet "
             "days; 'goodnight' stands it down). The run/meds "
@@ -2178,7 +2182,9 @@ class JarvisRouter:
                     "states what time he's getting up — however casually — set "
                     "wake_hour_tomorrow; whenever he's turning in, in any words, set "
                     "goodnight; the MOMENT his location and your clocks disagree, set "
-                    "timezone_place. Saying any of it back without the tool changes "
+                    "timezone_place. heat_day marks today as an outdoor/heat day so the "
+                    "water pace steps up — set it when Paul says he's out in the sun. "
+                    "Saying any of it back without the tool changes "
                     "nothing. Only claim a rhythm change the result confirms."
                 ),
                 "input_schema": {
@@ -2198,6 +2204,7 @@ class JarvisRouter:
                         },
                         "skip_days": {"type": "integer"},
                         "skip_reason": {"type": "string"},
+                        "heat_day": {"type": "boolean"},
                     },
                 },
             })
@@ -2278,6 +2285,12 @@ class JarvisRouter:
                     await self.gates.override(skip, reason, start + timedelta(days=offset))
                 span = "today" if days == 1 else f"{days} days"
                 done.append(f"{' and '.join(skip)} excused for {span} — chasing stands down")
+            if tool_input.get("heat_day"):
+                heat_today = datetime.now(ZoneInfo(tz_name)).date().isoformat()
+                await self.store.set("water_heat_day", heat_today)
+                done.append(
+                    f"heat day noted — water pace up to {self.settings.water_heat_pace_ml}ml/hr today"
+                )
             if tool_input.get("quiet_today") is not None:
                 await self.heartbeat.set_quiet_today(bool(tool_input["quiet_today"]))
                 done.append(

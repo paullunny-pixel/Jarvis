@@ -108,6 +108,11 @@ class Settings(BaseSettings):
 
     # --- Day rhythm (Master Update §§4-6) ---
     water_target_ml: int = 2500
+    # Intelligent water pacing (5 Aug): ahead of the hourly curve = SILENCE;
+    # only falling a full hour behind earns a line. 200ml/hr over a ~15h
+    # waking day ≈ 3L — right for indoor Dubai; run/heat days drink harder.
+    water_pace_ml_per_hour: int = 200
+    water_heat_pace_ml: int = 275         # run days + declared heat days
     # The custom Twilio voice channel (built 4 Aug): 'call me', inbound calls
     # and the wake-up escalation all ride these + paul_phone_number.
     twilio_account_sid: str = ""
