@@ -1,0 +1,70 @@
+"""Health Auto Export → Jarvis's flat health format (5 Aug).
+
+Two clients feed /webhook/apple-health: the hand-built iOS Shortcut posts our
+flat JSON with the secret in the body; the Health Auto Export app posts its
+nested {"data": {"metrics": [...], "workouts": [...]}} and can only carry the
+secret as a header — this module translates the nested shape.
+
+Only TODAY's data points count (the app should be set to export range
+'Today'), so water arrives as the day's running total and the existing
+max-merge stays correct against manual '300ml' logging.
+"""
+from __future__ import annotations
+
+from datetime import datetime
+
+
+def _today(points: list, today_iso: str) -> list:
+    return [p for p in points or [] if str(p.get("date", ""))[:10] == today_iso]
+
+
+def flatten_export(payload: dict, now_local: datetime) -> dict:
+    """Nested Health Auto Export payload → the flat fields the endpoint reads.
+    Defensive throughout: unknown metrics are ignored, units converted."""
+    data = payload.get("data") or {}
+    today_iso = now_local.date().isoformat()
+    flat: dict = {"date": today_iso}
+    for metric in data.get("metrics") or []:
+        name = str(metric.get("name", "")).lower()
+        units = str(metric.get("units", "")).lower()
+        points = _today(metric.get("data"), today_iso)
+        if not points:
+            continue
+        total = sum(float(p.get("qty") or 0) for p in points)
+        if name == "step_count":
+            flat["steps"] = int(total)
+        elif name == "dietary_water":
+            flat["water_ml"] = int(total * 1000) if units in ("l", "liter", "litre") else int(total)
+        elif name == "weight_body_mass":
+            latest = float(points[-1].get("qty") or 0)
+            flat["weight_kg"] = round(latest * 0.45359237, 2) if units in ("lb", "lbs") else latest
+        elif name == "resting_heart_rate":
+            flat["resting_hr"] = int(round(total / len(points)))
+        elif name == "heart_rate_variability":
+            flat["hrv"] = round(total / len(points), 1)
+        elif name == "sleep_analysis":
+            hours = 0.0
+            for p in points:
+                hours = max(hours, float(p.get("totalSleep") or p.get("asleep") or p.get("qty") or 0))
+            flat["sleep_hours"] = hours
+    for workout in data.get("workouts") or []:
+        if "run" not in str(workout.get("name", "")).lower():
+            continue
+        start = str(workout.get("start", ""))
+        if start and start[:10] != today_iso:
+            continue
+        distance = workout.get("distance") or {}
+        km = float(distance.get("qty") or 0)
+        if str(distance.get("units", "")).lower() in ("mi", "mile", "miles"):
+            km = km * 1.60934
+        if km <= float(flat.get("run_km") or 0):
+            continue
+        flat["run_km"] = round(km, 2)
+        duration = workout.get("duration")
+        try:
+            minutes = float(duration)
+            # HAE reports seconds; anything over 3 hours as 'minutes' was seconds
+            flat["run_min"] = round(minutes / 60, 1) if minutes > 180 else minutes
+        except (TypeError, ValueError):
+            pass
+    return flat
