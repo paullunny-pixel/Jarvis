@@ -2499,6 +2499,47 @@ class JarvisRouter:
                     },
                 },
             })
+        if self.settings.trello_key and self.settings.trello_token:
+            tools.append({
+                "name": "trello_card",
+                "description": (
+                    "THE FULL-SCHEMA card tool — the ONLY way to write Domain and "
+                    "Priority dropdowns, checklists and the Entered List On stamp "
+                    "(00:45, 6 Aug: a card written without this had empty custom "
+                    "fields). create/update/move/done/archive on board 'master' "
+                    "(Master Board) or 'harry' (Paul x Harry). Priority P1-P5 "
+                    "(P1/P2 auto-apply Urgent). due accepts ISO or plain words "
+                    "('tomorrow', 'friday'). For update/move/done/archive give "
+                    "card= the card's title or enough of it. Domain: use Paul's "
+                    "ruling memory; an unruled name (Revolax, AMS, BMI, LPG, JD "
+                    "Bio) returns ASK — put the question to him, store the answer "
+                    "with domain_ruling, retry. Prefer THIS over the legacy "
+                    "trello tool for any single-card write. Only claim what the "
+                    "result confirms."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string",
+                                   "enum": ["create", "update", "move", "done", "archive"]},
+                        "board": {"type": "string", "enum": ["master", "harry"]},
+                        "card": {"type": "string"},
+                        "title": {"type": "string"},
+                        "desc": {"type": "string"},
+                        "list": {"type": "string"},
+                        "due": {"type": "string"},
+                        "owner": {"type": "string"},
+                        "domain": {"type": "string"},
+                        "priority": {"type": "string"},
+                        "checklist": {"type": "array", "items": {
+                            "type": "object", "properties": {
+                                "text": {"type": "string"},
+                                "owner": {"type": "string"},
+                                "due": {"type": "string"}}}},
+                    },
+                    "required": ["action", "board"],
+                },
+            })
         tools.append({
             "name": "domain_ruling",
             "description": (
@@ -2615,6 +2656,8 @@ class JarvisRouter:
                 await self.heartbeat.delay_wake(wake_date, hour)
                 done.append(f"the {wake_date.strftime('%d %b')} wake-up moved to {hour:02d}:00")
             return ("Confirmed: " + ", ".join(done) + ".") if done else "NO CHANGE — no valid switch given."
+        if name == "trello_card":
+            return await self._tool_trello_card(tool_input)
         if name == "domain_ruling":
             from app.daily12.trello_layer import KNOWN_DOMAINS
 
@@ -2689,6 +2732,124 @@ class JarvisRouter:
                 wishes = []
             return self._build_list_show(wishes)
         return f"UNKNOWN TOOL '{name}' — tell Paul honestly that this isn't wired in."
+
+    async def _tool_trello_card(self, tool_input: dict) -> str:
+        """The brain's full-schema hands on the Phase 1 layer — same layer
+        the intake writes through, so a card is a card whichever mouth asked.
+        Honest failures throughout; ResolutionError text goes straight back."""
+        import json as _json
+
+        from app.daily12.intake import resolve_due
+        from app.daily12.trello_layer import ResolutionError, classify_domain
+
+        action = str(tool_input.get("action") or "")
+        board = str(tool_input.get("board") or "master")
+        intake = self._intake()
+        if intake is None:
+            return "TRELLO FAILED — the layer isn't wired on this deployment."
+        try:
+            layer = await intake._layer()
+        except Exception:
+            layer = None
+        if layer is None:
+            return "TRELLO FAILED — the Trello layer wouldn't bootstrap (keys or network)."
+        tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
+        now_local = datetime.now(ZoneInfo(tz_name))
+        try:
+            rulings = _json.loads(await self.store.get("trello_domain_rulings", "{}"))
+        except Exception:
+            rulings = {}
+        try:
+            if action == "create":
+                title = str(tool_input.get("title") or "").strip()
+                if not title:
+                    return "CREATE FAILED — no title given."
+                domain = str(tool_input.get("domain") or "").strip()
+                if not domain:
+                    domain, unresolved = classify_domain(
+                        f"{title} {tool_input.get('desc', '')}", learned=rulings
+                    )
+                    if unresolved:
+                        return (
+                            f"DOMAIN UNRULED — '{unresolved}' has no ruling. ASK Paul "
+                            "which domain, store it with domain_ruling, then retry."
+                        )
+                checklist = [
+                    {"name": str(i.get("text") or ""),
+                     "member": str(i.get("owner") or ""),
+                     "due_local": resolve_due(i.get("due"), now_local)}
+                    for i in (tool_input.get("checklist") or []) if i.get("text")
+                ]
+                owner = str(tool_input.get("owner") or "")
+                owner_full = {"Kiefer": "Kiefer Brindle", "Paul": "Paul Lunny"}.get(owner, owner)
+                await layer.create_card_full(
+                    board, str(tool_input.get("list") or "Inbox"), title,
+                    desc=str(tool_input.get("desc") or ""),
+                    due_local=resolve_due(tool_input.get("due"), now_local),
+                    owner_name=owner_full,
+                    domain=domain or "", priority=str(tool_input.get("priority") or ""),
+                    checklist=checklist or None,
+                )
+                bits = [b for b in (domain, tool_input.get("priority")) if b]
+                return (
+                    f"Card created on {board}: '{title}' in "
+                    f"{tool_input.get('list') or 'Inbox'}"
+                    + (f" ({', '.join(bits)})" if bits else "")
+                    + " — custom fields set."
+                )
+            card_query = str(tool_input.get("card") or "").strip()
+            if not card_query:
+                return f"{action.upper()} FAILED — say which card (card=title)."
+            card = await layer.find_card(board, card_query)
+            if card is None:
+                return f"NOT FOUND — no open card matching '{card_query}' on {board}."
+            if action == "archive":
+                await layer.client.archive_card(card["id"])
+                return f"Archived: '{card['name']}'."
+            if action == "done":
+                done_list = await layer.done_week_list(board, now_local)
+                await layer.client.update_card(card["id"], idList=done_list)
+                return f"Done — '{card['name']}' moved to this week's Done list."
+            if action == "move":
+                await layer.move_card(board, card["id"], str(tool_input.get("list") or ""))
+                return f"Moved '{card['name']}' to {tool_input.get('list')} (entry stamped)."
+            if action == "update":
+                changed = []
+                if tool_input.get("domain"):
+                    await layer.set_domain(board, card["id"], str(tool_input["domain"]))
+                    changed.append(f"domain {tool_input['domain']}")
+                if tool_input.get("priority"):
+                    await layer.set_priority(board, card["id"], str(tool_input["priority"]))
+                    changed.append(f"priority {tool_input['priority']}")
+                due = resolve_due(tool_input.get("due"), now_local)
+                if due:
+                    await layer.client.update_card(card["id"], due=layer._due_utc(due))
+                    changed.append(f"due {due.strftime('%d %b %H:%M')}")
+                if tool_input.get("owner"):
+                    bmap = layer.board(board)
+                    owner = str(tool_input["owner"])
+                    owner_full = {"Kiefer": "Kiefer Brindle", "Paul": "Paul Lunny"}.get(owner, owner)
+                    await layer.client.assign_member(
+                        card["id"], bmap.resolve("members", owner_full)
+                    )
+                    changed.append(f"owner {owner}")
+                if tool_input.get("desc"):
+                    await layer.client.update_card(card["id"], desc=str(tool_input["desc"]))
+                    changed.append("notes")
+                if tool_input.get("list"):
+                    await layer.move_card(board, card["id"], str(tool_input["list"]))
+                    changed.append(f"list {tool_input['list']}")
+                return (
+                    f"Updated '{card['name']}': " + ", ".join(changed)
+                    if changed else "NO CHANGE — no fields given to update."
+                )
+            return f"UNKNOWN ACTION '{action}'."
+        except ResolutionError as exc:
+            return f"TRELLO REFUSED — {exc}"
+        except Exception as exc:
+            logger.exception("trello_card tool failed")
+            self._intake_obj = None   # stale layer — rebuild next call
+            return f"TRELLO FAILED — {str(exc)[:200]}"
 
     async def _tool_trello(self, instruction: str) -> str:
         """The brain's hands on the board — same parser, same executor, same
