@@ -146,6 +146,18 @@ class TestEndpointAuth(unittest.TestCase):
         self.assertEqual(body["parsed"]["water_ml"], 800)   # visible in the app's log
         self.assertEqual(body["parsed"]["steps"], 2000)
 
+        async def _crumb():
+            import json as _json
+
+            from app.core.store import SettingsStore
+
+            return _json.loads(await SettingsStore(self.db).get("health_last_import"))
+
+        import asyncio
+
+        crumb = asyncio.run(_crumb())
+        self.assertEqual(crumb["parsed"]["water_ml"], 800)   # 'status' can see it
+
     def test_query_auth_works_too(self):
         response = self.client.post(
             "/webhook/apple-health?secret=SHHH", json=hae_payload()

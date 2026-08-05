@@ -768,14 +768,19 @@ async def apple_health(request: Request) -> dict:
     )
     # The parsed picture rides the response so the export app's log shows
     # exactly what landed — no more blind debugging (the 750ml bug, 5 Aug).
-    return {
-        "ok": True,
-        "run_recorded": recorded_run,
-        "water_recorded": water_recorded,
-        "parsed": {
-            k: payload.get(k)
-            for k in ("date", "steps", "water_ml", "weight_kg", "sleep_hours",
-                      "resting_hr", "hrv", "run_km")
-            if payload.get(k) is not None
-        },
+    parsed = {
+        k: payload.get(k)
+        for k in ("date", "steps", "water_ml", "weight_kg", "sleep_hours",
+                  "resting_hr", "hrv", "run_km")
+        if payload.get(k) is not None
     }
+    # ...and 'status' can answer 'did the last import carry water?' directly.
+    try:
+        await router.store.set(
+            "health_last_import",
+            _json.dumps({"at": datetime.now(tz).strftime("%H:%M"), "parsed": parsed}),
+        )
+    except Exception:
+        logger.exception("Health import breadcrumb failed (import itself succeeded)")
+    return {"ok": True, "run_recorded": recorded_run, "water_recorded": water_recorded,
+            "parsed": parsed}
