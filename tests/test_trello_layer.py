@@ -170,6 +170,65 @@ class TestTrelloLayer(unittest.IsolatedAsyncioTestCase):
             ("Aesthetics Supply", None),
         )
 
+    async def test_brain_trello_card_tool_full_schema(self):
+        import json as _json
+        import os
+        import tempfile
+
+        from app.clients.anthropic_client import ClaudeClient
+        from app.clients.deepgram_client import DeepgramClient
+        from app.clients.elevenlabs_client import ElevenLabsClient
+        from app.clients.telegram_client import IncomingMessage, TelegramClient
+        from app.config import Settings
+        from app.core.router import JarvisRouter
+        from app.daily12.intake import VoiceIntake
+        from app.db.sqlite import SqliteDatabase
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SqliteDatabase(os.path.join(tmp, "t.db"))
+            await db.init()
+            mock = httpx.MockTransport(lambda r: httpx.Response(500))
+            settings = Settings(telegram_bot_token="TOK", trello_key="K",
+                                trello_token="T", _env_file=None)
+            router = JarvisRouter(
+                settings=settings, db=db,
+                telegram=TelegramClient("TOK", transport=mock),
+                claude=ClaudeClient("K", transport=mock),
+                deepgram=DeepgramClient("K", transport=mock),
+                elevenlabs=ElevenLabsClient("K", voice_id="V", transport=mock),
+            )
+
+            async def factory():
+                return self.h.layer   # the bootstrapped mock layer
+
+            router._intake_obj = VoiceIntake(router.claude, router.store, settings, factory)
+            msg = IncomingMessage(chat_id=1, message_id=1, from_name="Paul")
+
+            # Unruled name → honest ASK, nothing written.
+            result = await router._dispatch_tool(
+                "trello_card", {"action": "create", "board": "harry",
+                                "title": "BMI paperwork"}, msg,
+            )
+            self.assertIn("DOMAIN UNRULED", result)
+
+            # Ruled via memory → full-schema create, relative due resolved.
+            await router.store.set("trello_domain_rulings", _json.dumps({"bmi": "Prodermis"}))
+            result = await router._dispatch_tool(
+                "trello_card", {"action": "create", "board": "harry",
+                                "title": "BMI paperwork", "priority": "P2",
+                                "due": "tomorrow", "list": "Inbox"}, msg,
+            )
+            self.assertIn("Card created on harry", result)
+            self.assertIn("custom fields set", result)
+
+            # Per-board guard surfaces loudly.
+            result = await router._dispatch_tool(
+                "trello_card", {"action": "create", "board": "harry",
+                                "title": "Life admin", "domain": "Personal"}, msg,
+            )
+            self.assertIn("TRELLO REFUSED", result)
+            await db.close()
+
     async def test_ordinals_match_pauls_convention(self):
         self.assertEqual(_ordinal(3), "3rd")
         self.assertEqual(_ordinal(11), "11th")
