@@ -111,6 +111,33 @@ class BoardMap:
         )
 
 
+def match_members(bmap: BoardMap, raw) -> tuple[list[str], list[str]]:
+    """'Paul, Kiefer' / 'Paul and Kiefer' / ['Paul','Kiefer'] → member ids +
+    the names that matched nobody (01:01, 6 Aug: a comma string treated as
+    one person killed a whole card). Substring match, unique or nothing."""
+    if isinstance(raw, (list, tuple)):
+        tokens = [str(t) for t in raw]
+    else:
+        import re as _re
+
+        tokens = _re.split(r",|&|\+|\band\b", str(raw or ""))
+    ids, unknown = [], []
+    for token in (t.strip() for t in tokens):
+        if not token or token.lower() in ("me", "i", "myself"):
+            token = "Paul" if token else ""
+        if not token:
+            continue
+        hits = [
+            member_id for name, member_id in bmap.members.items()
+            if token.lower() in name.lower()
+        ]
+        if len(hits) == 1 and hits[0] not in ids:
+            ids.append(hits[0])
+        elif len(hits) != 1:
+            unknown.append(token)
+    return ids, unknown
+
+
 class TrelloLayer:
     def __init__(self, client, registry: dict | None = None) -> None:
         self.client = client
@@ -221,7 +248,11 @@ class TrelloLayer:
         card_id = card["id"]
         await self._stamp_entered(bmap, card_id)
         if owner_name:
-            await self.client.assign_member(card_id, bmap.resolve("members", owner_name))
+            member_ids, unknown = match_members(bmap, owner_name)
+            for member_id in member_ids:
+                await self.client.assign_member(card_id, member_id)
+            if unknown:
+                card["_unassigned_owners"] = unknown   # caller reports honestly
         if domain:
             await self.set_domain(board_key, card_id, domain)
         if priority:
