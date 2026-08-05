@@ -37,11 +37,16 @@ EXTRACTION = {
 
 
 class FakeLayerClient:
+    archived: list = []
+
     async def board_cards(self, board_id):
         return [{"id": "EX1", "name": "Review Derma Ads", "idList": "L1"}]
 
     async def update_card(self, card_id, **fields):
         pass
+
+    async def archive_card(self, card_id):
+        FakeLayerClient.archived.append(card_id)
 
 
 class FakeBoardMap:
@@ -159,6 +164,36 @@ class TestConfirmLoop(IntakeBase):
 
     async def test_no_pending_means_none(self):
         self.assertIsNone(await self.intake.handle_reply("OK"))
+
+    async def test_delete_a_card_by_voice_archives_it(self):
+        # 17:52, 5 Aug: 'delete this card, I don't need it any more' fell
+        # through to conversation — archive is a first-class action now.
+        FakeLayerClient.archived = []
+        self.responses = [json.dumps({"cards": [
+            {"action": "archive", "matchedCardId": "EX1", "matchConfidence": 0.9,
+             "title": "Plan and code morning routine with Jarvis",
+             "board": "master", "list": None, "domain": None, "priority": None,
+             "owner": None, "due": None, "checklist": [], "confidence": 0.9,
+             "uncertainties": []}], "unassignedRemarks": []})]
+        summary = await self.intake.start_batch("delete the morning routine card please " * 4)
+        self.assertIn("ARCHIVE · Plan and code morning routine", summary)
+        result = await self.intake.handle_reply("OK")
+        self.assertIn("✅ archived", result)
+        self.assertEqual(FakeLayerClient.archived, ["EX1"])
+
+    async def test_archive_without_a_match_asks_for_the_title(self):
+        self.responses = [json.dumps({"cards": [
+            {"action": "archive", "matchedCardId": None, "matchConfidence": 0.0,
+             "title": "that old one", "board": "master", "list": None,
+             "domain": None, "priority": None, "owner": None, "due": None,
+             "checklist": [], "confidence": 0.4,
+             "uncertainties": ["Which card should I archive?"]}],
+            "unassignedRemarks": []})]
+        summary = await self.intake.start_batch("bin that old card " * 8)
+        self.assertIn("⚠ Which card", summary)
+        result = await self.intake.handle_reply("yes")
+        self.assertIn("couldn't archive", result)
+        self.assertIn("exact title", result)
 
     async def test_partial_write_failure_is_precise(self):
         await self.intake.start_batch("ramble " * 30)
