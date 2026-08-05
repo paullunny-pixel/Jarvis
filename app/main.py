@@ -196,7 +196,11 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
         mail=mail,
         telegram=telegram,
         claude=claude,
-        deepgram=DeepgramClient(settings.deepgram_api_key, model=settings.deepgram_model),
+        deepgram=DeepgramClient(
+            settings.deepgram_api_key,
+            model=settings.deepgram_model,
+            language=settings.deepgram_language,
+        ),
         elevenlabs=elevenlabs,
     )
     router_obj.voice_engine = voice_engine

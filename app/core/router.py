@@ -79,6 +79,45 @@ class JarvisRouter:
         self._sprint_tasks: set = set()  # strong refs to running buzzer timers
         self.web_transport = None        # httpx transport seam for link-fetch tests
         self.phone_channel = None        # PhoneChannel — Twilio calls (main.py wires it)
+        self._speech_vocab: list[str] = []   # nova-3 keyterms, rebuilt hourly
+        self._speech_vocab_ts: float = 0.0
+
+    # Transcription accuracy (5 Aug): the names Deepgram must never mangle.
+    # Seeds cover the world as of today; the live list grows from the second
+    # brain so new people and products join without a code change.
+    SPEECH_SEED_VOCAB = [
+        "Prodermis", "Derma Direct", "Aesthetics Supply", "Nexfill", "LumiEyes",
+        "Dermaren", "Revitrain", "mesotherapy", "Kiefer", "Harry", "Adriana",
+        "Alicia", "Olesia", "Kenny", "BMI", "WaterMinder", "TRT", "Jarvis",
+        "Trello", "electrolytes",
+    ]
+
+    async def _speech_vocabulary(self) -> list[str]:
+        """nova-3 keyterms, live from the brain: seed names + every person and
+        company in the living facts (keys → names, capitalised words from
+        values). Cached an hour; failures fall back to whatever we had."""
+        import time as _time
+
+        if self._speech_vocab and _time.monotonic() - self._speech_vocab_ts < 3600:
+            return self._speech_vocab
+        import re as _re
+
+        terms: dict[str, None] = dict.fromkeys(self.SPEECH_SEED_VOCAB)
+        if self.living is not None:
+            try:
+                for row in await self.living.all_current():
+                    if row["room"] not in ("people", "companies"):
+                        continue
+                    for seg in str(row["key"]).split("."):
+                        if len(seg) > 2 and seg not in ("people", "companies"):
+                            terms.setdefault(seg.replace("_", " ").title())
+                    for word in _re.findall(r"\b[A-Z][a-zA-Z]{2,}\b", str(row["value"]))[:5]:
+                        terms.setdefault(word)
+            except Exception:
+                logger.exception("Speech vocabulary build failed — seeds carry on")
+        self._speech_vocab = list(terms)[:60]
+        self._speech_vocab_ts = _time.monotonic()
+        return self._speech_vocab
 
     # --- Authorisation: Jarvis talks to Paul and no one else ---
 
@@ -146,7 +185,9 @@ class JarvisRouter:
             kind = "voice"
             try:
                 audio = await self.telegram.download_file(message.voice_file_id)
-                content = await self.deepgram.transcribe(audio, "audio/ogg")
+                content = await self.deepgram.transcribe(
+                    audio, "audio/ogg", keyterms=await self._speech_vocabulary()
+                )
             except Exception:
                 logger.exception("Group voice transcription failed")
                 content = ""
@@ -205,7 +246,9 @@ class JarvisRouter:
         # 1. Get the words (transcribe voice notes).
         if message.is_voice:
             audio = await self.telegram.download_file(message.voice_file_id)
-            transcript = await self.deepgram.transcribe(audio, "audio/ogg")
+            transcript = await self.deepgram.transcribe(
+                audio, "audio/ogg", keyterms=await self._speech_vocabulary()
+            )
             if not transcript:
                 await self.log.log(
                     "in", "", chat_id=message.chat_id, kind="voice",
