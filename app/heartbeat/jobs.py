@@ -566,6 +566,39 @@ class HeartbeatJobs:
                 return False
         return not await self.woke_today(today)
 
+    SCHEDULED_CALLS_KEY = "scheduled_calls"
+
+    async def scheduled_calls_tick(self, now: datetime | None = None) -> None:
+        """Timed reminder calls (5 Aug): 'call me in 40 minutes and remind me
+        to call Ella' → the brain schedules it, this minute-beat rings him on
+        time. Paul asked for it, so it pierces quiet days (essential)."""
+        try:
+            import json as _json
+
+            now = now or datetime.now(await self._tz())
+            items = _json.loads(await self.store.get(self.SCHEDULED_CALLS_KEY, "[]"))
+            if not items:
+                return
+            due = [i for i in items if datetime.fromisoformat(i["due"]) <= now]
+            if not due:
+                return
+            await self.store.set(
+                self.SCHEDULED_CALLS_KEY, _json.dumps([i for i in items if i not in due])
+            )
+            for item in due:
+                reminder = item.get("message") or "You asked me to ring you."
+                called = False
+                if self.phone_channel is not None and self.phone_channel.configured:
+                    called = await self.phone_channel.call_paul(f"Paul. {reminder}")
+                text = (
+                    f"📞 Ringing you now, as ordered — {reminder}"
+                    if called else
+                    f"📞 Tried to ring you as ordered but the call failed — {reminder}"
+                )
+                await self._send_text(text, essential=True)
+        except Exception:
+            logger.exception("Scheduled-calls tick failed (next minute retries)")
+
     async def wake2_tick(self, now: datetime | None = None) -> None:
         """Wake & Hydrate v2's minute beat — fires at the gospel time, drives
         callbacks, hydration, override and the welfare backstop."""
