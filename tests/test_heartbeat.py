@@ -420,6 +420,19 @@ class TestDayRhythmRouter(unittest.IsolatedAsyncioTestCase):
             if method == "sendMessage"
         ]
 
+    async def test_only_the_word_goodnight_closes_the_night(self):
+        # Paul's rule (5 Aug): 'goodnight' — that is it, nothing else.
+        from tests.test_router import OWNER
+        from tests.test_telegram_client import text_update
+
+        for phrase in ("I'm off to bed, shattered", "going to sleep now", "done for today"):
+            await self.h.router.handle_update(text_update(phrase, OWNER))
+            self.assertIsNone(
+                await self.db.fetch_one("SELECT id FROM sleep_log"), phrase
+            )
+        await self.h.router.handle_update(text_update("gudnite jarvis", OWNER))  # dyslexia counts
+        self.assertIsNotNone(await self.db.fetch_one("SELECT id FROM sleep_log"))
+
     async def test_goodnight_closes_the_day(self):
         from tests.test_router import OWNER
         from tests.test_telegram_client import text_update
