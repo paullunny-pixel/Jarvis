@@ -112,6 +112,11 @@ class HeartbeatJobs:
         from app.heartbeat.wakeup import WakeRoutine
 
         self.wake2 = WakeRoutine(self)
+        # Phase 2 chase engine (5 Aug): sweeps, nudges, reply-to-close, digest.
+        from app.daily12.chase import ChaseEngine
+
+        self._chase_layer_obj = None
+        self.chase = ChaseEngine(self, self._chase_layer)
         self.phone_wake = None
         if phone_channel is not None and phone_channel.configured:
             self.phone_wake = TwilioCallWakeChannel(phone_channel)
@@ -565,6 +570,43 @@ class HeartbeatJobs:
             if day == today.isoformat() and now.hour < int(hour or 0):
                 return False
         return not await self.woke_today(today)
+
+    async def _chase_layer(self):
+        """Lazy Phase 1 Trello layer for the chase engine — bootstrapped once,
+        dropped on failure so the next tick rebuilds it."""
+        if self._chase_layer_obj is None:
+            from app.daily12.trello import TrelloClient
+            from app.daily12.trello_layer import TrelloLayer
+
+            layer = TrelloLayer(
+                TrelloClient(self.settings.trello_key, self.settings.trello_token)
+            )
+            await layer.bootstrap()
+            self._chase_layer_obj = layer
+        return self._chase_layer_obj
+
+    async def chase_tick(self, now: datetime | None = None) -> None:
+        """Minute beat: each person's sweep and nudge fire at THEIR local
+        times (zoneinfo, never fixed offsets — §3), Paul's digest at 22:00
+        Dubai. Once-guards make every firing idempotent."""
+        if not (self.settings.trello_key and self.settings.trello_token):
+            return
+        try:
+            for key, participant in self.chase.participants.items():
+                local = datetime.now(ZoneInfo(participant["timezone"]))
+                if participant.get("sweepTime") and local.strftime("%H:%M") == participant["sweepTime"]:
+                    if await self._once(f"chasesweep:{key}:{local.date().isoformat()}"):
+                        await self.chase.sweep(key, local)
+                if participant.get("nudgeTime") and local.strftime("%H:%M") == participant["nudgeTime"]:
+                    if await self._once(f"chasenudge:{key}:{local.date().isoformat()}"):
+                        await self.chase.nudge(key, local)
+            dubai = datetime.now(ZoneInfo("Asia/Dubai"))
+            if dubai.strftime("%H:%M") == "22:00":
+                if await self._once(f"chasedigest:{dubai.date().isoformat()}"):
+                    await self.chase.send_digest(dubai)
+        except Exception:
+            self._chase_layer_obj = None   # stale IDs rebuild next beat
+            logger.exception("Chase tick failed (next minute retries)")
 
     SCHEDULED_CALLS_KEY = "scheduled_calls"
 
