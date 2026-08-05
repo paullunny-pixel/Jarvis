@@ -92,6 +92,18 @@ class TestScheduledCalls(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([i["message"] for i in remaining], ["Later one."])
         self.assertTrue(any("Ringing you now" in t for t in self.h.texts()))
 
+    async def test_domain_ruling_stores_and_lists(self):
+        result = await self.router._dispatch_tool(
+            "domain_ruling", {"alias": "BMI", "domain": "Prodermis"}, self.msg
+        )
+        self.assertIn("Ruled", result)
+        listing = await self.router._dispatch_tool("domain_ruling", {"list": True}, self.msg)
+        self.assertIn("bmi → Prodermis", listing)
+        bad = await self.router._dispatch_tool(
+            "domain_ruling", {"alias": "LPG", "domain": "NotADomain"}, self.msg
+        )
+        self.assertIn("RULING FAILED", bad)
+
     async def test_failed_call_is_reported_honestly(self):
         now = datetime.now(TZ)
         self.phone.configured = False

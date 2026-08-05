@@ -2289,6 +2289,25 @@ class JarvisRouter:
                 },
             })
         tools.append({
+            "name": "domain_ruling",
+            "description": (
+                "Paul teaches you which Trello Domain a name belongs to — 'BMI is "
+                "Prodermis', 'Revolax goes under Aesthetics Supply'. Store it the "
+                "MOMENT he rules: alias + domain. It holds permanently for every "
+                "future card classification. list=true reads the rulings back. "
+                "Never guess a domain for an unruled name — ask him, then store "
+                "his answer with this tool."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "alias": {"type": "string"},
+                    "domain": {"type": "string"},
+                    "list": {"type": "boolean"},
+                },
+            },
+        })
+        tools.append({
             "name": "build_list",
             "description": (
                 "Paul's wish list for abilities you don't have yet — the engineer reads it "
@@ -2384,6 +2403,27 @@ class JarvisRouter:
                 await self.heartbeat.delay_wake(wake_date, hour)
                 done.append(f"the {wake_date.strftime('%d %b')} wake-up moved to {hour:02d}:00")
             return ("Confirmed: " + ", ".join(done) + ".") if done else "NO CHANGE — no valid switch given."
+        if name == "domain_ruling":
+            from app.daily12.trello_layer import KNOWN_DOMAINS
+
+            key = "trello_domain_rulings"
+            try:
+                rulings = _json.loads(await self.store.get(key, "{}"))
+            except Exception:
+                rulings = {}
+            if tool_input.get("list"):
+                if not rulings:
+                    return "No domain rulings stored yet — Paul teaches them one at a time."
+                return "Rulings: " + "; ".join(f"{a} → {d}" for a, d in sorted(rulings.items()))
+            alias = str(tool_input.get("alias") or "").strip()
+            domain = str(tool_input.get("domain") or "").strip()
+            if not alias or domain not in KNOWN_DOMAINS:
+                return (
+                    "RULING FAILED — need alias plus one of: " + ", ".join(KNOWN_DOMAINS)
+                )
+            rulings[alias.lower()] = domain
+            await self.store.set(key, _json.dumps(rulings))
+            return f"Ruled — '{alias}' files under {domain} from now on, every card."
         if name == "schedule_call" and self.heartbeat is not None:
             import re as _sre
 
