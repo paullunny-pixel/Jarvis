@@ -908,18 +908,27 @@ class HeartbeatJobs:
                 for r in wa_rows
             ]
         )[:24000]
-        try:
-            digest = await self.claude.converse(
-                self.GROUP_DIGEST_SYSTEM, [{"role": "user", "content": corpus}]
-            )
-        except Exception:
-            logger.exception("Group digest composition failed — deterministic fallback")
-            digest = ""
+        # A raw transcript is never the product (Paul, 5 Aug): if the brain
+        # model stumbles (timeout, congestion), the fast model summarises
+        # instead — the tail is only for BOTH engines failing.
+        digest = ""
+        for model, label in ((None, "brain"), (self.claude.fast_model, "fast")):
+            try:
+                digest = await self.claude.converse(
+                    self.GROUP_DIGEST_SYSTEM,
+                    [{"role": "user", "content": corpus}],
+                    model=model,
+                    timeout=120.0,
+                )
+                if digest:
+                    break
+            except Exception:
+                logger.exception("Group digest %s-model attempt failed", label)
         if not digest:
             tail = "\n".join(
                 f"[{r['chat_title']}] {r['sender']}: {r['message'][:120]}" for r in rows[-10:]
             )
-            digest = f"Summary engine hiccuped — the raw tail instead:\n{tail}"
+            digest = f"Summary engine hiccuped twice — the raw tail instead:\n{tail}"
         header = f"GROUP DIGEST — {len(rows) + len(wa_rows)} message(s) since the last one\n\n"
         await self._send_text(header + digest)
         if rows:
