@@ -74,6 +74,8 @@ class Heartbeat:
             # Phase 2 chase engine: per-person sweeps/nudges in THEIR timezone
             # + Paul's 22:00 Dubai digest — the beat checks, the guards gate
             ("chase_tick", self.jobs.chase_tick, CronTrigger(minute="*", timezone=timezone), 55),
+            # Phase 3: unanswered card confirmations remind then park
+            ("intake_tick", self.jobs.intake_tick, CronTrigger(minute="*/15", timezone=timezone), 300),
             # §5: hourly move + water through the waking day
             ("move_water", self.jobs.move_water_nudge, CronTrigger(hour="8-20", minute=5, timezone=timezone), 900),
             # §6: meds/supplements/TRT (TRT job self-checks for Saturday)

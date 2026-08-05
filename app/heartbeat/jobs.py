@@ -589,6 +589,8 @@ class HeartbeatJobs:
         """Minute beat: each person's sweep and nudge fire at THEIR local
         times (zoneinfo, never fixed offsets — §3), Paul's digest at 22:00
         Dubai. Once-guards make every firing idempotent."""
+        if not getattr(self.settings, "chase_enabled", False):
+            return   # Phase 2 built but DORMANT until Paul flips CHASE_ENABLED
         if not (self.settings.trello_key and self.settings.trello_token):
             return
         try:
@@ -607,6 +609,22 @@ class HeartbeatJobs:
         except Exception:
             self._chase_layer_obj = None   # stale IDs rebuild next beat
             logger.exception("Chase tick failed (next minute retries)")
+
+    async def intake_tick(self, now: datetime | None = None) -> None:
+        """Phase 3 §7 timeout: an unanswered confirmation gets one reminder
+        (~3h), then parks (~6h) — never silently dropped."""
+        if not getattr(self.settings, "intake_enabled", True):
+            return
+        try:
+            from app.daily12.intake import IntakeParked, IntakeReminder, VoiceIntake
+
+            intake = VoiceIntake(self.claude, self.store, self.settings, self._chase_layer)
+            try:
+                await intake.remind_or_park(now)
+            except (IntakeReminder, IntakeParked) as note:
+                await self._send_text(str(note), essential=True)
+        except Exception:
+            logger.exception("Intake tick failed (next beat retries)")
 
     SCHEDULED_CALLS_KEY = "scheduled_calls"
 

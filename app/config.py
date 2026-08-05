@@ -121,9 +121,16 @@ class Settings(BaseSettings):
     twilio_from_number: str = ""
 
     # --- Chase engine (Phase 2, 5 Aug) ---
+    # DORMANT until Paul switches it on (CHASE_ENABLED=true): built and
+    # tested, but the tick never fires — his call, 5 Aug eve.
+    chase_enabled: bool = False
     # Dry-run ON by default (spec §13): every would-be nudge is shown to Paul
     # instead of sent. Flip CHASE_DRY_RUN=false after the test sequence.
     chase_dry_run: bool = True
+
+    # --- Voice intake (Phase 3, 5 Aug) ---
+    intake_enabled: bool = True
+    intake_confirm: bool = True   # confirm-before-write until accuracy earns trust (§9)
 
     # --- Wake & Hydrate v2 (Paul's brief, 5 Aug) — all tunable via env ---
     wake_response_wait: int = 5           # listen window before Jarvis leads (he's asleep)

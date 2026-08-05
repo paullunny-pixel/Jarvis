@@ -90,6 +90,14 @@ class JarvisRouter:
         "Dermaren", "Revitrain", "mesotherapy", "Kiefer", "Harry", "Adriana",
         "Alicia", "Olesia", "Kenny", "BMI", "WaterMinder", "TRT", "Jarvis",
         "Trello", "electrolytes",
+        # Phase 3 §3 roster (5 Aug) — brands, staff, tools, clinical terms.
+        "Derma EU", "Prime Derm", "Sculptide", "Exobelle", "Hydroboost",
+        "ProEye", "Revolax", "Adrianna", "Sarah", "Steph", "Marko", "Frances",
+        "Chelsie", "Laura", "Andrea", "Jordan", "Garry", "Tony", "Ella",
+        "Naila", "LPG", "JD Bio", "AMS", "MAH", "IFU", "NAD", "CRM",
+        "Acmedia", "Wilson and Gunn", "Omnisend", "Thinkific", "Teachable",
+        "Upwork", "Tide", "Revolut", "Shopify", "Dubai Derma",
+        "polynucleotides", "exosomes", "glutathione", "microneedling",
     ]
 
     async def _speech_vocabulary(self) -> list[str]:
@@ -115,9 +123,20 @@ class JarvisRouter:
                         terms.setdefault(word)
             except Exception:
                 logger.exception("Speech vocabulary build failed — seeds carry on")
-        self._speech_vocab = list(terms)[:60]
+        self._speech_vocab = list(terms)[:100]
         self._speech_vocab_ts = _time.monotonic()
         return self._speech_vocab
+
+    def _intake(self):
+        """Phase 3 voice intake — lazy; shares the chase engine's Trello
+        layer factory (state lives in the settings store either way)."""
+        if getattr(self, "_intake_obj", None) is None and self.heartbeat is not None:
+            from app.daily12.intake import VoiceIntake
+
+            self._intake_obj = VoiceIntake(
+                self.claude, self.store, self.settings, self.heartbeat._chase_layer
+            )
+        return getattr(self, "_intake_obj", None)
 
     # --- Authorisation: Jarvis talks to Paul and no one else ---
 
@@ -383,6 +402,24 @@ class JarvisRouter:
         if await self._handle_life_signals(message, transcript):
             return
 
+        # 2a-intake. Phase 3 (§2): A PENDING CONFIRMATION OUTRANKS EVERYTHING
+        # — if Jarvis just asked 'is this right?', the next message is an OK,
+        # a cancel, or a correction, never a fresh capture.
+        intake = self._intake()
+        if intake is not None and self.settings.intake_enabled:
+            try:
+                intake_reply = await intake.handle_reply(transcript)
+            except Exception:
+                logger.exception("Intake correction loop failed")
+                intake_reply = (
+                    "That correction hit an error — the batch is still held; say it once more."
+                    if await intake.pending() else None
+                )
+            if intake_reply:
+                await self.log.log("out", intake_reply, chat_id=message.chat_id, meta={"intake": True})
+                await self.telegram.send_text(message.chat_id, intake_reply)
+                return
+
         # 2b. "Show me the BMI contract" — fetch from the document library.
         if self.library is not None and looks_like_document_request(transcript):
             if await self._handle_document_request(message.chat_id, transcript):
@@ -421,6 +458,25 @@ class JarvisRouter:
                 except Exception:
                     logger.exception("Board half of a mixed message failed")
             return  # the email half answered; no brain turn on top
+
+        # 2e-intake. Phase 3 capture: a long-form or voice message describing
+        # work → extraction → numbered confirm-before-write summary. The
+        # 'Jarvis add to Trello' escape hatch above keeps priority; anything
+        # extraction can't see as cards flows on to conversation untouched.
+        if (
+            intake is not None and self.settings.intake_enabled
+            and (message.is_voice or len(transcript) > 120)
+            and mentions_tasks(transcript)
+        ):
+            try:
+                summary = await intake.start_batch(transcript)
+            except Exception:
+                logger.exception("Intake extraction failed — conversation carries on")
+                summary = None
+            if summary:
+                await self.log.log("out", summary, chat_id=message.chat_id, meta={"intake": True})
+                await self.telegram.send_text(message.chat_id, summary)
+                return
 
         # 2f. THE UNDERSTANDING LAYER (3 Aug): nothing deterministic matched.
         # Before the chatty brain gets it, the fast model reads the message —
@@ -1596,6 +1652,24 @@ class JarvisRouter:
                     parts.append(f"tomorrow's wake-up moves to {wake_delay_hour:02d}:00")
             reply = "Done, sir — " + "; ".join(parts) + "."
             await self.log.log("out", reply, chat_id=message.chat_id, meta={"rhythm": True})
+            await self.telegram.send_text(message.chat_id, reply)
+            return True
+
+        # Phase 3 controls: parked batches come back; accuracy is measurable.
+        if re.search(r"\bbring back the parked cards?\b", lowered):
+            intake = self._intake()
+            summary = await intake.unpark() if intake is not None else None
+            reply = summary or "Nothing's parked, sir — all batches were written or scrapped."
+            await self.log.log("out", reply, chat_id=message.chat_id, meta={"intake": True})
+            await self.telegram.send_text(message.chat_id, reply)
+            return True
+        if re.search(r"\bintake accuracy\b|\bhow accurate (are|is) (you|the intake)\b", lowered):
+            intake = self._intake()
+            reply = (
+                await intake.accuracy_report() if intake is not None
+                else "Intake isn't wired on this deployment."
+            )
+            await self.log.log("out", reply, chat_id=message.chat_id)
             await self.telegram.send_text(message.chat_id, reply)
             return True
 

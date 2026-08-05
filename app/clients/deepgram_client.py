@@ -47,7 +47,7 @@ class DeepgramClient:
             ("smart_format", "true"),
             ("language", self.language),
         ]
-        for term in (keyterms or [])[:60]:
+        for term in (keyterms or [])[:100]:
             params.append(("keyterm", term))
         response = await self._client.post(
             API_URL, params=params, content=audio, headers={"Content-Type": mimetype}
