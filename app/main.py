@@ -723,7 +723,14 @@ async def apple_health(request: Request) -> dict:
     if isinstance(payload.get("data"), dict):
         from app.heartbeat.health_import import flatten_export
 
+        metric_names = sorted(
+            str(m.get("name", "?")) for m in (payload["data"].get("metrics") or [])
+        )
         payload = flatten_export(payload, datetime.now(tz))
+        logger.info(
+            "Health import parsed %s from metrics %s",
+            {k: v for k, v in payload.items()}, metric_names[:40],
+        )
     stat_date = payload.get("date") or datetime.now(tz).date().isoformat()
     await router.db.execute(
         "INSERT INTO health_stats (stat_date, weight_kg, sleep_hours, steps, resting_hr, hrv, raw)"
@@ -755,4 +762,16 @@ async def apple_health(request: Request) -> dict:
     water_recorded = await merge_water_total(
         router.db, stat_date, int(payload.get("water_ml") or 0)
     )
-    return {"ok": True, "run_recorded": recorded_run, "water_recorded": water_recorded}
+    # The parsed picture rides the response so the export app's log shows
+    # exactly what landed — no more blind debugging (the 750ml bug, 5 Aug).
+    return {
+        "ok": True,
+        "run_recorded": recorded_run,
+        "water_recorded": water_recorded,
+        "parsed": {
+            k: payload.get(k)
+            for k in ("date", "steps", "water_ml", "weight_kg", "sleep_hours",
+                      "resting_hr", "hrv", "run_km")
+            if payload.get(k) is not None
+        },
+    }

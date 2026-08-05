@@ -15,7 +15,12 @@ from datetime import datetime
 
 
 def _today(points: list, today_iso: str) -> list:
-    return [p for p in points or [] if str(p.get("date", ""))[:10] == today_iso]
+    """Today's points — but the export range is already 'Today', so if the
+    app stamped its aggregate in another timezone and nothing matches, take
+    what was sent rather than silently dropping it (the 750ml bug, 5 Aug)."""
+    points = points or []
+    matched = [p for p in points if str(p.get("date", ""))[:10] == today_iso]
+    return matched or points
 
 
 def flatten_export(payload: dict, now_local: datetime) -> dict:
@@ -25,7 +30,9 @@ def flatten_export(payload: dict, now_local: datetime) -> dict:
     today_iso = now_local.date().isoformat()
     flat: dict = {"date": today_iso}
     for metric in data.get("metrics") or []:
-        name = str(metric.get("name", "")).lower()
+        # Display names ('Dietary Water') and snake_case ('dietary_water')
+        # both normalise to the same key — HAE varies by version.
+        name = str(metric.get("name", "")).lower().strip().replace(" ", "_")
         units = str(metric.get("units", "")).lower()
         points = _today(metric.get("data"), today_iso)
         if not points:
@@ -33,9 +40,16 @@ def flatten_export(payload: dict, now_local: datetime) -> dict:
         total = sum(float(p.get("qty") or 0) for p in points)
         if name == "step_count":
             flat["steps"] = int(total)
-        elif name == "dietary_water":
-            flat["water_ml"] = int(total * 1000) if units in ("l", "liter", "litre") else int(total)
-        elif name == "weight_body_mass":
+        elif name in ("dietary_water", "water", "water_intake"):
+            if units in ("l", "liter", "litre", "liters", "litres"):
+                flat["water_ml"] = round(total * 1000)
+            elif units in ("fl_oz", "floz", "fl oz", "oz"):
+                flat["water_ml"] = round(total * 29.5735)
+            elif units in ("cup", "cups"):
+                flat["water_ml"] = round(total * 236.588)
+            else:
+                flat["water_ml"] = round(total)
+        elif name in ("weight_body_mass", "body_mass", "weight"):
             latest = float(points[-1].get("qty") or 0)
             flat["weight_kg"] = round(latest * 0.45359237, 2) if units in ("lb", "lbs") else latest
         elif name == "resting_heart_rate":
