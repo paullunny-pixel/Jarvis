@@ -36,6 +36,57 @@ class TrelloClient:
             raise TrelloError(f"{method} {path}: {response.status_code} {response.text[:200]}")
         return response.json()
 
+    async def _call_json(self, method: str, path: str, body: dict, **params: Any) -> Any:
+        """Endpoints that take a JSON body (custom field values do)."""
+        response = await self._client.request(
+            method, f"{API}{path}", params={**self._auth, **params}, json=body
+        )
+        if response.status_code != 200:
+            raise TrelloError(f"{method} {path}: {response.status_code} {response.text[:200]}")
+        return response.json()
+
+    # --- Phase 1 Trello layer (5 Aug spec) — raw endpoints ---
+
+    async def board_custom_fields(self, board_id: str) -> list[dict]:
+        return await self._call("GET", f"/boards/{board_id}/customFields")
+
+    async def set_custom_field(self, card_id: str, field_id: str, body: dict) -> Any:
+        return await self._call_json("PUT", f"/cards/{card_id}/customField/{field_id}/item", body)
+
+    async def card_full(self, card_id: str) -> dict:
+        return await self._call(
+            "GET", f"/cards/{card_id}",
+            customFieldItems="true", checklists="all", members="true", list="true",
+        )
+
+    async def card_actions(self, card_id: str, before: str = "") -> list[dict]:
+        params: dict = {"filter": "updateCard", "limit": 1000}
+        if before:
+            params["before"] = before
+        return await self._call("GET", f"/cards/{card_id}/actions", **params)
+
+    async def create_list(self, board_id: str, name: str) -> dict:
+        return await self._call("POST", f"/boards/{board_id}/lists", name=name, pos="bottom")
+
+    async def create_checklist(self, card_id: str, name: str) -> dict:
+        return await self._call("POST", f"/cards/{card_id}/checklists", name=name)
+
+    async def add_check_item(
+        self, checklist_id: str, name: str, due_iso: str = "", member_id: str = ""
+    ) -> dict:
+        params: dict = {"name": name, "pos": "bottom"}
+        if due_iso:
+            params["due"] = due_iso
+        if member_id:
+            params["idMember"] = member_id
+        return await self._call("POST", f"/checklists/{checklist_id}/checkItems", **params)
+
+    async def remove_label(self, card_id: str, label_id: str) -> None:
+        await self._call("DELETE", f"/cards/{card_id}/idLabels/{label_id}")
+
+    async def update_card(self, card_id: str, **fields: Any) -> dict:
+        return await self._call("PUT", f"/cards/{card_id}", **fields)
+
     # --- Reading ---
 
     async def my_boards(self) -> list[dict]:
