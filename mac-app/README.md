@@ -82,6 +82,14 @@ enable Electron.)
 Just run `npm start` from `Jarvis/mac-app` (or keep the window open — it's
 meant to stay on the desktop).
 
+**Start at login (recommended):** run `npm run autostart` once. From then on
+Jarvis launches himself every time the Mac logs in, and the **dashboard opens
+in your browser automatically** — no URL to remember (untick it in ⚙️ if you'd
+rather it didn't). Undo with `npm run autostart-off`.
+
+The 🖥 button opens the dashboard any time — the app knows the address from
+its own connection, you never type it.
+
 - **"Hey Jarvis"** → chime → speak your message → he answers out loud and in
   the feed, then goes back to idle listening. (The model is trained on the
   full phrase "Hey Jarvis" — say both words.)

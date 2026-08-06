@@ -69,6 +69,18 @@ class TestDesktopEndpoints(DesktopBase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["ok"])
 
+    def test_dashboard_redirects_to_the_cockpit(self):
+        response = self.client.get(
+            f"/desktop/{self.secret}/dashboard", follow_redirects=False
+        )
+        self.assertIn(response.status_code, (302, 307))
+        settings = Settings(telegram_bot_token="TOK", _env_file=None)
+        self.assertEqual(
+            response.headers["location"],
+            f"/cockpit/{settings.effective_cockpit_secret}",
+        )
+        self.assertEqual(self.client.get("/desktop/WRONG/dashboard").status_code, 403)
+
     def test_message_turn_survives_a_dead_brain(self):
         # Claude is mocked to 500 — the reply must still be honest words.
         response = self.client.post(
