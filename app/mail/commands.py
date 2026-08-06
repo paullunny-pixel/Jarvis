@@ -51,6 +51,16 @@ he's dictating or amending wording, reply [] even when the words 'email' or
 'emails' appear INSIDE that content. Never start a fresh draft when he's
 clearly changing something already being worked on elsewhere.
 
+TASK DICTATION IS NOT AN EMAIL COMMAND (13:55, 6 Aug: Paul read out a Trello
+card — 'search for information regarding G-Prime in emails' — and it fired a
+full mailbox research he never asked for): when he is filing a task, card or
+to-do — 'add a card/task', 'put it on the board', 'Trello', a to-do being
+read aloud with a domain/priority — reply [] even when the task itself is
+about finding, reading or sending email. The task pipeline captures it; the
+email work happens when the card is worked, not now. Emails are searched NOW
+only when Paul directly asks JARVIS to do it now ('search my emails for…',
+'read all my emails from…', 'where are we up to with…').
+
 REGISTER RULE (from Paul): anyone who is NOT one of his registered
 person-contacts is a BUSINESS contact — polite, professional, formal, no
 matey sign-offs. His casual register is reserved ONLY for the named people.
