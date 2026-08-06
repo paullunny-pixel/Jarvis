@@ -110,6 +110,24 @@ idle/muted.
 - **He hears nothing / empty recordings** — microphone permission (System
   Settings → Privacy & Security → Microphone → Electron), and if you're on
   AirPods try the built-in mic; Bluetooth mics can be flaky.
+- **macOS says "Electron.app contains malware" and bins it** — a known
+  Gatekeeper false positive on Electron's development build; nothing was
+  actually wrong. Fix: reinstall and clear the quarantine flag, then start:
+
+  ```
+  rm -rf node_modules
+  npm install
+  xattr -cr node_modules/electron/dist/Electron.app
+  npm start
+  ```
+
+  If npm prints an "install scripts not yet covered by allowScripts"
+  warning naming electron, run the `npm approve-scripts` command it
+  suggests, then `npm install` again.
+- **`git pull` says "Please move or remove them before you merge"** — a
+  local leftover file is in the way. From the `Jarvis` folder:
+  `rm -f mac-app/package-lock.json && git pull` (the file is re-created
+  by the update).
 
 ## What's next (already planned)
 
