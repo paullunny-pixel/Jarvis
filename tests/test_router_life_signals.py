@@ -102,6 +102,26 @@ class TestLifeSignals(unittest.IsolatedAsyncioTestCase):
         await self.h.router.handle_update(text_update("I'm in the UK this week", OWNER))
         self.assertEqual(await self.h.router.store.get(TIMEZONE_KEY), "Europe/London")
 
+    async def test_timezone_never_swallows_a_bigger_ask(self):
+        # 16:17, 6 Aug: 'call me to remind me about the meeting… I'm in
+        # Dubai' switched the clocks and the call was never scheduled. A
+        # location fragment inside a bigger ask must fall through whole.
+        await self.h.router.store.set(TIMEZONE_KEY, "Europe/London")
+        await self.h.router.handle_update(text_update(
+            "Call me at half six to remind me about the meeting with the "
+            "distributor, I'm in Dubai at the moment", OWNER
+        ))
+        self.assertEqual(await self.h.router.store.get(TIMEZONE_KEY), "Europe/London")
+        self.assertFalse(any("Clocks switched" in t for t in self.h.texts()))
+
+    async def test_long_travel_ramble_leaves_clocks_to_the_brain(self):
+        await self.h.router.store.set(TIMEZONE_KEY, "Europe/London")
+        await self.h.router.handle_update(text_update(
+            "So we finally landed in Dubai after the delay and the drive over "
+            "took forever, absolute chaos at the airport but we're here now", OWNER
+        ))
+        self.assertEqual(await self.h.router.store.get(TIMEZONE_KEY), "Europe/London")
+
     async def test_ordinary_message_falls_through_to_brain(self):
         await self.h.router.handle_update(text_update("morning, how are we?", OWNER))
         # Claude replied (voice failed → text fallback) — a reply happened and

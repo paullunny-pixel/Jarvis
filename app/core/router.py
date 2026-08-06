@@ -1776,8 +1776,19 @@ class JarvisRouter:
             await self._handle_status(message)
             return True
 
-        # Timezone: "I'm in Dubai" / "landed in the UK"
+        # Timezone: "I'm in Dubai" / "landed in the UK" — but only when the
+        # location IS the message (16:17, 6 Aug: 'call me to remind me about
+        # the meeting… I'm in Dubai' switched the clocks and swallowed the
+        # call). A longer or busier message falls through to the brain, which
+        # holds BOTH levers (update_timezone + schedule_call).
         move = re.search(r"\b(?:i'?m in|landed in|back in|arrived in)\s+(?:the\s+)?(\w+)", lowered)
+        if (
+            move
+            and len(transcript) > 80
+            or move
+            and re.search(r"\b(call|ring|phone|remind(er)?|meeting|card|email|trello)\b", lowered)
+        ):
+            move = None   # a fragment of a bigger ask — not a clock change
         if move and move.group(1) in self.TIMEZONE_MAP:
             timezone = self.TIMEZONE_MAP[move.group(1)]
             await self.store.set(TIMEZONE_KEY, timezone)

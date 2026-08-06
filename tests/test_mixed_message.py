@@ -88,5 +88,16 @@ class TestMixedMessageBoardHalf(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.h.texts(), [])            # silence, not a card
 
 
+class TestTaskDictationStaysOutOfMail(unittest.TestCase):
+    def test_the_rule_rides_the_email_parser_prompt(self):
+        # 13:55, 6 Aug: Paul read out a Trello card about searching emails and
+        # the mail lane ran a full mailbox research he never asked for. The
+        # parser prompt carries the rule; this pins it there.
+        from app.mail.commands import PARSER_SYSTEM
+
+        self.assertIn("TASK DICTATION IS NOT AN EMAIL COMMAND", PARSER_SYSTEM)
+        self.assertIn("The task pipeline captures it", PARSER_SYSTEM)
+
+
 if __name__ == "__main__":
     unittest.main()
