@@ -2994,7 +2994,10 @@ class JarvisRouter:
                     "clocks look wrong, tell him that command, never act. "
                     "heat_day marks today as an outdoor/heat day so the "
                     "water pace steps up — set it when Paul says he's out in the sun. "
-                    "Saying any of it back without the tool changes "
+                    "meeting_notetaker turns the Otter meeting-notes pipeline off/on "
+                    "('turn off the meeting notetaker', 'notetaker back on') — off "
+                    "means Otter's emails stop turning into Brain Dump cards until "
+                    "he flips it back. Saying any of it back without the tool changes "
                     "nothing. Only claim a rhythm change the result confirms."
                 ),
                 "input_schema": {
@@ -3011,6 +3014,7 @@ class JarvisRouter:
                         "skip_days": {"type": "integer"},
                         "skip_reason": {"type": "string"},
                         "heat_day": {"type": "boolean"},
+                        "meeting_notetaker": {"type": "boolean"},
                     },
                 },
             })
@@ -3215,6 +3219,16 @@ class JarvisRouter:
                 done.append(
                     "quiet day ON (meds still fire; 'notifications back on' reverses it)"
                     if tool_input["quiet_today"] else "nudges back ON"
+                )
+            if tool_input.get("meeting_notetaker") is not None and getattr(
+                self.heartbeat, "notetaker", None
+            ) is not None:
+                on = bool(tool_input["meeting_notetaker"])
+                await self.heartbeat.notetaker.set_enabled(on)
+                done.append(
+                    "meeting notetaker ON — Otter's notes will turn into Brain Dump cards again"
+                    if on else
+                    "meeting notetaker OFF — Otter's emails won't be filed until you flip it back"
                 )
             if tool_input.get("wake_skip_tomorrow"):
                 await self.heartbeat.skip_next_wake(wake_date)

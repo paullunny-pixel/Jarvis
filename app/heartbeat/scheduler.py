@@ -87,6 +87,8 @@ class Heartbeat:
             ("chase_tick", self.jobs.chase_tick, CronTrigger(minute="*", timezone=timezone), 55),
             # Phase 3: unanswered card confirmations remind then park
             ("intake_tick", self.jobs.intake_tick, CronTrigger(minute="*/15", timezone=timezone), 300),
+            # Meetings Layer B: sweep inboxes for fresh Otter meeting notes
+            ("notetaker_tick", self.jobs.notetaker_tick, CronTrigger(minute="*/30", timezone=timezone), 600),
             # §5: hourly move + water through the waking day
             ("move_water", self.jobs.move_water_nudge, CronTrigger(hour="8-20", minute=5, timezone=timezone), 900),
             # §6: meds/supplements/TRT (TRT job self-checks for Saturday)

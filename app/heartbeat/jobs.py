@@ -99,6 +99,7 @@ class HeartbeatJobs:
         self.private_track = private_track
         self.gates = gates
         self.mail = mail
+        self.notetaker = None   # MeetingNotetaker — main.py wires it once mail is up
         self.store = SettingsStore(db)
         self.streaks = Streaks(db)
         self.log = MessageLog(db)
@@ -698,6 +699,16 @@ class HeartbeatJobs:
                 await self._send_text(str(note), essential=True)
         except Exception:
             logger.exception("Intake tick failed (next beat retries)")
+
+    async def notetaker_tick(self) -> None:
+        """Meetings Layer B (build order §6): sweep the inboxes for fresh
+        Otter meeting notes, file the actions, remember the meeting."""
+        if self.notetaker is None:
+            return
+        try:
+            await self.notetaker.check_new()
+        except Exception:
+            logger.exception("Meeting notetaker tick failed (next beat retries)")
 
     SCHEDULED_CALLS_KEY = "scheduled_calls"
 

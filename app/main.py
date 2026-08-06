@@ -226,8 +226,18 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
             db, SettingsStore(db),
         )
         jobs.gcal = router_obj.gcal
+    # Meetings Layer B (build order §6): Otter's meeting notes → Brain Dump
+    # actions + remembered meeting. Rides the mail accounts already wired for
+    # Phase 2 — no new keys, no bot for Jarvis to dispatch (Otter auto-joins
+    # on its own). Dormant if no email account is configured.
+    if mail is not None:
+        from app.meetings_notetaker import MeetingNotetaker
+
+        jobs.notetaker = MeetingNotetaker(
+            mail, claude, jobs._chase_layer, memory, jobs.store, jobs._send_text
+        )
     # Zoom quick-start (Layer A, 6 Aug): 'start a new Zoom meeting' → both
-    # links on Telegram + a Brain Dump backup card. Layer B (Otter) later.
+    # links on Telegram + a Brain Dump backup card.
     if settings.zoom_account_id and settings.zoom_client_id and settings.zoom_client_secret:
         from app.clients.zoom_client import ZoomClient
         from app.meetings import MeetingMaker
@@ -238,6 +248,7 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
                 settings.zoom_client_secret, user_email=settings.zoom_user_email,
             ),
             layer_factory=jobs._chase_layer,
+            notetaker=jobs.notetaker,
         )
     router_obj.voice_tools = VoiceTools(
         db, memory=memory, living=living, daily12=daily12, mail=mail, jobs=jobs,
