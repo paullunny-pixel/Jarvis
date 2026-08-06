@@ -134,6 +134,21 @@ class WakeRoutine:
     async def _save(self, state: dict) -> None:
         await self.store.set(STATE_KEY, json.dumps(state))
 
+    async def _save_active(self, state: dict) -> bool:
+        """Save an ACTIVE state — unless the sequence finished meanwhile.
+        (08:34, 6 Aug: a tick read 'hydrate', the water photo marked 'done',
+        the tick wrote its stale copy back — an undead loop calling a man
+        whose morning was complete. A terminal phase is never overwritten.)"""
+        fresh = await self._state()
+        if (
+            fresh.get("date") == state.get("date")
+            and fresh.get("phase") in ("done", "stood_down")
+            and state.get("phase") in ("up", "hydrate")
+        ):
+            return False
+        await self._save(state)
+        return True
+
     async def _now(self) -> datetime:
         return datetime.now(await self.jobs._tz())
 
@@ -281,7 +296,8 @@ class WakeRoutine:
         state["silences"] = 0
         state["call_started"] = now.isoformat(timespec="seconds")
         state["last_action"] = now.isoformat(timespec="seconds")
-        await self._save(state)
+        if not await self._save_active(state):
+            return   # finished while we were composing — no call, no rewrite
         if phone is not None and phone.configured:
             phone.script_handler = self.call_turn
             phone.listen_timeout = self.settings.wake_response_wait
@@ -423,7 +439,8 @@ class WakeRoutine:
             # each grace window, an actual ring only every third nudge.
             state["last_action"] = now.isoformat(timespec="seconds")
             state["hydrate_nudges"] = state.get("hydrate_nudges", 0) + 1
-            await self._save(state)
+            if not await self._save_active(state):
+                return   # water landed mid-tick — the morning stays finished
             await self._tell(HYDRATE_NUDGE)
             phone = self.jobs.phone_channel
             if (
