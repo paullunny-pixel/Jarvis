@@ -678,7 +678,10 @@ class JarvisRouter:
         history = await self.log.as_claude_messages(
             16 if phone else self.settings.history_messages
         )
-        reply_budget = 350 if phone else 1024
+        # Telegram gets room to finish a long answer (6 Aug: a health reply hit
+        # the old 1024 cap and shipped cut mid-sentence); the client also
+        # auto-continues any reply that still stops on max_tokens.
+        reply_budget = 350 if phone else 2000
         turn_model = self.settings.phone_model if phone else None
         if tools:
             raw_reply = await self.claude.converse_with_tools(
