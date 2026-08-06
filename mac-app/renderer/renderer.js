@@ -277,13 +277,37 @@ async function startWakeWord() {
     wakeStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     wakeAudioCtx = new AudioContext({ sampleRate: 16000 });
     const source = wakeAudioCtx.createMediaStreamSource(wakeStream);
-    const processor = wakeAudioCtx.createScriptProcessor(2048, 1, 1);
-    processor.onaudioprocess = (e) => {
-      if (!wakeEngine || muted) return;
-      wakeEngine.feed(Float32Array.from(e.inputBuffer.getChannelData(0)), () => onWakeWord());
+    const onPcm = (pcm) => {
+      if (wakeEngine && !muted) wakeEngine.feed(pcm, () => onWakeWord());
     };
-    source.connect(processor);
-    processor.connect(wakeAudioCtx.destination);   // keeps the node alive; silent
+    // AudioWorklet runs on the REAL-TIME AUDIO THREAD — immune to the
+    // background throttling that froze the wake word whenever the window
+    // lost focus (6 Aug). ScriptProcessor (main thread) stays as fallback.
+    try {
+      const workletSrc = `
+        class WakeCapture extends AudioWorkletProcessor {
+          process(inputs) {
+            const ch = inputs[0] && inputs[0][0];
+            if (ch && ch.length) this.port.postMessage(ch.slice(0));
+            return true;
+          }
+        }
+        registerProcessor("wake-capture", WakeCapture);
+      `;
+      const url = URL.createObjectURL(new Blob([workletSrc], { type: "application/javascript" }));
+      await wakeAudioCtx.audioWorklet.addModule(url);
+      const node = new AudioWorkletNode(wakeAudioCtx, "wake-capture", {
+        numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1,
+      });
+      node.port.onmessage = (e) => onPcm(e.data);
+      source.connect(node);
+      node.connect(wakeAudioCtx.destination);   // keeps the graph pulling; silent
+    } catch (err) {
+      const processor = wakeAudioCtx.createScriptProcessor(2048, 1, 1);
+      processor.onaudioprocess = (e) => onPcm(Float32Array.from(e.inputBuffer.getChannelData(0)));
+      source.connect(processor);
+      processor.connect(wakeAudioCtx.destination);
+    }
     wakeReady = true;
     idleStatus();
   } catch (err) {

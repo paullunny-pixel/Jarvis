@@ -2,10 +2,18 @@
 // interesting work (wake word, recording, backend calls) lives in the
 // renderer. Personal-use app: nodeIntegration is on so the renderer can load
 // the local openWakeWord models (onnxruntime-node) without a bundler.
-const { app, BrowserWindow, ipcMain, systemPreferences } = require("electron");
+const { app, BrowserWindow, ipcMain, powerSaveBlocker, systemPreferences } = require("electron");
 const path = require("path");
 
+// ALWAYS-ON means always on (6 Aug: the wake word only worked while the
+// window had focus — Chromium backgrounds unfocused renderers and macOS App
+// Nap suspends idle apps, both starving the mic pipeline). All three
+// throttles are disabled; the mic is the whole point of this app.
+app.commandLine.appendSwitch("disable-renderer-backgrounding");
+app.commandLine.appendSwitch("disable-background-timer-throttling");
+
 let win = null;
+let powerBlockerId = null;
 
 ipcMain.on("set-always-on-top", (_event, on) => {
   if (win !== null) win.setAlwaysOnTop(Boolean(on));
@@ -31,8 +39,14 @@ async function createWindow() {
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
+      backgroundThrottling: false,   // keep listening when unfocused/hidden
     },
   });
+  // Stop macOS App Nap from suspending the listener while Paul works
+  // elsewhere. Released automatically when the app quits.
+  if (powerBlockerId === null) {
+    powerBlockerId = powerSaveBlocker.start("prevent-app-suspension");
+  }
   win.loadFile(path.join(__dirname, "renderer", "index.html"));
   win.on("closed", () => {
     win = null;
