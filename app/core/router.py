@@ -579,7 +579,7 @@ class JarvisRouter:
             except Exception:
                 pass
             data = await classify(self.claude, transcript, recent)
-            if data is not None and await self._execute_intent(message, data):
+            if data is not None and await self._execute_intent(message, data, transcript):
                 return
 
         # 3. Think (with the second brain's recalled knowledge, Milestone 2).
@@ -627,12 +627,17 @@ class JarvisRouter:
         now_local = datetime.now(ZoneInfo(timezone))
         rhythm_lines = [
             f"Clocks: {timezone} — local time {now_local.strftime('%H:%M')}. Every "
-            "reminder, brief, bedtime and wake-up follows THESE clocks. If the "
-            "conversation or your brief says Paul is actually somewhere else, the "
-            "clocks are WRONG — fix it via the rhythm tool (timezone_place) before "
-            "anything else. (4 Aug: lights-out hit him at 01:30 in Dubai because "
-            "the clocks sat on London.)"
+            "reminder, brief, bedtime and wake-up follows THESE clocks. You CANNOT "
+            "move them (Paul's rule, 6 Aug): only his exact command 'set my "
+            "location as X' changes timezone. If the conversation says he's "
+            "somewhere else, tell him that command — never claim the clocks moved."
         ]
+        if not self.settings.run_reminders_enabled:
+            rhythm_lines.append(
+                "RUN REMINDERS ARE OFF (Paul's call, 6 Aug — blood pressure comes "
+                "first): never prompt, nudge or guilt about running. If he reports "
+                "a run, celebrate it; never suggest one."
+            )
         if await self.store.get("quiet_day", "") == now_local.date().isoformat():
             rhythm_lines.append(
                 "QUIET DAY ACTIVE: Paul silenced today's proactive nudges. Honour the "
@@ -1023,9 +1028,12 @@ class JarvisRouter:
         lines = [f"{i}. {w['wish']} (asked {w['date']})" for i, w in enumerate(wishes, 1)]
         return "THE BUILD LIST — waiting on the engineer:\n" + "\n".join(lines)
 
-    async def _execute_intent(self, message: IncomingMessage, data: dict) -> bool:
+    async def _execute_intent(
+        self, message: IncomingMessage, data: dict, transcript: str = ""
+    ) -> bool:
         """Act on a triaged command through the SAME machinery the exact
         phrases use. Unknown/malformed → False, and the brain takes over."""
+        transcript = transcript or message.text or ""
         import json as _json
 
         intent = data.get("intent")
@@ -1087,6 +1095,11 @@ class JarvisRouter:
                 wishes = []
             reply = self._build_list_show(wishes)
         elif intent == "timezone_change":
+            # Belt and braces on Paul's rule (6 Aug): even a confident triage
+            # hit only executes when the words genuinely carry the command —
+            # 'set … loc…' must be there (typos fine), or nothing moves.
+            if not re.search(r"\bset\b.{0,20}\bloc\w*", transcript, re.IGNORECASE):
+                return False
             place = str(data.get("place") or "").strip().lower()
             if place not in self.TIMEZONE_MAP:
                 return False
@@ -1094,7 +1107,7 @@ class JarvisRouter:
             if self.on_timezone_change is not None:
                 await self.on_timezone_change()
             shown = place.upper() if place == "uk" else place.title()
-            reply = f"Clocks switched to {shown} time. Briefs, nudges and the 9pm review all follow you."
+            reply = f"Location set: {shown}. Clocks switched — briefs, nudges and the 9pm review all follow you."
         if not reply:
             return False
         await self.log.log("out", reply, chat_id=message.chat_id, meta={"intent": intent})
@@ -1498,6 +1511,11 @@ class JarvisRouter:
         except Exception:
             logger.exception("Wake status line failed")
             lines.append("⏰ Wake-up: state unreadable just now — logs have why")
+        if not s.run_reminders_enabled:
+            lines.append(
+                "🏃 Run reminders: OFF (your call, 6 Aug — blood pressure first). "
+                "Runs still log if you do one; nothing chases."
+            )
         if self.daily12 is not None:
             health = await self.daily12.health()
             if health["ok"]:
@@ -1776,26 +1794,30 @@ class JarvisRouter:
             await self._handle_status(message)
             return True
 
-        # Timezone: "I'm in Dubai" / "landed in the UK" — but only when the
-        # location IS the message (16:17, 6 Aug: 'call me to remind me about
-        # the meeting… I'm in Dubai' switched the clocks and swallowed the
-        # call). A longer or busier message falls through to the brain, which
-        # holds BOTH levers (update_timezone + schedule_call).
-        move = re.search(r"\b(?:i'?m in|landed in|back in|arrived in)\s+(?:the\s+)?(\w+)", lowered)
-        if (
-            move
-            and len(transcript) > 80
-            or move
-            and re.search(r"\b(call|ring|phone|remind(er)?|meeting|card|email|trello)\b", lowered)
-        ):
-            move = None   # a fragment of a bigger ask — not a clock change
-        if move and move.group(1) in self.TIMEZONE_MAP:
-            timezone = self.TIMEZONE_MAP[move.group(1)]
-            await self.store.set(TIMEZONE_KEY, timezone)
-            if self.on_timezone_change is not None:
-                await self.on_timezone_change()
-            place = move.group(1).upper() if move.group(1) == "uk" else move.group(1).title()
-            reply = f"Clocks switched to {place} time. Briefs, nudges and the 9pm review all follow you."
+        # Timezone: LOCKED to ONE explicit command (Paul's rule, 6 Aug):
+        # 'set my location as X'. Nothing else moves the clocks — not
+        # 'I'm in Dubai', not travel talk, not the brain, not the intent
+        # layer guessing (16:17 today: a location fragment inside a call
+        # request switched the clocks and ate the call). The planned GPS
+        # feed will get its own trusted path when it's built.
+        setloc = re.search(
+            r"^\W*(?:jarvis[,!.\s]+)?set\s+my\s+loc\w*\s*(?:as|to|=)?\s*(?:the\s+)?(\w+)\W*$",
+            lowered,
+        )
+        if setloc:
+            place = setloc.group(1)
+            if place in self.TIMEZONE_MAP:
+                await self.store.set(TIMEZONE_KEY, self.TIMEZONE_MAP[place])
+                if self.on_timezone_change is not None:
+                    await self.on_timezone_change()
+                shown = place.upper() if place == "uk" else place.title()
+                reply = (
+                    f"Location set: {shown}. Clocks switched — briefs, nudges "
+                    "and the 9pm review all follow you."
+                )
+            else:
+                known = ", ".join(sorted(self.TIMEZONE_MAP))
+                reply = f"I don't know '{place}' as a location yet — I can set: {known}."
             await self.log.log("out", reply, chat_id=message.chat_id)
             await self.telegram.send_text(message.chat_id, reply)
             return True
@@ -2601,8 +2623,7 @@ class JarvisRouter:
                     "asked for). Annoyed at one thing = deal with THAT thing; "
                     "wake_skip_tomorrow skips tomorrow's wake sequence; wake_hour_tomorrow "
                     "(4-11) delays it; goodnight closes the day and stands the bedtime "
-                    "chasers down; timezone_place moves ALL the clocks to where Paul "
-                    "actually is; skip_gates excuses the run and/or meds so the chasing "
+                    "chasers down; skip_gates excuses the run and/or meds so the chasing "
                     "STOPS — use it the MOMENT Paul says he's not doing one of them "
                     "(his body, his call: one acknowledgement, never argue, never "
                     "re-raise), with skip_days for 'this week' (max 7). WHENEVER Paul "
@@ -2611,8 +2632,10 @@ class JarvisRouter:
                     "'goodnight' (close spellings count) — HIS RULE, 5 Aug: NOTHING "
                     "else closes the night; 'off to bed', 'heading up', 'done for "
                     "today' are conversation — answer warmly, leave the day open. "
-                    "The MOMENT his location and your clocks disagree, set "
-                    "timezone_place. heat_day marks today as an outdoor/heat day so the "
+                    "CLOCKS ARE NOT YOURS TO MOVE (Paul's rule, 6 Aug): only his "
+                    "exact command 'set my location as X' changes timezone — if the "
+                    "clocks look wrong, tell him that command, never act. "
+                    "heat_day marks today as an outdoor/heat day so the "
                     "water pace steps up — set it when Paul says he's out in the sun. "
                     "Saying any of it back without the tool changes "
                     "nothing. Only claim a rhythm change the result confirms."
@@ -2624,10 +2647,6 @@ class JarvisRouter:
                         "wake_skip_tomorrow": {"type": "boolean"},
                         "wake_hour_tomorrow": {"type": "integer"},
                         "goodnight": {"type": "boolean"},
-                        "timezone_place": {
-                            "type": "string",
-                            "enum": sorted(self.TIMEZONE_MAP),
-                        },
                         "skip_gates": {
                             "type": "array",
                             "items": {"type": "string", "enum": ["run", "meds"]},
@@ -2764,16 +2783,8 @@ class JarvisRouter:
             )
         if name == "rhythm" and self.heartbeat is not None:
             done = []
-            # Timezone first — every other switch reads the clock it sets.
-            place = str(tool_input.get("timezone_place") or "").strip().lower()
-            if place in self.TIMEZONE_MAP:
-                await self.store.set(TIMEZONE_KEY, self.TIMEZONE_MAP[place])
-                if self.on_timezone_change is not None:
-                    await self.on_timezone_change()
-                done.append(
-                    f"clocks moved to {self.TIMEZONE_MAP[place]} — briefs, nudges, "
-                    "bedtime and wake-ups all follow"
-                )
+            # timezone_place is GONE from this tool (Paul's rule, 6 Aug):
+            # only his exact 'set my location as X' command moves the clocks.
             tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
             wake_date = self._next_wake_date(tz_name)  # past midnight = THIS morning
             if tool_input.get("goodnight"):

@@ -230,25 +230,24 @@ class TestBrainHands(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[0]["room"], "people")
         self.assertIn("filed", b.sent().lower())
 
-    async def test_rhythm_tool_moves_the_clocks_when_paul_is_elsewhere(self):
-        # 4 Aug, 01:30 Dubai: lights-out fired on London clocks. The brain
-        # knew he was in Dubai but had no lever — now it does.
+    async def test_rhythm_tool_can_no_longer_move_the_clocks(self):
+        # Paul's rule (6 Aug): only his exact 'set my location as X' command
+        # changes timezone. Even a brain determined to pass timezone_place
+        # finds the lever gone — the input is ignored, the clocks stand.
         from app.core.store import SettingsStore
 
         b = BrainHarness(
             self.db,
             opus_responses=[
                 [tool_use("rhythm", timezone_place="dubai")],
-                [text_block("Clocks moved to Dubai, sir — everything follows you now.")],
+                [text_block("To move the clocks, tell me: set my location as Dubai.")],
             ],
         )
         await b.h.router.handle_update(
             text_update("mate those bedtime pings came at half one in the morning here", OWNER)
         )
-        self.assertEqual(
-            await SettingsStore(self.db).get("current_timezone"), "Asia/Dubai"
-        )
-        self.assertIn("Clocks moved to Dubai", b.sent())
+        self.assertFalse(await SettingsStore(self.db).get("current_timezone"))
+        self.assertIn("set my location", b.sent())
 
     async def test_rhythm_tool_goodnight_closes_the_previous_nights_day(self):
         from unittest.mock import patch
@@ -281,7 +280,10 @@ class TestBrainHands(unittest.IsolatedAsyncioTestCase):
         await b.h.router.handle_update(text_update("evening", OWNER))
         opus = [r for r in b.script.requests if "haiku" not in r["model"]][0]
         self.assertIn("Clocks: Europe/London", opus["system"])
-        self.assertIn("timezone_place", opus["system"])
+        # The brain is told the clocks are NOT its to move — only Paul's
+        # explicit command (6 Aug rule).
+        self.assertIn("set my location as X", opus["system"])
+        self.assertNotIn("timezone_place", opus["system"])
 
     async def test_paul_saying_no_meds_this_week_stands_the_chase_down(self):
         # 4 Aug, 11:16: 'Run and meds were skipping today and we will for this
