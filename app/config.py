@@ -127,6 +127,7 @@ class Settings(BaseSettings):
     zoom_account_id: str = ""
     zoom_client_id: str = ""
     zoom_client_secret: str = ""
+    zoom_user_email: str = ""   # optional: pin the meeting host (else account owner)
 
     # Bedtime protection OFF (Paul, 5 Aug 23:07: 'based on my workload it's
     # not working — kill that for now'). The machinery stays built; flip
