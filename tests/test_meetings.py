@@ -26,10 +26,18 @@ NOW = datetime(2026, 8, 6, 17, 30, tzinfo=TZ)   # a Thursday evening
 
 def zoom_transport(captured: dict):
     def handler(request: httpx.Request) -> httpx.Response:
-        if "oauth/token" in str(request.url):
+        url = str(request.url)
+        if "oauth/token" in url:
             captured["token_calls"] = captured.get("token_calls", 0) + 1
             return httpx.Response(200, json={"access_token": "TOK123", "expires_in": 3600})
+        if request.method == "GET" and url.endswith(("/users",)) or "/users?" in url:
+            captured["user_lookups"] = captured.get("user_lookups", 0) + 1
+            return httpx.Response(200, json={"users": [
+                {"id": "member1", "email": "harry@x.com", "role_name": "Member"},
+                {"id": "paulZ", "email": "paul@x.com", "role_name": "Owner"},
+            ]})
         captured["create"] = json.loads(request.content)
+        captured["create_path"] = request.url.path
         captured["auth"] = request.headers.get("Authorization")
         return httpx.Response(201, json={
             "id": 987, "topic": captured["create"]["topic"],
@@ -50,6 +58,26 @@ class TestZoomClient(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["create"]["type"], 1)
         self.assertTrue(captured["create"]["settings"]["join_before_host"])
         self.assertEqual(captured["auth"], "Bearer TOK123")
+        # S2S tokens have NO 'me' (18:54, 6 Aug: every create bounced) — the
+        # account OWNER is resolved and used as host.
+        self.assertEqual(captured["create_path"], "/v2/users/paulZ/meetings")
+
+    async def test_pinned_email_skips_the_lookup(self):
+        captured = {}
+        zoom = ZoomClient(
+            "ACC", "ID", "SECRET", user_email="paul@x.com",
+            transport=zoom_transport(captured),
+        )
+        await zoom.create_meeting()
+        self.assertEqual(captured["create_path"], "/v2/users/paul@x.com/meetings")
+        self.assertNotIn("user_lookups", captured)
+
+    async def test_host_lookup_is_cached(self):
+        captured = {}
+        zoom = ZoomClient("ACC", "ID", "SECRET", transport=zoom_transport(captured))
+        await zoom.create_meeting()
+        await zoom.create_meeting()
+        self.assertEqual(captured["user_lookups"], 1)
 
     async def test_scheduled_meeting_carries_time_and_tz(self):
         captured = {}
@@ -154,6 +182,7 @@ class TestRouterLane(unittest.IsolatedAsyncioTestCase):
         await self.router.handle_update(text_update("start a new zoom meeting", OWNER))
         [reply] = self.h.texts()
         self.assertIn("did NOT get created", reply)
+        self.assertIn("TOKEN step", reply)   # the reason rides the reply now
 
     async def test_status_shows_the_zoom_wire(self):
         await self.router.handle_update(text_update("status", OWNER))

@@ -216,7 +216,8 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
 
         router_obj.meetings = MeetingMaker(
             ZoomClient(
-                settings.zoom_account_id, settings.zoom_client_id, settings.zoom_client_secret
+                settings.zoom_account_id, settings.zoom_client_id,
+                settings.zoom_client_secret, user_email=settings.zoom_user_email,
             ),
             layer_factory=jobs._chase_layer,
         )

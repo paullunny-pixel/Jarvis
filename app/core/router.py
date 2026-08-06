@@ -1696,12 +1696,15 @@ class JarvisRouter:
                     reply = await self.meetings.quick_start(
                         transcript, datetime.now(ZoneInfo(tz_name)), tz_name
                     )
-                except Exception:
+                except Exception as exc:
                     logger.exception("Zoom quick-start failed")
+                    # Say WHAT refused (18:54, 6 Aug: a bare 'Zoom refused'
+                    # left Paul guessing between keys, scopes and our own bug).
+                    detail = str(exc)[:220]
                     reply = (
                         "Zoom refused that one — the meeting did NOT get created. "
-                        "Worth checking the Zoom keys in Render; say it again and "
-                        "I'll have another go."
+                        f"Its reason: {detail or 'no detail given'}. "
+                        "Screenshot me this and it gets fixed."
                     )
             await self.log.log("out", reply, chat_id=message.chat_id, meta={"zoom": True})
             await self.telegram.send_text(message.chat_id, reply)
