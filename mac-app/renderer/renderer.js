@@ -1,15 +1,15 @@
 // Jarvis desktop renderer — the whole client lives here.
 //
-// Privacy model: Porcupine runs LOCALLY (WASM in this window). Not one byte
-// of audio leaves the Mac until either the wake word fires, the talk button
-// is pressed, or something is typed. The status dot always tells the truth.
+// Privacy model: openWakeWord runs LOCALLY (ONNX models via onnxruntime-node,
+// right in this process). Not one byte of audio leaves the Mac until either
+// the wake word fires, the talk button is pressed, or something is typed.
+// The status dot always tells the truth.
 const fs = require("fs");
 const path = require("path");
 const { ipcRenderer } = require("electron");
+const { OpenWakeWord } = require("../wakeword.js");
 
-// --- Picovoice globals (IIFE builds expose namespaces on window) ---
-const Porcupine = window.PorcupineWeb;
-const WVP = window.WebVoiceProcessor && window.WebVoiceProcessor.WebVoiceProcessor;
+const MODEL_DIR = path.join(__dirname, "..", "assets");
 
 // --- DOM ---
 const feedEl = document.getElementById("feed");
@@ -22,7 +22,6 @@ const settingsBtn = document.getElementById("settings-btn");
 const settingsPanel = document.getElementById("settings-panel");
 const cfgUrl = document.getElementById("cfg-url");
 const cfgSecret = document.getElementById("cfg-secret");
-const cfgPicovoice = document.getElementById("cfg-picovoice");
 const cfgStatus = document.getElementById("cfg-status");
 const typeForm = document.getElementById("type-form");
 const typeInput = document.getElementById("type-input");
@@ -32,14 +31,15 @@ let state = "idle"; // idle | listening | recording | thinking | speaking
 let muted = false;
 let pinned = false;
 let inConversation = false;
-let porcupine = null;
+let wakeEngine = null;
+let wakeStream = null;
+let wakeAudioCtx = null;
 let wakeReady = false;
 
 function cfg() {
   return {
     url: (localStorage.getItem("jarvis_url") || "").replace(/\/+$/, ""),
     secret: localStorage.getItem("jarvis_secret") || "",
-    picovoice: localStorage.getItem("jarvis_picovoice") || "",
   };
 }
 
@@ -52,7 +52,7 @@ function setStatus(next, text) {
 function idleStatus() {
   if (muted) return setStatus("idle", "Wake word muted — button and typing still work");
   if (wakeReady) return setStatus("idle", 'Listening for "Hey Jarvis"…');
-  return setStatus("idle", "Wake word off — set a Picovoice key in Settings");
+  return setStatus("idle", "Wake word off — models missing (run `npm run fetch-model`)");
 }
 
 function addMsg(kind, text) {
@@ -264,58 +264,48 @@ typeForm.addEventListener("submit", async (e) => {
   idleStatus();
 });
 
-// --- wake word engine ---
+// --- wake word engine (openWakeWord via onnxruntime-node, fully local) ---
 async function startWakeWord() {
-  const { picovoice } = cfg();
-  if (!picovoice) {
+  if (!OpenWakeWord.modelsPresent(MODEL_DIR)) {
     wakeReady = false;
-    return idleStatus();
-  }
-  if (!Porcupine || !WVP) {
-    wakeReady = false;
-    addMsg("system", "Wake-word libraries didn't load — run `npm install` in mac-app/.");
+    addMsg("system", "Wake-word models missing — run `npm run fetch-model` in mac-app/.");
     return idleStatus();
   }
   try {
-    const modelPath = path.join(__dirname, "..", "assets", "porcupine_params.pv");
-    if (!fs.existsSync(modelPath)) {
-      wakeReady = false;
-      addMsg("system", "Wake-word model missing — run `npm run fetch-model` in mac-app/.");
-      return idleStatus();
-    }
-    const modelB64 = fs.readFileSync(modelPath).toString("base64");
-    // A custom 'Hey Jarvis' keyword file (from console.picovoice.ai) is used
-    // automatically if you drop it in as assets/hey-jarvis.ppn; otherwise the
-    // built-in 'Jarvis' keyword — saying 'Hey Jarvis' fires it just the same.
-    const customPath = path.join(__dirname, "..", "assets", "hey-jarvis.ppn");
-    const keyword = fs.existsSync(customPath)
-      ? { label: "Hey Jarvis", base64: fs.readFileSync(customPath).toString("base64"), sensitivity: 0.65 }
-      : { builtin: "Jarvis", sensitivity: 0.65 };
-    porcupine = await Porcupine.PorcupineWorker.create(
-      picovoice,
-      [keyword],
-      () => onWakeWord(),
-      { base64: modelB64 }
-    );
-    await WVP.subscribe(porcupine);
+    wakeEngine = await OpenWakeWord.load(MODEL_DIR, { threshold: 0.5, refractoryMs: 2000 });
+    // Dedicated 16 kHz capture path — Chromium resamples the mic for us.
+    wakeStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    wakeAudioCtx = new AudioContext({ sampleRate: 16000 });
+    const source = wakeAudioCtx.createMediaStreamSource(wakeStream);
+    const processor = wakeAudioCtx.createScriptProcessor(2048, 1, 1);
+    processor.onaudioprocess = (e) => {
+      if (!wakeEngine || muted) return;
+      wakeEngine.feed(Float32Array.from(e.inputBuffer.getChannelData(0)), () => onWakeWord());
+    };
+    source.connect(processor);
+    processor.connect(wakeAudioCtx.destination);   // keeps the node alive; silent
     wakeReady = true;
     idleStatus();
   } catch (err) {
     wakeReady = false;
-    addMsg("system", "Wake word failed to start: " + (err.message || err));
+    addMsg(
+      "system",
+      err.name === "NotAllowedError"
+        ? "Microphone access denied — the wake word can't listen (System Settings → Privacy → Microphone)."
+        : "Wake word failed to start: " + (err.message || err)
+    );
     idleStatus();
   }
 }
 
 async function stopWakeWord() {
   try {
-    if (porcupine) {
-      await WVP.unsubscribe(porcupine);
-      porcupine.release && porcupine.release();
-      porcupine.terminate && porcupine.terminate();
-    }
+    if (wakeStream) wakeStream.getTracks().forEach((t) => t.stop());
+    if (wakeAudioCtx) await wakeAudioCtx.close();
   } catch (_) {}
-  porcupine = null;
+  wakeStream = null;
+  wakeAudioCtx = null;
+  wakeEngine = null;
   wakeReady = false;
 }
 
@@ -339,7 +329,6 @@ settingsBtn.addEventListener("click", () => {
   const c = cfg();
   cfgUrl.value = c.url;
   cfgSecret.value = c.secret;
-  cfgPicovoice.value = c.picovoice;
   cfgStatus.textContent = "";
   settingsPanel.classList.remove("hidden");
 });
@@ -351,7 +340,6 @@ document.getElementById("cfg-close").addEventListener("click", () => {
 document.getElementById("cfg-save").addEventListener("click", async () => {
   localStorage.setItem("jarvis_url", cfgUrl.value.trim().replace(/\/+$/, ""));
   localStorage.setItem("jarvis_secret", cfgSecret.value.trim());
-  localStorage.setItem("jarvis_picovoice", cfgPicovoice.value.trim());
   cfgStatus.textContent = "Checking connection…";
   try {
     await pingBackend();

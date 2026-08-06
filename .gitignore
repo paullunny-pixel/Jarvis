@@ -10,8 +10,9 @@ __pycache__/
 # Local dev database (SQLite, created when DATABASE_URL is unset)
 jarvis.db*
 
-# Mac desktop app — local artifacts only (the model re-downloads on install)
+# Mac desktop app — local artifacts only (models re-download on install)
 mac-app/node_modules/
+mac-app/assets/*.onnx
 mac-app/assets/porcupine_params.pv
 mac-app/assets/*.ppn
 mac-app/dist/

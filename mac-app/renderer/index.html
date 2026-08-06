@@ -33,9 +33,7 @@
     <label>Desktop secret <span class="hint">(ask Jarvis on Telegram: “desktop setup”)</span>
       <input id="cfg-secret" type="password" placeholder="paste the desktop secret" />
     </label>
-    <label>Picovoice AccessKey <span class="hint">(free at console.picovoice.ai)</span>
-      <input id="cfg-picovoice" type="password" placeholder="paste your Picovoice key" />
-    </label>
+    <p class="hint">The “Hey Jarvis” wake word runs fully on this Mac (openWakeWord) — no key needed.</p>
     <div class="row">
       <button id="cfg-save">Save &amp; connect</button>
       <button id="cfg-close" type="button">Close</button>
@@ -43,9 +41,6 @@
     <p id="cfg-status" class="hint"></p>
   </div>
 
-  <!-- Picovoice web SDKs — pure WASM, no native modules, loaded from node_modules -->
-  <script src="../node_modules/@picovoice/porcupine-web/dist/iife/index.js"></script>
-  <script src="../node_modules/@picovoice/web-voice-processor/dist/iife/index.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

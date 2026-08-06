@@ -1,7 +1,7 @@
 // Jarvis Mac app — Electron main process. Small always-open window; all the
 // interesting work (wake word, recording, backend calls) lives in the
-// renderer. Personal-use app: nodeIntegration is on so the renderer can read
-// the local Porcupine model file without a bundler.
+// renderer. Personal-use app: nodeIntegration is on so the renderer can load
+// the local openWakeWord models (onnxruntime-node) without a bundler.
 const { app, BrowserWindow, ipcMain, systemPreferences } = require("electron");
 const path = require("path");
 
