@@ -207,7 +207,7 @@ function render(d){
   // Daily-doable habits stay streaks; physical training is monthly and
   // recovery-aware — a rest day is never a broken anything (§11).
   const meta = {twelve:['✅ Today’s Focus cleared', true],
-                portuguese:['🇧🇷 Portuguese', false], meals:['🥗 Meals on-plan', false]};
+                meals:['🥗 Meals on-plan', false]};
   const chips = Object.entries(meta).map(([k,[label,key]]) => {
     const s = d.streaks[k] || {current:0, best:0, done_today:false};
     const today = s.done_today ? '✓ done today' : 'not logged today';
@@ -215,6 +215,19 @@ function render(d){
       <div class="lab">${label}</div><div class="big">${s.current} <small>days</small></div>
       <div class="sub">${today} · best: ${s.best}</div></div>`;
   });
+  // Brazil readiness gauge (7 Aug brief): replaces the plain Portuguese
+  // streak chip until the trip — countdown + mastery, streak in the small print.
+  const pt = d.portuguese || {};
+  const ptStreak = d.streaks.portuguese || {current:0, done_today:false};
+  if (pt.days_left > 0) {
+    chips.splice(1, 0, `<div class="sk key"><span class="keytag">🇧🇷 ${pt.days_left} DAYS TO BRAZIL</span>
+      <div class="lab">🇧🇷 Brazil-ready</div><div class="big">${pt.overall_pct||0}<small>%</small></div>
+      <div class="sub">speech ${pt.speech_pct||0}% · survival ${pt.survival_pct||0}% · ${ptStreak.done_today?'✓ drilled today':'not drilled today'} · streak ${ptStreak.current}</div></div>`);
+  } else {
+    chips.splice(1, 0, `<div class="sk"><div class="lab">🇧🇷 Portuguese</div>
+      <div class="big">${ptStreak.current} <small>days</small></div>
+      <div class="sub">${ptStreak.done_today?'✓ done today':'not logged today'}</div></div>`);
+  }
   const a = d.activity || {runs:0, workouts:0, recovery_days:0};
   chips.push(`<div class="sk"><div class="lab">🏃 🏋️ This month</div>
     <div class="big">${a.runs}<small> runs</small> · ${a.workouts}<small> workouts</small></div>

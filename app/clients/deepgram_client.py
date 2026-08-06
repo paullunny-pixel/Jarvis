@@ -35,17 +35,24 @@ class DeepgramClient:
         await self._client.aclose()
 
     async def transcribe(
-        self, audio: bytes, mimetype: str = "audio/ogg", keyterms: list[str] | None = None
+        self,
+        audio: bytes,
+        mimetype: str = "audio/ogg",
+        keyterms: list[str] | None = None,
+        language: str | None = None,
     ) -> str:
         """Transcribe a voice note. Telegram voice notes are OGG/Opus — Deepgram
         decodes them natively, so no audio conversion step is needed.
         `keyterms` rides nova-3's keyterm prompting (5 Aug): Paul's people,
         companies, products and meds, so 'Prodermis' never comes back as
-        'pro dermis' — the router builds the list live from the second brain."""
+        'pro dermis' — the router builds the list live from the second brain.
+        `language` overrides the default per call — the Portuguese lesson
+        (7 Aug) sends 'multi' so nova-3 hears Paul's pt-BR attempts AND his
+        English asides in the same note."""
         params: list[tuple[str, str]] = [
             ("model", self.model),
             ("smart_format", "true"),
-            ("language", self.language),
+            ("language", language or self.language),
         ]
         for term in (keyterms or [])[:100]:
             params.append(("keyterm", term))

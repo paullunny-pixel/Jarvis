@@ -401,6 +401,23 @@ class HeartbeatJobs:
                 f"\n\nNON-NEGOTIABLES — {gate_lines}. Confirm each to me — "
                 "I'll keep chasing till they're in (never blocking, just persistent)."
             )
+        # Brazil course (7 Aug): the countdown and the Steph bridge ride every
+        # morning brief until the trip.
+        try:
+            from app.lessons.portuguese import PortugueseCoach
+
+            coach = PortugueseCoach(self.db)
+            ready = await coach.readiness(today)
+            if ready["days_left"] > 0:
+                steph = await coach.steph_phrase(today)
+                skeleton += (
+                    f"\n🇧🇷 {ready['days_left']} days to Brazil — readiness "
+                    f"{ready['overall_pct']}% (speech {ready['speech_pct']}%). "
+                    f"Phrase to try on Steph today: “{steph['text']}” — {steph['gloss']} "
+                    "Say 'portuguese lesson' when you've got ten minutes."
+                )
+        except Exception:
+            logger.exception("Portuguese brief line failed — brief goes out without")
         opener = await self._flourish(
             "Write a 2–3 sentence opener for Paul's 7am brief. He's rough in his first hour — "
             "gentle, no heavy asks yet. Name the single most important thing today from the data, "

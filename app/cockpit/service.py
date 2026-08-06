@@ -63,7 +63,18 @@ class CockpitService:
             # §11: physical training is recovery-aware and monthly, never a
             # broken streak; a rest day is a valid entry.
             "activity": await self._streaks.monthly_activity(today),
+            "portuguese": await self._portuguese(today),
         }
+
+    async def _portuguese(self, today: date) -> dict[str, Any]:
+        """The Brazil readiness gauge (7 Aug brief): countdown + mastery,
+        replacing the plain streak chip until the trip."""
+        from app.lessons.portuguese import PortugueseCoach
+
+        try:
+            return await PortugueseCoach(self._db).readiness(today)
+        except Exception:
+            return {}
 
     async def _rhythm(self, today: date) -> dict[str, Any]:
         """Master Update §§4-6: wake time, water, movement, med adherence."""
