@@ -80,6 +80,7 @@ class JarvisRouter:
         self.web_transport = None        # httpx transport seam for link-fetch tests
         self.phone_channel = None        # PhoneChannel — Twilio calls (main.py wires it)
         self.meetings = None             # MeetingMaker — Zoom quick-start (main.py wires it)
+        self.gcal = None                 # GoogleCalendar — live read+write (main.py wires it)
         self._speech_vocab: list[str] = []   # nova-3 keyterms, rebuilt hourly
         self._speech_vocab_ts: float = 0.0
 
@@ -241,6 +242,68 @@ class JarvisRouter:
                 content[:2000],
             ),
         )
+
+    async def _tool_calendar(self, tool_input: dict) -> str:
+        """The brain's calendar hands — every guardrail enforced HERE, not in
+        the prompt. Honest results only; ReauthNeeded becomes the exact fix."""
+        import json as _json
+
+        from app.clients.gcal_client import ReauthNeeded
+        from app.meetings import parse_when
+
+        tz = ZoneInfo(await self.store.get(TIMEZONE_KEY, self.settings.timezone_default))
+        action = str(tool_input.get("action") or "")
+        try:
+            if action == "next":
+                nxt = await self.gcal.next_up(tz)
+                return _json.dumps(nxt) if nxt else "Nothing on the calendar in the next 7 days."
+            if action == "today":
+                return _json.dumps(await self.gcal.today(tz)) or "[]"
+            if action == "week":
+                return _json.dumps(await self.gcal.week(tz))
+            if action == "create":
+                title = str(tool_input.get("title") or "").strip()
+                if not title:
+                    return "TOOL FAILED: create needs a title."
+                when = parse_when(str(tool_input.get("when") or ""), datetime.now(tz))
+                if when is None:
+                    return (
+                        "TOOL FAILED: couldn't read a time from "
+                        f"'{tool_input.get('when')}' — ask Paul for the time; do not guess."
+                    )
+                duration = int(tool_input.get("duration_min") or 60)
+                attendees = [str(a) for a in (tool_input.get("attendees") or []) if a]
+                return await self.gcal.create(
+                    title, when, duration, attendees,
+                    str(tool_input.get("description") or ""),
+                )
+            if action == "move":
+                query = str(tool_input.get("query") or tool_input.get("title") or "")
+                when = parse_when(str(tool_input.get("when") or ""), datetime.now(tz))
+                if not query or when is None:
+                    return "TOOL FAILED: move needs 'query' (title words) and 'when'."
+                return await self.gcal.move(query, when, tz)
+            if action == "delete":
+                query = str(tool_input.get("query") or tool_input.get("title") or "")
+                if not query:
+                    return "TOOL FAILED: delete needs 'query' (title words)."
+                return await self.gcal.delete(query, tz)
+            if action == "invite":
+                query = str(tool_input.get("query") or tool_input.get("title") or "")
+                attendees = [str(a) for a in (tool_input.get("attendees") or []) if a]
+                if not query or not attendees:
+                    return "TOOL FAILED: invite needs 'query' and 'attendees' (emails)."
+                return await self.gcal.add_attendees(query, attendees, tz)
+            if action == "undo":
+                return await self.gcal.undo_last(tz)
+            if action == "changes":
+                return await self.gcal.changes_today(tz)
+            return f"TOOL FAILED: unknown calendar action '{action}'."
+        except ReauthNeeded:
+            return (
+                "TOKEN DEAD: Google Calendar needs re-authorising. Tell Paul to say "
+                "'connect google calendar' and tap the link — nothing was changed."
+            )
 
     async def _power_off_lane(self, message: IncomingMessage) -> None:
         """Jarvis is deactivated. Total silence for everyone and everything —
@@ -1448,6 +1511,17 @@ class JarvisRouter:
                 else "- Live voice: not available (ElevenLabs key required)."
             ),
             (
+                "- Calendar: your calendar tool is Paul's LIVE Google Calendar "
+                "(read+write) — next/today/week, create/move/delete/invite; "
+                "confirmations for destructive changes are enforced by the machinery "
+                "('confirm calendar change'), 'undo' reverses the last write, "
+                "'changes' lists today's writes. If a tool result says TOKEN DEAD, "
+                "tell Paul to say 'connect google calendar' — never claim a write "
+                "happened without a confirming result."
+                if self.gcal is not None
+                else "- Calendar: read-only ICS feed — event creation is NOT possible yet; never claim otherwise."
+            ),
+            (
                 "- Zoom meetings: CONNECTED — 'start a new Zoom meeting' creates one "
                 "instantly (join-before-host) and hands Paul both links; 'set up a "
                 "Zoom for tomorrow at 2' schedules one. The machinery answers those "
@@ -1531,6 +1605,16 @@ class JarvisRouter:
             lines.append("🎥 Zoom: connected — 'start a new Zoom meeting' any time")
         else:
             lines.append("🎥 Zoom: not wired — ZOOM_ACCOUNT_ID / ZOOM_CLIENT_ID / ZOOM_CLIENT_SECRET needed in Render")
+        if self.gcal is not None:
+            try:
+                if await self.gcal.authorised():
+                    lines.append("📆 Google Calendar: connected — live read/write")
+                else:
+                    lines.append("📆 Google Calendar: keys in, awaiting your OK — say 'connect google calendar'")
+            except Exception:
+                lines.append("📆 Google Calendar: state unreadable just now")
+        else:
+            lines.append("📆 Google Calendar: not wired — GOOGLE_OAUTH_CLIENT_ID/SECRET needed in Render (ICS feed only)")
         if self.daily12 is not None:
             health = await self.daily12.health()
             if health["ok"]:
@@ -1674,6 +1758,44 @@ class JarvisRouter:
                 await self.log.log("out", reply, chat_id=message.chat_id)
                 await self.telegram.send_text(message.chat_id, reply)
                 return True
+
+        # Google Calendar (6 Aug slice): the connect link, the destructive-
+        # write confirmation, and 'ignore the X calendar'. Everything else
+        # calendar-shaped rides the brain's calendar tool.
+        if re.search(r"\b(connect|authoris|authoriz|re-?auth)\w*\b.{0,24}\b(google|calendar)\b", lowered):
+            if self.gcal is None:
+                reply = (
+                    "Google Calendar isn't wired yet — GOOGLE_OAUTH_CLIENT_ID and "
+                    "GOOGLE_OAUTH_CLIENT_SECRET need to land in Render first."
+                )
+            else:
+                base = (self.settings.public_url or "").rstrip("/")
+                reply = (
+                    "🔑 Tap this, sign in with your Google account and approve — "
+                    "takes 20 seconds, then I read and write your calendar live:\n"
+                    f"{base}/google/connect/{self.settings.effective_desktop_secret}"
+                )
+            await self.log.log("out", "[calendar connect link sent]", chat_id=message.chat_id)
+            await self.telegram.send_text(message.chat_id, reply)
+            return True
+        if self.gcal is not None and re.search(
+            r"\bconfirm\b.{0,16}\bcalendar\b|\bcalendar\b.{0,10}\bconfirm", lowered
+        ):
+            tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
+            try:
+                reply = await self.gcal.confirm_pending(ZoneInfo(tz_name))
+            except Exception:
+                logger.exception("Calendar confirm failed")
+                reply = "That confirm hit an error — the change was NOT made. Say it again?"
+            await self.log.log("out", reply, chat_id=message.chat_id, meta={"calendar": True})
+            await self.telegram.send_text(message.chat_id, reply)
+            return True
+        ignore_hit = re.search(r"\bignore\b.{0,10}(?:the\s+)?['\"]?([\w .-]{2,40}?)['\"]?\s+calendar\b", lowered)
+        if self.gcal is not None and ignore_hit:
+            reply = await self.gcal.ignore_calendar(ignore_hit.group(1).strip())
+            await self.log.log("out", reply, chat_id=message.chat_id, meta={"calendar": True})
+            await self.telegram.send_text(message.chat_id, reply)
+            return True
 
         # Zoom quick-start (Layer A, 6 Aug): 'start a new Zoom meeting' — one
         # line replaces the whole phone faff. 'Set up a Zoom for tomorrow at
@@ -2790,6 +2912,44 @@ class JarvisRouter:
                 },
             },
         })
+        if self.gcal is not None:
+            tools.append({
+                "name": "calendar",
+                "description": (
+                    "Paul's REAL Google Calendar — reads are live, writes are real. "
+                    "next/today/week list events (each carries minutes_until and any "
+                    "join_url). create makes an event from natural words: title + when "
+                    "('tomorrow at 2', 'friday 10am') + duration_min + attendees "
+                    "(emails). move/delete/invite find the event by title words in "
+                    "'query'. GUARDRAILS THE MACHINERY ENFORCES: moving or deleting "
+                    "anything Jarvis didn't create parks the change and asks Paul to "
+                    "say 'confirm calendar change' — relay that honestly, never claim "
+                    "it's done. undo reverses the last write; changes lists today's "
+                    "writes. DAY-PLAN LAYOUT: when Paul asks you to lay out his day, "
+                    "call create once per block around his existing events — respect "
+                    "his wake time and never place blocks in the sleep window. Only "
+                    "claim an outcome the tool result confirms. If the result says "
+                    "the token needs re-authorising, tell Paul to say 'connect google "
+                    "calendar'."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["next", "today", "week", "create", "move",
+                                     "delete", "invite", "undo", "changes"],
+                        },
+                        "title": {"type": "string"},
+                        "when": {"type": "string"},
+                        "duration_min": {"type": "integer"},
+                        "attendees": {"type": "array", "items": {"type": "string"}},
+                        "query": {"type": "string"},
+                        "description": {"type": "string"},
+                    },
+                    "required": ["action"],
+                },
+            })
         tools.append({
             "name": "build_list",
             "description": (
@@ -2946,6 +3106,8 @@ class JarvisRouter:
                 f"Locked — the phone rings at {due.strftime('%H:%M')} ({tz_name}) "
                 f"and I'll say: {reminder}"
             )
+        if name == "calendar" and self.gcal is not None:
+            return await self._tool_calendar(tool_input)
         if name == "build_list":
             if (tool_input.get("add") or "").strip():
                 return await self._build_list_add(str(tool_input["add"]).strip())
