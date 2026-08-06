@@ -95,32 +95,40 @@ class TestLifeSignals(unittest.IsolatedAsyncioTestCase):
         [reply] = self.h.texts()
         self.assertIn("Hound mode on", reply)
 
-    async def test_timezone_move_to_dubai_and_back(self):
-        await self.h.router.handle_update(text_update("just landed in Dubai", OWNER))
+    async def test_set_my_location_switches_the_clocks(self):
+        # Paul's rule (6 Aug): ONE explicit command moves the clocks.
+        await self.h.router.handle_update(text_update("set my location as Dubai", OWNER))
         self.assertEqual(await self.h.router.store.get(TIMEZONE_KEY), "Asia/Dubai")
         self.assertTrue(self.h.rescheduled)
-        await self.h.router.handle_update(text_update("I'm in the UK this week", OWNER))
+        await self.h.router.handle_update(text_update("Set my location to the UK", OWNER))
         self.assertEqual(await self.h.router.store.get(TIMEZONE_KEY), "Europe/London")
 
-    async def test_timezone_never_swallows_a_bigger_ask(self):
-        # 16:17, 6 Aug: 'call me to remind me about the meeting… I'm in
-        # Dubai' switched the clocks and the call was never scheduled. A
-        # location fragment inside a bigger ask must fall through whole.
+    async def test_misspelled_location_command_still_counts(self):
+        # Dyslexia rule: 'locaton'/'locashun' must work — meaning, not spelling.
+        await self.h.router.handle_update(text_update("set my locaton as dubai", OWNER))
+        self.assertEqual(await self.h.router.store.get(TIMEZONE_KEY), "Asia/Dubai")
+
+    async def test_unknown_place_answers_honestly_without_switching(self):
         await self.h.router.store.set(TIMEZONE_KEY, "Europe/London")
-        await self.h.router.handle_update(text_update(
+        await self.h.router.handle_update(text_update("set my location as Narnia", OWNER))
+        self.assertEqual(await self.h.router.store.get(TIMEZONE_KEY), "Europe/London")
+        self.assertTrue(any("don't know" in t for t in self.h.texts()))
+
+    async def test_saying_where_he_is_never_moves_the_clocks(self):
+        # 'I'm in Dubai' / 'landed in Dubai' used to switch — no more. Only
+        # the explicit command (or the future GPS feed) touches timezone.
+        await self.h.router.store.set(TIMEZONE_KEY, "Europe/London")
+        for phrase in (
+            "just landed in Dubai",
+            "I'm in the UK this week",
             "Call me at half six to remind me about the meeting with the "
-            "distributor, I'm in Dubai at the moment", OWNER
-        ))
-        self.assertEqual(await self.h.router.store.get(TIMEZONE_KEY), "Europe/London")
+            "distributor, I'm in Dubai at the moment",
+        ):
+            await self.h.router.handle_update(text_update(phrase, OWNER))
+            self.assertEqual(
+                await self.h.router.store.get(TIMEZONE_KEY), "Europe/London", phrase
+            )
         self.assertFalse(any("Clocks switched" in t for t in self.h.texts()))
-
-    async def test_long_travel_ramble_leaves_clocks_to_the_brain(self):
-        await self.h.router.store.set(TIMEZONE_KEY, "Europe/London")
-        await self.h.router.handle_update(text_update(
-            "So we finally landed in Dubai after the delay and the drive over "
-            "took forever, absolute chaos at the airport but we're here now", OWNER
-        ))
-        self.assertEqual(await self.h.router.store.get(TIMEZONE_KEY), "Europe/London")
 
     async def test_ordinary_message_falls_through_to_brain(self):
         await self.h.router.handle_update(text_update("morning, how are we?", OWNER))

@@ -35,7 +35,11 @@ COMMANDS:
 - trello_sync — refresh/resync the board
 - update_brief — rebuild your brief/picture of Paul
 - build_list_show — read the build list back
-- timezone_change — Paul says where he is now (set "place", e.g. "dubai", "uk")
+- timezone_change — ONLY the explicit command "set my location as X" (typos
+  and word-wobbles of THAT COMMAND count; set "place", e.g. "dubai", "uk").
+  Paul merely SAYING he is somewhere — "I'm in Dubai", "landed in the UK",
+  travel talk — is NEVER this command. His rule (6 Aug): nothing but the set-
+  my-location command may move the clocks.
 - none — ordinary conversation, a question, or anything you are not SURE about
 
 Task/board/card talk, email talk, logging things as done, water/meds/run logging, adding wishes to the build list: ALWAYS "none" — other machinery owns those.
