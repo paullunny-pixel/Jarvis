@@ -208,6 +208,18 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
     router_obj.phone_channel = phone_channel
     if phone_channel is not None:
         phone_channel.brain = router_obj.phone_turn
+    # Zoom quick-start (Layer A, 6 Aug): 'start a new Zoom meeting' → both
+    # links on Telegram + a Brain Dump backup card. Layer B (Otter) later.
+    if settings.zoom_account_id and settings.zoom_client_id and settings.zoom_client_secret:
+        from app.clients.zoom_client import ZoomClient
+        from app.meetings import MeetingMaker
+
+        router_obj.meetings = MeetingMaker(
+            ZoomClient(
+                settings.zoom_account_id, settings.zoom_client_id, settings.zoom_client_secret
+            ),
+            layer_factory=jobs._chase_layer,
+        )
     router_obj.voice_tools = VoiceTools(
         db, memory=memory, living=living, daily12=daily12, mail=mail, jobs=jobs,
         timezone_default=settings.timezone_default,
@@ -297,6 +309,8 @@ async def lifespan(app: FastAPI):
         closables.append(router.voice_engine)
     if getattr(router, "phone_channel", None) is not None:
         closables.append(router.phone_channel.twilio)
+    if getattr(router, "meetings", None) is not None:
+        closables.append(router.meetings.zoom)
     for client in closables:
         try:
             await client.close()

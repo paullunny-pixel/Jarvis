@@ -121,6 +121,13 @@ class Settings(BaseSettings):
     twilio_auth_token: str = ""
     twilio_from_number: str = ""
 
+    # --- Zoom meetings, Layer A (6 Aug): Server-to-Server OAuth app on
+    # Paul's Zoom account (scopes meeting:write, user:read). All three set →
+    # 'start a new Zoom meeting' works.
+    zoom_account_id: str = ""
+    zoom_client_id: str = ""
+    zoom_client_secret: str = ""
+
     # Bedtime protection OFF (Paul, 5 Aug 23:07: 'based on my workload it's
     # not working — kill that for now'). The machinery stays built; flip
     # BEDTIME_ENABLED=true when he wants the 22:30 rule back.
