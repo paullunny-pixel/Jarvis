@@ -91,6 +91,7 @@ class Settings(BaseSettings):
     r2_bucket: str = ""
     r2_endpoint: str = ""
     apple_health_webhook_secret: str = ""
+    desktop_app_secret: str = ""   # Mac app auth (falls back to a derived token)
     private_room_key: str = ""   # encryption key for the sobriety room (Milestone 6)
 
     # --- WhatsApp Business Cloud API (official; Jarvis's own second number).
@@ -172,6 +173,17 @@ class Settings(BaseSettings):
         import hashlib
 
         return hashlib.sha256(f"jarvis-phone:{self.telegram_bot_token}".encode()).hexdigest()[:32]
+
+    @property
+    def effective_desktop_secret(self) -> str:
+        """Auth token for the Mac desktop app's endpoints. DESKTOP_APP_SECRET
+        env wins; otherwise derived from the bot token so it works with zero
+        config — Paul asks 'desktop setup' on Telegram to get it."""
+        if self.desktop_app_secret:
+            return self.desktop_app_secret
+        import hashlib
+
+        return hashlib.sha256(f"jarvis-desktop:{self.telegram_bot_token}".encode()).hexdigest()[:32]
 
     @property
     def effective_voice_tool_secret(self) -> str:

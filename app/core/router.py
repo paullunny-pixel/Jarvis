@@ -834,6 +834,58 @@ class JarvisRouter:
             task.add_done_callback(self._sprint_tasks.discard)
         return reply
 
+    # --- The Mac desktop app (6 Aug) — another mouth on the same mind ---
+
+    async def desktop_turn(self, transcript: str, spoken: bool = True) -> str:
+        """One turn from the desktop app ('Hey Jarvis' one-shot or the talk
+        button): same brain, memory, tools and history as Telegram, full
+        reply quality (a desktop has a screen — no phone brevity)."""
+        transcript = (transcript or "").strip()
+        if not transcript:
+            return "Say again?"
+        # THE MASTER SWITCH: the desktop is Paul's own machine, so while off
+        # it answers only the wake word — same contract as Telegram.
+        from app.core.power import ON_ACK, PHONE_OFF_LINE, POWER_KEY, POWER_ON_RE
+
+        if await self.store.get(POWER_KEY, "") == "off":
+            if POWER_ON_RE.search(transcript):
+                await self.store.set(POWER_KEY, "")
+                return ON_ACK
+            return PHONE_OFF_LINE
+        stored = await self.store.get(OWNER_KEY)
+        chat_id = self.settings.telegram_owner_chat_id or (int(stored) if stored else 0)
+        kind = "voice" if spoken else "text"
+        # THE PRIVATE WALL holds on the desktop too.
+        if self.private_track is not None and (
+            self.private_track.is_sos(transcript) or self.private_track.is_private_topic(transcript)
+        ):
+            await self.log.log(
+                "in", "[private exchange]", chat_id=chat_id, kind=kind,
+                channel="desktop", meta={"private": True},
+            )
+            return (
+                "That's ours, not the board's — take it to our private room on "
+                "Telegram and I'm right there with you."
+            )
+        await self.log.log("in", transcript, chat_id=chat_id, kind=kind, channel="desktop")
+        message = IncomingMessage(
+            chat_id=chat_id, message_id=0, from_name="Paul", text=transcript,
+        )
+        reply = (await self._brain_reply(transcript, message, phone=False)).strip()
+        reply = reply or "I lost my train of thought there — go again."
+        await self.log.log("out", reply, chat_id=chat_id, kind=kind, channel="desktop")
+        if self.memory is not None and self.living is not None:
+            import asyncio as _asyncio
+
+            task = _asyncio.create_task(
+                extract_and_file(
+                    self.claude, self.memory, self.living, transcript, source="desktop"
+                )
+            )
+            self._sprint_tasks.add(task)
+            task.add_done_callback(self._sprint_tasks.discard)
+        return reply
+
     # --- Milestone 2 helpers ---
 
     async def _recall(self, query: str) -> str:
@@ -1684,6 +1736,22 @@ class JarvisRouter:
                 await self.telegram.send_text(message.chat_id, reply)
                 return True
             # A conversational "move on" with nothing blocked — not an override.
+
+        # Mac app pairing: "desktop setup" / "desktop secret" — Paul pastes
+        # these two values into the app's settings, nothing else needed.
+        if re.search(r"\bdesktop\b.{0,12}\b(setup|secret|code|app|connect)\b", lowered):
+            base = (self.settings.public_url or "").rstrip("/") or "https://<your Render URL>"
+            reply = (
+                "🖥 Desktop app pairing — put these two in the Mac app's settings:\n"
+                f"Backend URL: {base}\n"
+                f"Desktop secret: {self.settings.effective_desktop_secret}\n"
+                "That's it — the app does the rest."
+            )
+            await self.log.log(
+                "out", "[desktop pairing details sent]", chat_id=message.chat_id
+            )
+            await self.telegram.send_text(message.chat_id, reply)
+            return True
 
         # System check: "status" / "are you connected to trello?"
         if re.search(

@@ -1,0 +1,20 @@
+{
+  "name": "jarvis-mac",
+  "version": "1.0.0",
+  "description": "Jarvis on the desktop — always-on 'Hey Jarvis' wake word, live feed, talk button",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "fetch-model": "node scripts/fetch-model.js",
+    "postinstall": "node scripts/fetch-model.js"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0"
+  },
+  "dependencies": {
+    "@picovoice/porcupine-web": "^3.0.3",
+    "@picovoice/web-voice-processor": "^4.0.9"
+  }
+}
