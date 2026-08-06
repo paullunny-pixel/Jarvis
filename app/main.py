@@ -458,7 +458,7 @@ async def cockpit_data(secret: str, request: Request) -> dict:
     service = CockpitService(
         router.db,
         living=router.living,
-        calendar=router.heartbeat.calendar if router.heartbeat else None,
+        calendar=router.heartbeat.calendar_feed() if router.heartbeat else None,
         timezone_default=router.settings.timezone_default,
     )
     return await service.gather()

@@ -14,7 +14,6 @@ from zoneinfo import ZoneInfo
 from app.core.store import SettingsStore
 from app.daily12.scoring import COMPANIES, COMPANY_NAMES
 from app.db.base import Database
-from app.heartbeat.calendar_ics import IcsCalendar
 from app.heartbeat.jobs import assert_no_private_content, compose_kiefer_data
 from app.heartbeat.streaks import Streaks
 from app.memory.store import LivingFacts
@@ -33,7 +32,7 @@ class CockpitService:
         self,
         db: Database,
         living: LivingFacts | None = None,
-        calendar: IcsCalendar | None = None,
+        calendar=None,   # anything with events_for(day, tz) — heartbeat.calendar_feed()
         timezone_default: str = "Europe/London",
     ) -> None:
         self._db = db
