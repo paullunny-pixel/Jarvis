@@ -169,6 +169,23 @@ class TestAutoFireAndCallbacks(WakeBase):
         self.assertEqual((await self._state())["phase"], "stood_down")
         self.assertTrue(any("stood down" in t for t in self.h.texts()))
 
+    async def test_hydrate_chase_is_telegram_first_calls_every_third(self):
+        # 6 Aug morning: five-minute calls during the water phase. Gently now.
+        now = datetime.now(TZ)
+        for i in range(3):
+            await self._put_state(
+                phase="hydrate",
+                last_action=(now - timedelta(minutes=6)).isoformat(timespec="seconds"),
+            )
+            state = await self._state()
+            state["hydrate_nudges"] = i
+            await self.h.jobs.store.set(STATE_KEY, json.dumps(state))
+            await self.h.routine.tick(now)
+        self.assertEqual(len(self.phone.calls), 1)   # only the n%3==2 nudge rang
+        self.assertGreaterEqual(
+            sum(1 for t in self.h.texts() if "Water's still owed" in t), 3
+        )
+
     async def test_welfare_backstop_stops_the_calls(self):
         now = datetime.now(TZ)
         await self._put_state(

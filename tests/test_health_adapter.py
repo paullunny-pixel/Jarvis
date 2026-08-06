@@ -1,14 +1,16 @@
 """Health Auto Export adapter (5 Aug): nested format → flat fields, header
 auth, and hourly-safe run dedupe."""
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from app.heartbeat.health_import import flatten_export
 
-NOW = datetime(2026, 8, 5, 11, 0, tzinfo=ZoneInfo("Asia/Dubai"))
-TODAY = "2026-08-05"
-YESTERDAY = "2026-08-04"
+# Endpoint tests run against the real clock — dates must roll with it
+# (hardcoded 2026-08-05 broke the suite at midnight, 6 Aug).
+NOW = datetime.now(ZoneInfo("Asia/Dubai")).replace(hour=11, minute=0)
+TODAY = NOW.date().isoformat()
+YESTERDAY = (NOW - timedelta(days=1)).date().isoformat()
 
 
 def hae_payload():
