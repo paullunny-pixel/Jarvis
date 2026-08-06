@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Jarvis</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <div id="status-dot" class="dot idle"></div>
+    <div id="status-text">Starting…</div>
+    <div class="header-actions">
+      <button id="pin-btn" title="Keep on top">📌</button>
+      <button id="mute-btn" title="Mute the wake word">🎙</button>
+      <button id="settings-btn" title="Settings">⚙️</button>
+    </div>
+  </header>
+
+  <main id="feed"></main>
+
+  <footer>
+    <button id="talk-btn" class="talk">Start conversation</button>
+    <form id="type-form">
+      <input id="type-input" type="text" placeholder="Or type to Jarvis…" autocomplete="off" />
+    </form>
+  </footer>
+
+  <div id="settings-panel" class="hidden">
+    <h2>Settings</h2>
+    <label>Backend URL
+      <input id="cfg-url" type="text" placeholder="https://jarvis-xxxx.onrender.com" />
+    </label>
+    <label>Desktop secret <span class="hint">(ask Jarvis on Telegram: “desktop setup”)</span>
+      <input id="cfg-secret" type="password" placeholder="paste the desktop secret" />
+    </label>
+    <label>Picovoice AccessKey <span class="hint">(free at console.picovoice.ai)</span>
+      <input id="cfg-picovoice" type="password" placeholder="paste your Picovoice key" />
+    </label>
+    <div class="row">
+      <button id="cfg-save">Save &amp; connect</button>
+      <button id="cfg-close" type="button">Close</button>
+    </div>
+    <p id="cfg-status" class="hint"></p>
+  </div>
+
+  <!-- Picovoice web SDKs — pure WASM, no native modules, loaded from node_modules -->
+  <script src="../node_modules/@picovoice/porcupine-web/dist/iife/index.js"></script>
+  <script src="../node_modules/@picovoice/web-voice-processor/dist/iife/index.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

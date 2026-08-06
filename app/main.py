@@ -592,6 +592,97 @@ async def twilio_audio(secret: str, audio_id: str, request: Request):
     return Response(content=data, media_type="audio/mpeg")
 
 
+# --- The Mac desktop app (6 Aug): 'Hey Jarvis' on Paul's desk. The app
+# records locally (wake-word gated) and posts here; STT, brain and TTS all
+# run server-side so no API key ever leaves Render.
+
+def _desktop_gate(router: "JarvisRouter", secret: str) -> None:
+    import hmac as _hmac
+
+    if not _hmac.compare_digest(secret, router.settings.effective_desktop_secret):
+        raise HTTPException(status_code=403)
+
+
+async def _desktop_reply_payload(router: "JarvisRouter", transcript: str, spoken: bool) -> dict:
+    from app.core.reply_policy import decide_reply, strip_for_speech
+
+    raw = await router.desktop_turn(transcript, spoken=spoken)
+    channel, reply_text = decide_reply(raw, incoming_was_voice=spoken)
+    audio_b64 = None
+    if channel == "voice" and router.elevenlabs is not None:
+        import base64 as _base64
+
+        try:
+            audio = await router.elevenlabs.synthesize(strip_for_speech(reply_text))
+            audio_b64 = _base64.b64encode(audio).decode()
+        except Exception:
+            logger.exception("Desktop TTS failed — text-only reply")
+    return {"transcript": transcript, "reply": reply_text, "audio_b64": audio_b64}
+
+
+@app.get("/desktop/{secret}/ping")
+async def desktop_ping(secret: str, request: Request) -> dict:
+    """The app's 'Connected ✓' check."""
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    return {"ok": True, "service": "jarvis-desktop"}
+
+
+@app.post("/desktop/{secret}/message")
+async def desktop_message(secret: str, request: Request) -> dict:
+    """A typed turn from the desktop app: JSON {"text": ...}."""
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    try:
+        body = await request.json()
+        text = str(body.get("text", "")).strip()
+    except Exception:
+        text = ""
+    if not text:
+        return {"transcript": "", "reply": "Say again?", "audio_b64": None}
+    try:
+        return await _desktop_reply_payload(router, text, spoken=False)
+    except Exception:
+        logger.exception("Desktop message turn failed")
+        return {
+            "transcript": text, "audio_b64": None,
+            "reply": "Hit a snag processing that one — say it again and I'm on it.",
+        }
+
+
+@app.post("/desktop/{secret}/voice")
+async def desktop_voice(secret: str, request: Request) -> dict:
+    """A spoken turn: raw audio in the body (Content-Type tells Deepgram the
+    format — the app sends audio/webm). Transcript, reply and Jarvis's voice
+    (base64 MP3) come back in one JSON response."""
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    audio = await request.body()
+    if not audio:
+        return {"transcript": "", "reply": "Say again?", "audio_b64": None}
+    mimetype = request.headers.get("content-type") or "audio/webm"
+    try:
+        transcript = await router.deepgram.transcribe(
+            audio, mimetype.split(";")[0], keyterms=await router._speech_vocabulary()
+        )
+    except Exception:
+        logger.exception("Desktop STT failed")
+        transcript = ""
+    if not transcript:
+        return {
+            "transcript": "", "audio_b64": None,
+            "reply": "Couldn't make that out — give me it again?",
+        }
+    try:
+        return await _desktop_reply_payload(router, transcript, spoken=True)
+    except Exception:
+        logger.exception("Desktop voice turn failed")
+        return {
+            "transcript": transcript, "audio_b64": None,
+            "reply": "Hit a snag processing that one — say it again and I'm on it.",
+        }
+
+
 async def merge_water_total(db, day_iso: str, water_ml: int) -> bool:
     """Apple Health (WaterMinder, the Watch, any water app) sends the day's
     CUMULATIVE total — merge by MAX so manual '300ml' logging and the export
