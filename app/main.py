@@ -250,6 +250,18 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
             layer_factory=jobs._chase_layer,
             notetaker=jobs.notetaker,
         )
+    # WhatsApp Part 1 (7 Aug): Paul ↔ Jarvis 1:1, same brain as Telegram.
+    # Dormant on the send side (WHATSAPP_SENDING_ENABLED) and on routing
+    # (WHATSAPP_OWNER_NUMBER) until Paul supplies both — the webhook handler
+    # falls back to the old read-only ingest until then.
+    if settings.whatsapp_access_token and settings.whatsapp_phone_number_id:
+        from app.clients.whatsapp_client import WhatsAppClient
+
+        router_obj.whatsapp = WhatsAppClient(
+            settings.whatsapp_access_token,
+            settings.whatsapp_phone_number_id,
+            sending_enabled=settings.whatsapp_sending_enabled,
+        )
     router_obj.voice_tools = VoiceTools(
         db, memory=memory, living=living, daily12=daily12, mail=mail, jobs=jobs,
         timezone_default=settings.timezone_default,
@@ -943,19 +955,25 @@ async def whatsapp_verify(request: Request):
 
 @app.post("/webhook/whatsapp")
 async def whatsapp_inbound(request: Request) -> dict:
-    """READ-ONLY Phase 1 (Paul, 4 Aug): messages arriving on Jarvis's second
-    number are ingested for digests and recall. Nothing is ever sent back."""
+    """Part 1 (7 Aug): Paul's own WhatsApp number reaches the same brain as
+    Telegram — text and voice notes in, text or voice replies out, once
+    WHATSAPP_OWNER_NUMBER + WHATSAPP_SENDING_ENABLED are set. Any other
+    sender is silently ignored (Jarvis's number is a business number
+    anyone can message). Until the owner number is set, the original
+    Phase 1 read-only ingest holds unchanged — nothing routes, nothing sends."""
     import json as _json
     from datetime import datetime, timezone as _tz
 
     from app.clients.whatsapp_client import parse_webhook, valid_signature
+    from app.core.reply_policy import decide_reply, strip_for_speech
 
     router: JarvisRouter = request.app.state.router
-    if not router.settings.whatsapp_verify_token:
+    settings = router.settings
+    if not settings.whatsapp_verify_token:
         raise HTTPException(status_code=403, detail="nope")
     body = await request.body()
     if not valid_signature(
-        router.settings.whatsapp_app_secret, body,
+        settings.whatsapp_app_secret, body,
         request.headers.get("X-Hub-Signature-256", ""),
     ):
         raise HTTPException(status_code=403, detail="nope")
@@ -965,13 +983,46 @@ async def whatsapp_inbound(request: Request) -> dict:
         return {"ok": True, "ingested": 0}
     messages = parse_webhook(payload)
     now_iso = datetime.now(_tz.utc).isoformat(timespec="seconds")
+    owner_digits = "".join(c for c in settings.whatsapp_owner_number if c.isdigit())
+    handled = 0
     for m in messages:
-        await router.db.execute(
-            "INSERT INTO wa_direct_ingest (ts, wa_id, sender, company_tag, kind, message)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (now_iso, m.wa_id, m.name[:120], "", m.kind, m.text),
-        )
-    return {"ok": True, "ingested": len(messages)}
+        if not owner_digits:
+            # Owner not set yet — the original read-only ingest, unchanged.
+            await router.db.execute(
+                "INSERT INTO wa_direct_ingest (ts, wa_id, sender, company_tag, kind, message)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (now_iso, m.wa_id, m.name[:120], "", m.kind, m.text or f"[{m.kind}]"),
+            )
+            continue
+        if m.wa_id != owner_digits:
+            continue   # not Paul — silently ignored (Part 1's hard rule)
+        transcript, is_voice = m.text, False
+        if m.kind == "voice":
+            is_voice = True
+            transcript = ""
+            if m.media_id and router.whatsapp is not None:
+                try:
+                    audio, mime = await router.whatsapp.download_media(m.media_id)
+                    transcript = await router.deepgram.transcribe(audio, mime)
+                except Exception:
+                    logger.exception("WhatsApp voice transcription failed")
+        if not transcript:
+            continue
+        handled += 1
+        reply = await router.whatsapp_turn(transcript, is_voice=is_voice)
+        if not reply or router.whatsapp is None:
+            continue
+        channel, reply_text = decide_reply(reply, incoming_was_voice=is_voice)
+        sent = False
+        if channel == "voice" and router.elevenlabs is not None:
+            try:
+                audio_mp3 = await router.elevenlabs.synthesize(strip_for_speech(reply_text))
+                sent = await router.whatsapp.send_voice(m.wa_id, audio_mp3)
+            except Exception:
+                logger.exception("WhatsApp TTS failed — falling back to text")
+        if not sent:
+            await router.whatsapp.send_text(m.wa_id, reply_text)
+    return {"ok": True, "ingested": handled}
 
 
 @app.post("/webhook/apple-health")

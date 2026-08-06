@@ -83,6 +83,7 @@ class JarvisRouter:
         self.phone_channel = None        # PhoneChannel — Twilio calls (main.py wires it)
         self.meetings = None             # MeetingMaker — Zoom quick-start (main.py wires it)
         self.gcal = None                 # GoogleCalendar — live read+write (main.py wires it)
+        self.whatsapp = None             # WhatsAppClient — Part 1 1:1 chat (main.py wires it)
         self._speech_vocab: list[str] = []   # nova-3 keyterms, rebuilt hourly
         self._speech_vocab_ts: float = 0.0
 
@@ -984,6 +985,53 @@ class JarvisRouter:
             task.add_done_callback(self._sprint_tasks.discard)
         return reply
 
+    # --- WhatsApp, Part 1 (7 Aug) — another mouth on the same mind ---
+
+    async def whatsapp_turn(self, transcript: str, is_voice: bool = False) -> str:
+        """One turn from WhatsApp: same brain, memory, tools and history as
+        Telegram. Full reply quality — WhatsApp has no phone-call latency
+        pressure. Owner-only gating happens in the webhook handler (main.py),
+        before this is ever called."""
+        transcript = (transcript or "").strip()
+        if not transcript:
+            return ""
+        from app.core.power import PHONE_OFF_LINE, POWER_KEY
+
+        if await self.store.get(POWER_KEY, "") == "off":
+            return PHONE_OFF_LINE
+        stored = await self.store.get(OWNER_KEY)
+        chat_id = self.settings.telegram_owner_chat_id or (int(stored) if stored else 0)
+        kind = "voice" if is_voice else "text"
+        if self.private_track is not None and (
+            self.private_track.is_sos(transcript) or self.private_track.is_private_topic(transcript)
+        ):
+            await self.log.log(
+                "in", "[private exchange]", chat_id=chat_id, kind=kind,
+                channel="whatsapp", meta={"private": True},
+            )
+            return (
+                "That's ours, not the board's — take it to our private room on "
+                "Telegram and I'm right there with you."
+            )
+        await self.log.log("in", transcript, chat_id=chat_id, kind=kind, channel="whatsapp")
+        message = IncomingMessage(
+            chat_id=chat_id, message_id=0, from_name="Paul", text=transcript,
+        )
+        reply = (await self._brain_reply(transcript, message, phone=False)).strip()
+        reply = reply or "I lost my train of thought there — go again."
+        await self.log.log("out", reply, chat_id=chat_id, kind=kind, channel="whatsapp")
+        if self.memory is not None and self.living is not None:
+            import asyncio as _asyncio
+
+            task = _asyncio.create_task(
+                extract_and_file(
+                    self.claude, self.memory, self.living, transcript, source="whatsapp"
+                )
+            )
+            self._sprint_tasks.add(task)
+            task.add_done_callback(self._sprint_tasks.discard)
+        return reply
+
     # --- Milestone 2 helpers ---
 
     async def _recall(self, query: str) -> str:
@@ -1487,12 +1535,26 @@ class JarvisRouter:
                 else "- Apple Health webhook: not configured yet"
             ),
             (
-                "- WhatsApp (Jarvis's own second number, official API): READ-ONLY — "
-                "messages arriving there are ingested and summarised in digests / "
-                "'catch me up'. You NEVER send on WhatsApp in this phase; if Paul asks "
-                "you to reply there, say sending is a later phase he'll switch on."
-                if s.whatsapp_verify_token
-                else "- WhatsApp: not connected yet (planned: read-only on the second number)"
+                (
+                    "- WhatsApp (Jarvis's own number, official API): CONNECTED — Paul's "
+                    "messages (text + voice) reach you exactly like Telegram, same brain/"
+                    "memory/tools/history. "
+                    + (
+                        "Replies send back on WhatsApp too."
+                        if s.whatsapp_sending_enabled
+                        else "Replies still go out on Telegram only — sending is built but "
+                        "Paul hasn't flipped it on yet."
+                    )
+                )
+                if (s.whatsapp_verify_token and s.whatsapp_owner_number)
+                else (
+                    "- WhatsApp (Jarvis's own second number, official API): READ-ONLY — "
+                    "messages arriving there are ingested and summarised in digests / "
+                    "'catch me up'. You NEVER send on WhatsApp in this phase; if Paul asks "
+                    "you to reply there, say sending is a later phase he'll switch on."
+                    if s.whatsapp_verify_token
+                    else "- WhatsApp: not connected yet (planned: read-only on the second number)"
+                )
             ),
             "- WAKE & HYDRATE v2 (5 Aug): 'set wake 05:00' (or 'wake me at 5') locks a "
             "gospel wake time — at that time Jarvis CALLS Paul's phone, talks him "

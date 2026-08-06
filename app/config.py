@@ -101,6 +101,11 @@ class Settings(BaseSettings):
     whatsapp_access_token: str = ""      # Graph API token (send seam, unused in Phase 1)
     whatsapp_phone_number_id: str = ""   # the number's id on Meta (send seam)
     whatsapp_sending_enabled: bool = False
+    # Part 1 (7 Aug): Paul's OWN WhatsApp number (digits only, e.g. 447700900123).
+    # Jarvis's number receives messages from anyone; only this one routes to
+    # the brain and gets a reply — everyone else is silently ignored. Unset =
+    # the old Phase 1 read-only ingest behaviour holds (nothing routes, nothing sends).
+    whatsapp_owner_number: str = ""
 
     # --- Live voice (Build Slice: Voice Access) — rides on the ElevenLabs key ---
     # Phone-call surface: the Twilio number registered in ElevenLabs (its
