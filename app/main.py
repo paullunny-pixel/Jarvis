@@ -644,6 +644,18 @@ async def desktop_ping(secret: str, request: Request) -> dict:
     return {"ok": True, "service": "jarvis-desktop"}
 
 
+@app.get("/desktop/{secret}/dashboard")
+async def desktop_dashboard(secret: str, request: Request):
+    """The Mac app's Dashboard button (6 Aug: Paul shouldn't have to
+    remember the cockpit URL). Desktop secret in → redirect to the real
+    cockpit address; the cockpit's own password/session lock still applies."""
+    from fastapi.responses import RedirectResponse
+
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    return RedirectResponse(url=f"/cockpit/{router.settings.effective_cockpit_secret}")
+
+
 @app.post("/desktop/{secret}/message")
 async def desktop_message(secret: str, request: Request) -> dict:
     """A typed turn from the desktop app: JSON {"text": ...}."""

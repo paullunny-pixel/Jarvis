@@ -8,7 +8,9 @@
     "start": "electron .",
     "dev": "electron .",
     "fetch-model": "node scripts/fetch-model.js",
-    "postinstall": "node scripts/fetch-model.js"
+    "postinstall": "node scripts/fetch-model.js",
+    "autostart": "node scripts/autostart.js on",
+    "autostart-off": "node scripts/autostart.js off"
   },
   "devDependencies": {
     "electron": "^43.0.0"

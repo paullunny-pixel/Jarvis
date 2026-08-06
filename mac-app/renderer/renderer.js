@@ -6,7 +6,7 @@
 // The status dot always tells the truth.
 const fs = require("fs");
 const path = require("path");
-const { ipcRenderer } = require("electron");
+const { ipcRenderer, shell } = require("electron");
 const { OpenWakeWord } = require("../wakeword.js");
 
 const MODEL_DIR = path.join(__dirname, "..", "assets");
@@ -349,10 +349,25 @@ pinBtn.addEventListener("click", () => {
   ipcRenderer.send("set-always-on-top", pinned);
 });
 
+// The dashboard — one click, no URL to remember. The backend redirects
+// /desktop/{secret}/dashboard to the real cockpit address.
+function dashboardUrl() {
+  const { url, secret } = cfg();
+  return url && secret ? `${url}/desktop/${secret}/dashboard` : null;
+}
+
+document.getElementById("dashboard-btn").addEventListener("click", () => {
+  const target = dashboardUrl();
+  if (target) shell.openExternal(target);
+  else addMsg("system", "Connect first — open Settings (⚙️) and fill in the backend URL + secret.");
+});
+
 settingsBtn.addEventListener("click", () => {
   const c = cfg();
   cfgUrl.value = c.url;
   cfgSecret.value = c.secret;
+  document.getElementById("cfg-dash-boot").checked =
+    localStorage.getItem("jarvis_dash_boot") !== "off";
   cfgStatus.textContent = "";
   settingsPanel.classList.remove("hidden");
 });
@@ -364,6 +379,10 @@ document.getElementById("cfg-close").addEventListener("click", () => {
 document.getElementById("cfg-save").addEventListener("click", async () => {
   localStorage.setItem("jarvis_url", cfgUrl.value.trim().replace(/\/+$/, ""));
   localStorage.setItem("jarvis_secret", cfgSecret.value.trim());
+  localStorage.setItem(
+    "jarvis_dash_boot",
+    document.getElementById("cfg-dash-boot").checked ? "on" : "off"
+  );
   cfgStatus.textContent = "Checking connection…";
   try {
     await pingBackend();
@@ -389,6 +408,12 @@ document.getElementById("cfg-save").addEventListener("click", async () => {
   try {
     await pingBackend();
     addMsg("system", "Connected to Jarvis ✓");
+    // Dashboard on boot (Paul, 6 Aug: no URLs to remember, ever) —
+    // opt-out lives in Settings.
+    if (localStorage.getItem("jarvis_dash_boot") !== "off") {
+      const target = dashboardUrl();
+      if (target) shell.openExternal(target);
+    }
   } catch (err) {
     addMsg("system", describeError(err));
   }
