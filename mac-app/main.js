@@ -30,9 +30,9 @@ async function createWindow() {
   }
 
   win = new BrowserWindow({
-    width: 420,
-    height: 680,
-    minWidth: 340,
+    width: 760,           // 250px Card Script sidebar + the feed
+    height: 820,
+    minWidth: 640,
     minHeight: 480,
     title: "Jarvis",
     backgroundColor: "#0d1117",

@@ -79,6 +79,66 @@ function chime(freq = 880) {
   } catch (_) {}
 }
 
+// --- the Card Script panel (6 Aug brief) ---
+// A rendered view of Jarvis's ACTUAL card-parsing config, served by the
+// backend — nothing here is hard-coded, so a renamed Trello list shows up
+// on the next sync. Standalone component: needs only a container + data,
+// so the War Room can reuse it verbatim later.
+function renderCardScript(container, data, stale) {
+  const colours = data.colours || {};
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const sentence = (data.example_parts || [])
+    .map((p) => `<span style="color:${esc(colours[p.colour] || "#9db0c6")}${p.colour === "slate" ? ";font-weight:400" : ""}">${esc(p.text)}</span>`)
+    .join("");
+  const legend = (data.fields || [])
+    .map((f) => `
+      <div class="lrow" data-key="${esc(f.key)}">
+        <i class="sw" style="background:${esc(colours[f.colour] || "#4a5a70")}"></i>
+        <div class="lk">${esc(f.label)}</div>
+        <div class="lv">${esc(f.value)}</div>
+      </div>`)
+    .join("");
+  container.innerHTML = `
+    <div class="script${stale ? " stale" : ""}">
+      <div class="script-head"><span>📇</span><b>Card script</b><i>${stale ? "reconnecting…" : "always here"}</i></div>
+      <div class="script-body">
+        <div class="say">“${sentence}”</div>
+        <div class="legend">${legend}</div>
+        <div class="script-note">${esc(data.defaults_note || "")
+          .replace("Say nothing?", "<b>Say nothing?</b>")}</div>
+      </div>
+    </div>`;
+}
+
+const GRAMMAR_CACHE_KEY = "jarvis_card_grammar";
+const GRAMMAR_STALE_MS = 24 * 60 * 60 * 1000;
+
+async function loadCardScript() {
+  const container = document.getElementById("card-script");
+  if (!container) return;
+  let cached = null;
+  try { cached = JSON.parse(localStorage.getItem(GRAMMAR_CACHE_KEY) || "null"); } catch (_) {}
+  if (cached) {
+    renderCardScript(container, cached.data, Date.now() - cached.ts > GRAMMAR_STALE_MS);
+  }
+  try {
+    const data = await backendFetch("/card-grammar");
+    localStorage.setItem(GRAMMAR_CACHE_KEY, JSON.stringify({ ts: Date.now(), data }));
+    renderCardScript(container, data, false);
+  } catch (_) {
+    // Backend unreachable: the cached render above stands; if there was no
+    // cache at all the space stays empty rather than erroring (brief §7.3).
+  }
+}
+
+function setConnected(ok, text) {
+  const dot = document.getElementById("side-dot");
+  const label = document.getElementById("side-conn");
+  if (dot) dot.classList.toggle("ok", ok);
+  if (label) label.textContent = text;
+}
+
 // --- backend ---
 async function backendFetch(pathname, options = {}) {
   const { url, secret } = cfg();
@@ -388,9 +448,12 @@ document.getElementById("cfg-save").addEventListener("click", async () => {
     await pingBackend();
     cfgStatus.textContent = "Connected ✓";
     addMsg("system", "Connected to Jarvis ✓");
+    setConnected(true, "Connected · brain online");
+    loadCardScript();
     settingsPanel.classList.add("hidden");
   } catch (err) {
     cfgStatus.textContent = describeError(err);
+    setConnected(false, "Offline — check Settings");
   }
   await stopWakeWord();
   if (!muted) await startWakeWord();
@@ -408,6 +471,7 @@ document.getElementById("cfg-save").addEventListener("click", async () => {
   try {
     await pingBackend();
     addMsg("system", "Connected to Jarvis ✓");
+    setConnected(true, "Connected · brain online");
     // Dashboard on boot (Paul, 6 Aug: no URLs to remember, ever) —
     // opt-out lives in Settings.
     if (localStorage.getItem("jarvis_dash_boot") !== "off") {
@@ -416,6 +480,8 @@ document.getElementById("cfg-save").addEventListener("click", async () => {
     }
   } catch (err) {
     addMsg("system", describeError(err));
+    setConnected(false, "Offline — check Settings");
   }
+  loadCardScript();
   await startWakeWord();
 })();
