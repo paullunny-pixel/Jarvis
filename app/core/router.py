@@ -79,6 +79,7 @@ class JarvisRouter:
         self._sprint_tasks: set = set()  # strong refs to running buzzer timers
         self.web_transport = None        # httpx transport seam for link-fetch tests
         self.phone_channel = None        # PhoneChannel — Twilio calls (main.py wires it)
+        self.meetings = None             # MeetingMaker — Zoom quick-start (main.py wires it)
         self._speech_vocab: list[str] = []   # nova-3 keyterms, rebuilt hourly
         self._speech_vocab_ts: float = 0.0
 
@@ -1447,6 +1448,16 @@ class JarvisRouter:
                 else "- Live voice: not available (ElevenLabs key required)."
             ),
             (
+                "- Zoom meetings: CONNECTED — 'start a new Zoom meeting' creates one "
+                "instantly (join-before-host) and hands Paul both links; 'set up a "
+                "Zoom for tomorrow at 2' schedules one. The machinery answers those "
+                "phrases before you — if a Zoom request reaches you, tell Paul the "
+                "exact phrase. Notetaker/transcripts (Otter) come in Layer B."
+                if self.meetings is not None
+                else "- Zoom meetings: not connected yet (ZOOM_* keys pending in Render) — "
+                "never claim you can create one."
+            ),
+            (
                 "- Phone calls (Twilio): CONNECTED — 'call me' rings Paul's actual "
                 "phone in your voice; Paul calling the Twilio number reaches you; the "
                 "wake-up sequence can escalate to a real call. Turn-based on the line: "
@@ -1516,6 +1527,10 @@ class JarvisRouter:
                 "🏃 Run reminders: OFF (your call, 6 Aug — blood pressure first). "
                 "Runs still log if you do one; nothing chases."
             )
+        if self.meetings is not None:
+            lines.append("🎥 Zoom: connected — 'start a new Zoom meeting' any time")
+        else:
+            lines.append("🎥 Zoom: not wired — ZOOM_ACCOUNT_ID / ZOOM_CLIENT_ID / ZOOM_CLIENT_SECRET needed in Render")
         if self.daily12 is not None:
             health = await self.daily12.health()
             if health["ok"]:
@@ -1659,6 +1674,38 @@ class JarvisRouter:
                 await self.log.log("out", reply, chat_id=message.chat_id)
                 await self.telegram.send_text(message.chat_id, reply)
                 return True
+
+        # Zoom quick-start (Layer A, 6 Aug): 'start a new Zoom meeting' — one
+        # line replaces the whole phone faff. 'Set up a Zoom for tomorrow at
+        # 2' schedules one. Both links land here on Telegram; a Brain Dump
+        # card holds them as backup. Keys missing = an honest line, never a
+        # silent shrug.
+        from app.meetings import mentions_zoom
+
+        if mentions_zoom(transcript):
+            if self.meetings is None:
+                reply = (
+                    "Zoom's not wired up yet, sir — three keys need to land in "
+                    "Render first (ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID, "
+                    "ZOOM_CLIENT_SECRET from a Server-to-Server OAuth app on "
+                    "your Zoom account). Say the word and the engineer sorts it."
+                )
+            else:
+                tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
+                try:
+                    reply = await self.meetings.quick_start(
+                        transcript, datetime.now(ZoneInfo(tz_name)), tz_name
+                    )
+                except Exception:
+                    logger.exception("Zoom quick-start failed")
+                    reply = (
+                        "Zoom refused that one — the meeting did NOT get created. "
+                        "Worth checking the Zoom keys in Render; say it again and "
+                        "I'll have another go."
+                    )
+            await self.log.log("out", reply, chat_id=message.chat_id, meta={"zoom": True})
+            await self.telegram.send_text(message.chat_id, reply)
+            return True
 
         # 'Call me' → a real phone call on the Twilio channel (4 Aug). Short
         # messages only, so 'call me when the invoices land' stays conversation.
