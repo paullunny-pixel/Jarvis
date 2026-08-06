@@ -196,6 +196,23 @@ TABLES: list[str] = [
         undo TEXT NOT NULL DEFAULT '{{}}'
     )
     """,
+    # --- Brazil Portuguese course (7 Aug): every phrase Paul is learning,
+    # with its drill history — the spaced-repetition memory. passes counts
+    # attempts scored ≥ the pass mark; mastery = min(passes,3)/3.
+    """
+    CREATE TABLE IF NOT EXISTS pt_phrases (
+        id {pk},
+        text TEXT NOT NULL UNIQUE,
+        gloss TEXT NOT NULL DEFAULT '',
+        kind TEXT NOT NULL DEFAULT 'survival',
+        position INTEGER NOT NULL DEFAULT 0,
+        introduced INTEGER NOT NULL DEFAULT 0,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        passes INTEGER NOT NULL DEFAULT 0,
+        last_score INTEGER,
+        last_seen TEXT
+    )
+    """,
     # --- Master Update: wake-up, sleep, hourly rhythm, med adherence ---
     """
     CREATE TABLE IF NOT EXISTS wake_log (

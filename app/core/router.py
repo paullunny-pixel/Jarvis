@@ -24,6 +24,7 @@ from app.daily12.service import Daily12Service
 from app.documents.service import DocumentLibrary, looks_like_document_request
 from app.heartbeat.gates import GateKeeper, med_items_mentioned, mentions_meds
 from app.heartbeat.streaks import STREAK_LABELS, Streaks, detect_activities, looks_negated
+from app.lessons.portuguese import PASS_MARK, PortugueseCoach
 from app.mail import commands as mail_commands
 from app.mail.service import MailService
 from app.memory.store import LivingFacts, MemoryStore
@@ -76,6 +77,7 @@ class JarvisRouter:
         self.log = MessageLog(db)
         self.store = SettingsStore(db)
         self.streaks = Streaks(db)
+        self.pt = PortugueseCoach(db)    # Brazil Portuguese course (7 Aug)
         self._sprint_tasks: set = set()  # strong refs to running buzzer timers
         self.web_transport = None        # httpx transport seam for link-fetch tests
         self.phone_channel = None        # PhoneChannel — Twilio calls (main.py wires it)
@@ -403,12 +405,20 @@ class JarvisRouter:
             await self._handle_photo(message)
             return
 
-        # 1. Get the words (transcribe voice notes).
+        # 1. Get the words (transcribe voice notes). Mid-lesson (Brazil
+        # course, 7 Aug) the note is Paul ATTEMPTING PORTUGUESE — nova-3's
+        # multilingual mode hears pt-BR and English asides alike; the
+        # English keyterm list would only drag his attempts toward nonsense.
         if message.is_voice:
             audio = await self.telegram.download_file(message.voice_file_id)
-            transcript = await self.deepgram.transcribe(
-                audio, "audio/ogg", keyterms=await self._speech_vocabulary()
-            )
+            if await self.pt.active() is not None:
+                transcript = await self.deepgram.transcribe(
+                    audio, "audio/ogg", language="multi"
+                )
+            else:
+                transcript = await self.deepgram.transcribe(
+                    audio, "audio/ogg", keyterms=await self._speech_vocabulary()
+                )
             if not transcript:
                 await self.log.log(
                     "in", "", chat_id=message.chat_id, kind="voice",
@@ -527,6 +537,13 @@ class JarvisRouter:
 
         # 2a. Life signals: streaks, hound mode, timezone (Milestone 4).
         if await self._handle_life_signals(message, transcript):
+            return
+
+        # 2a-pt. THE BRAZIL COURSE (7 Aug, ⏳ 28 Aug): 'portuguese lesson'
+        # opens a voice-led drill; while one is live EVERY message belongs
+        # to it — an attempt, or 'that's enough' — so attempts can never
+        # leak into intake, email talk or the brain as instructions.
+        if await self._handle_portuguese(message, transcript):
             return
 
         # 2a-intake. Phase 3 (§2): A PENDING CONFIRMATION OUTRANKS EVERYTHING
@@ -1601,6 +1618,16 @@ class JarvisRouter:
                 "🏃 Run reminders: OFF (your call, 6 Aug — blood pressure first). "
                 "Runs still log if you do one; nothing chases."
             )
+        try:
+            pt_ready = await self.pt.readiness(await self._pt_today())
+            if pt_ready["days_left"] > 0:
+                lines.append(
+                    f"🇧🇷 Brazil course: {pt_ready['days_left']} days to go — speech "
+                    f"{pt_ready['speech_pct']}% · survival {pt_ready['survival_pct']}%"
+                    " ('portuguese lesson' to drill)"
+                )
+        except Exception:
+            logger.exception("Portuguese status line failed")
         if self.meetings is not None:
             lines.append("🎥 Zoom: connected — 'start a new Zoom meeting' any time")
         else:
@@ -1716,6 +1743,158 @@ class JarvisRouter:
         report = "\n".join(lines)
         await self.log.log("out", report, chat_id=message.chat_id, meta={"status_check": True})
         await self.telegram.send_text(message.chat_id, report)
+
+    # --- Brazil Portuguese course (7 Aug brief, ⏳ 28 Aug) ---
+
+    import re as _pt_re
+
+    PT_START_RE = _pt_re.compile(
+        r"\b(?:portuguese|portugu[eê]s|brazilian)\b[\s\S]{0,30}"
+        r"\b(?:lesson|practi[cs]e|drill|course|time)\b"
+        r"|\b(?:lesson|practi[cs]e|drill)\b[\s\S]{0,30}\b(?:portuguese|portugu[eê]s)\b"
+        r"|\blet'?s\s+(?:do|speak|practi[cs]e)\s+(?:some\s+|my\s+)?portugu",
+        _pt_re.IGNORECASE,
+    )
+    # Mid-lesson escape words. 'Chega' is Portuguese for 'enough' — if Paul
+    # says it he's earned the exit.
+    PT_STOP_RE = _pt_re.compile(
+        r"\b(?:stop|pause|enough|chega)\b|\bend (?:the |this )?lesson\b"
+        r"|\bthat'?s (?:it|enough|all)\b|\bdone for (?:now|today)\b",
+        _pt_re.IGNORECASE,
+    )
+    del _pt_re
+
+    async def _pt_today(self):
+        tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = ZoneInfo("Europe/London")
+        return datetime.now(tz).date()
+
+    async def _speak_pt(self, chat_id: int, line: str) -> None:
+        """Model the line aloud — the multilingual voice reads Portuguese
+        text with a Brazilian delivery. TTS failure degrades to the text
+        that's already been sent; the lesson never stalls."""
+        if self.elevenlabs is None:
+            return
+        try:
+            audio = await self.elevenlabs.synthesize(line)
+            await self.telegram.send_voice(chat_id, audio, transcript=line)
+        except Exception:
+            logger.exception("Portuguese TTS failed — the text carries the line")
+
+    @staticmethod
+    def _pt_turn_text(turn: dict) -> str:
+        tag = "🆕 new one — " if turn.get("is_new") else ""
+        track = "The speech" if turn.get("kind") == "speech" else "Survival"
+        return (
+            f"{tag}{track} · {turn['number']} of {turn['total']}:\n"
+            f"“{turn['line']}”\n({turn['gloss']})\n\nSay it back to me."
+        )
+
+    async def _pt_coach_line(self, result: dict) -> str:
+        """The warm human feedback on top of the deterministic score — brain
+        written, with an honest canned line if the model call fails."""
+        try:
+            line = await self.claude.quick(
+                "Paul is drilling BRAZILIAN Portuguese aloud (he's dyslexic — never "
+                "mention spelling; everything is spoken).\n"
+                f"Target line: {result['target']}\nMeaning: {result['gloss']}\n"
+                f"Speech-to-text heard his attempt as: {result['heard'] or '(nothing)'}\n"
+                f"Similarity score {result['score']}/100 — "
+                f"{'a pass' if result['passed'] else 'needs one more go'}.\n"
+                "As Jarvis — a sharp, warm friend — reply in ONE or TWO short spoken "
+                "sentences: how it landed, and if a word drifted name it with a simple "
+                "sound-alike hint (e.g. bênção ≈ 'BEN-sow'). Warm, specific, never "
+                "scolding, no lists, no preamble.",
+                max_tokens=150,
+            )
+            if line.strip():
+                return line.strip()
+        except Exception:
+            logger.exception("Coaching line failed — canned encouragement instead")
+        score = result["score"]
+        if score >= 90:
+            return "Practically carioca — beautiful."
+        if score >= PASS_MARK:
+            return "That lands — he'd understand you perfectly."
+        if score >= 40:
+            return "Close — a couple of words drifted. Listen once more, then again."
+        return "That didn't come through as the line — listen again, one more go."
+
+    async def _pt_finish_text(self, summary: dict, today) -> str:
+        if summary.get("counts_for_streak") and not await self.streaks.done_today(
+            "portuguese", today
+        ):
+            await self.streaks.record("portuguese", today)
+        ready = summary["readiness"]
+        steph = summary["steph_phrase"]
+        lines = [
+            f"🇧🇷 Lesson done — {summary['attempts']} attempts, "
+            f"averaging {summary['avg_score']}/100. Portuguese logged for today.",
+            f"Readiness: speech {ready['speech_pct']}% · survival "
+            f"{ready['survival_pct']}% · {ready['days_left']} days to Brazil.",
+            f"Try this on Steph today: “{steph['text']}” ({steph['gloss']}) — "
+            "tell me how it lands.",
+        ]
+        return "\n".join(lines)
+
+    async def _handle_portuguese(self, message: IncomingMessage, transcript: str) -> bool:
+        state = await self.pt.active()
+        today = None
+
+        if state is None:
+            if not self.PT_START_RE.search(transcript):
+                return False
+            today = await self._pt_today()
+            turn = await self.pt.start_lesson(today)
+            ready = await self.pt.readiness(today)
+            reply = (
+                f"🇧🇷 Right — {ready['days_left']} days to Brazil, let's work. "
+                "Voice notes only from here; say 'that's enough' to stop.\n\n"
+                + self._pt_turn_text(turn)
+            )
+            await self.log.log("out", reply, chat_id=message.chat_id, meta={"pt": True})
+            await self.telegram.send_text(message.chat_id, reply)
+            await self._speak_pt(message.chat_id, turn["line"])
+            return True
+
+        today = await self._pt_today()
+
+        if self.PT_STOP_RE.search(transcript):
+            summary = await self.pt.end_lesson(today)
+            if summary is None:
+                return False
+            if summary["attempts"] == 0:
+                reply = "🇧🇷 Fair enough — lesson parked, nothing lost. Say 'portuguese lesson' when you're ready."
+            else:
+                reply = await self._pt_finish_text(summary, today)
+            await self.log.log("out", reply, chat_id=message.chat_id, meta={"pt": True})
+            await self.telegram.send_text(message.chat_id, reply)
+            return True
+
+        result = await self.pt.attempt(today, transcript)
+        if result.get("error"):
+            return False
+        coach = await self._pt_coach_line(result)
+        parts = [f"{result['score']}/100 — {coach}"]
+        speak_line = None
+        if result["done"]:
+            parts.append("")
+            parts.append(await self._pt_finish_text(result["summary"], today))
+        elif result.get("retry"):
+            parts.append(f"\nOnce more:\n“{result['target']}”")
+            speak_line = result["target"]
+        elif result.get("next"):
+            parts.append("\n" + self._pt_turn_text(result["next"]))
+            speak_line = result["next"]["line"]
+        reply = "\n".join(parts)
+        await self.log.log("out", reply, chat_id=message.chat_id, meta={"pt": True})
+        await self.telegram.send_text(message.chat_id, reply)
+        if speak_line:
+            await self._speak_pt(message.chat_id, speak_line)
+        return True
 
     # --- Milestone 4: life signals ---
 
