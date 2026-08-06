@@ -6,25 +6,40 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <header>
-    <div id="status-dot" class="dot idle"></div>
-    <div id="status-text">Starting…</div>
-    <div class="header-actions">
-      <button id="dashboard-btn" title="Open the dashboard">🖥</button>
-      <button id="pin-btn" title="Keep on top">📌</button>
-      <button id="mute-btn" title="Mute the wake word">🎙</button>
-      <button id="settings-btn" title="Settings">⚙️</button>
+  <div id="shell">
+    <!-- sidebar (v3 hub, first slice): nav that exists + the Card Script panel -->
+    <aside class="sidebar">
+      <div class="side-label">Jarvis</div>
+      <div class="nav on"><span class="ic">💬</span> Live feed</div>
+      <div class="side-label">Reference</div>
+      <div id="card-script"></div>
+      <div class="side-foot">
+        <div class="conn"><span class="dot-mini" id="side-dot"></span> <span id="side-conn">Connecting…</span></div>
+      </div>
+    </aside>
+
+    <div id="main-col">
+      <header>
+        <div id="status-dot" class="dot idle"></div>
+        <div id="status-text">Starting…</div>
+        <div class="header-actions">
+          <button id="dashboard-btn" title="Open the dashboard">🖥</button>
+          <button id="pin-btn" title="Keep on top">📌</button>
+          <button id="mute-btn" title="Mute the wake word">🎙</button>
+          <button id="settings-btn" title="Settings">⚙️</button>
+        </div>
+      </header>
+
+      <main id="feed"></main>
+
+      <footer>
+        <button id="talk-btn" class="talk">Start conversation</button>
+        <form id="type-form">
+          <input id="type-input" type="text" placeholder="Or type to Jarvis…" autocomplete="off" />
+        </form>
+      </footer>
     </div>
-  </header>
-
-  <main id="feed"></main>
-
-  <footer>
-    <button id="talk-btn" class="talk">Start conversation</button>
-    <form id="type-form">
-      <input id="type-input" type="text" placeholder="Or type to Jarvis…" autocomplete="off" />
-    </form>
-  </footer>
+  </div>
 
   <div id="settings-panel" class="hidden">
     <h2>Settings</h2>

@@ -7,8 +7,11 @@ from zoneinfo import ZoneInfo
 from app.heartbeat.health_import import flatten_export
 
 # Endpoint tests run against the real clock — dates must roll with it
-# (hardcoded 2026-08-05 broke the suite at midnight, 6 Aug).
-NOW = datetime.now(ZoneInfo("Asia/Dubai")).replace(hour=11, minute=0)
+# (hardcoded 2026-08-05 broke the suite at midnight, 6 Aug). And they must
+# roll in the ENDPOINT'S timezone: between 21:00 London and midnight, Dubai
+# is already tomorrow, and a Dubai-dated payload missed the server's 'today'
+# (20:49 UTC, 6 Aug — the second midnight bug of the day).
+NOW = datetime.now(ZoneInfo("Europe/London")).replace(hour=11, minute=0)
 TODAY = NOW.date().isoformat()
 YESTERDAY = (NOW - timedelta(days=1)).date().isoformat()
 

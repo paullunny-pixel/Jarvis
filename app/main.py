@@ -768,6 +768,18 @@ async def google_callback(request: Request):
     )
 
 
+@app.get("/desktop/{secret}/card-grammar")
+async def desktop_card_grammar(secret: str, request: Request) -> dict:
+    """The Card Script panel's data (6 Aug brief): the dictation grammar,
+    rendered from the SAME live Trello config the parser resolves against."""
+    from app.daily12.grammar import card_grammar
+
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    factory = getattr(router.heartbeat, "_chase_layer", None) if router.heartbeat else None
+    return await card_grammar(factory)
+
+
 @app.get("/desktop/{secret}/calendar")
 async def desktop_calendar(secret: str, request: Request) -> dict:
     """next_up / today / week for every thin surface (Mac app, cockpit)."""
