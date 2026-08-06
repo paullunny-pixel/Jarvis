@@ -117,8 +117,9 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
         living=living,
     )
 
-    # The non-skippable gates (run + meds block the day until confirmed).
-    gates = GateKeeper(db, Streaks(db))
+    # The gates (chase, never block). Run reminders honour Paul's 6 Aug call:
+    # off until RUN_REMINDERS_ENABLED=true (blood pressure first).
+    gates = GateKeeper(db, Streaks(db), run_reminders=settings.run_reminders_enabled)
 
     # Email inboxes (Phase 2) — activate per configured account.
     mail = None

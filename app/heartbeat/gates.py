@@ -43,21 +43,29 @@ def med_items_mentioned(text: str) -> list[str]:
 
 
 class GateKeeper:
-    def __init__(self, db: Database, streaks: Streaks) -> None:
+    def __init__(self, db: Database, streaks: Streaks, run_reminders: bool = True) -> None:
         self._db = db
         self._store = SettingsStore(db)
         self._streaks = streaks
+        self._run_reminders = run_reminders
 
     async def config(self) -> list[dict]:
         raw = await self._store.get("gates_config")
+        gates = None
         if raw:
             try:
-                gates = json.loads(raw)
-                if isinstance(gates, list) and gates:
-                    return gates
+                parsed = json.loads(raw)
+                if isinstance(parsed, list) and parsed:
+                    gates = parsed
             except ValueError:
                 pass
-        return DEFAULT_GATES
+        if gates is None:
+            gates = list(DEFAULT_GATES)
+        if not self._run_reminders:
+            # Paul, 6 Aug: run reminders cancelled (blood pressure first) —
+            # the run gate leaves the chase entirely; meds carry on.
+            gates = [g for g in gates if g.get("id") != "run"]
+        return gates
 
     async def confirm(self, gate_id: str, today: date) -> None:
         await self._store.set(f"gate:{gate_id}:{today.isoformat()}", utc_now_iso())

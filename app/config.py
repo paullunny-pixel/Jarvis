@@ -126,6 +126,12 @@ class Settings(BaseSettings):
     # BEDTIME_ENABLED=true when he wants the 22:30 rule back.
     bedtime_enabled: bool = False
 
+    # Run reminders OFF (Paul, 6 Aug: 'cancel the reminder for the run — I
+    # have high blood pressure and need to work on that first'). Runs still
+    # LOG if he does one; nothing chases, calls or guilts. Machinery stays
+    # built — flip RUN_REMINDERS_ENABLED=true when he's ready.
+    run_reminders_enabled: bool = False
+
     # --- Chase engine (Phase 2, 5 Aug) ---
     # DORMANT until Paul switches it on (CHASE_ENABLED=true): built and
     # tested, but the tick never fires — his call, 5 Aug eve.

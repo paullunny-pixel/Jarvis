@@ -303,6 +303,8 @@ class HeartbeatJobs:
         return bool(await self.wake2.active_phase())
 
     async def run_protect(self, now: datetime | None = None) -> None:
+        if not self.settings.run_reminders_enabled:
+            return  # Paul, 6 Aug: run reminders cancelled — BP comes first
         now = now or datetime.now(await self._tz())
         today = now.date()
         if await self.streaks.done_today("run", today):
@@ -1116,6 +1118,12 @@ class HeartbeatJobs:
                 "Owed today (machinery chases these, you don't): "
                 + (", ".join(g["label"] for g in outstanding) if outstanding
                    else "nothing — settled or excused")
+            )
+        if not self.settings.run_reminders_enabled:
+            rhythm.append(
+                "RUN REMINDERS ARE OFF (Paul's instruction, 6 Aug — blood "
+                "pressure comes first): never prompt, nudge or guilt about "
+                "running. If he runs, celebrate it; never suggest it."
             )
         if rhythm:
             parts.append("RHYTHM: " + " ".join(rhythm))

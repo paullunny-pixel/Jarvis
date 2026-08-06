@@ -632,6 +632,12 @@ class JarvisRouter:
             "location as X' changes timezone. If the conversation says he's "
             "somewhere else, tell him that command — never claim the clocks moved."
         ]
+        if not self.settings.run_reminders_enabled:
+            rhythm_lines.append(
+                "RUN REMINDERS ARE OFF (Paul's call, 6 Aug — blood pressure comes "
+                "first): never prompt, nudge or guilt about running. If he reports "
+                "a run, celebrate it; never suggest one."
+            )
         if await self.store.get("quiet_day", "") == now_local.date().isoformat():
             rhythm_lines.append(
                 "QUIET DAY ACTIVE: Paul silenced today's proactive nudges. Honour the "
@@ -1505,6 +1511,11 @@ class JarvisRouter:
         except Exception:
             logger.exception("Wake status line failed")
             lines.append("⏰ Wake-up: state unreadable just now — logs have why")
+        if not s.run_reminders_enabled:
+            lines.append(
+                "🏃 Run reminders: OFF (your call, 6 Aug — blood pressure first). "
+                "Runs still log if you do one; nothing chases."
+            )
         if self.daily12 is not None:
             health = await self.daily12.health()
             if health["ok"]:
