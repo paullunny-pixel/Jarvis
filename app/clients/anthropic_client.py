@@ -77,6 +77,39 @@ class ClaudeClient:
             block.get("text", "") for block in data.get("content", []) if block.get("type") == "text"
         ).strip()
 
+    @staticmethod
+    def _raw_text(data: dict[str, Any]) -> str:
+        # Unstripped — continuation pieces must join exactly where they broke.
+        return "".join(
+            block.get("text", "") for block in data.get("content", []) if block.get("type") == "text"
+        )
+
+    async def _finish_cut_reply(
+        self, payload: dict[str, Any], data: dict[str, Any], timeout: float | None
+    ) -> str:
+        """A reply must never end mid-sentence (6 Aug: a long health answer to
+        Paul died at 'Worth noting: 5.5 hours' sleep,' — the token budget ran
+        out and the truncated text shipped as-is). When the model stops on
+        max_tokens, prefill the partial back and let it finish — up to twice,
+        so a runaway can't loop forever."""
+        text = self._raw_text(data)
+        continuations = 2
+        while data.get("stop_reason") == "max_tokens" and continuations > 0 and text.strip():
+            continuations -= 1
+            cont = dict(payload)
+            # Prefilled assistant turns may not end in whitespace (API rule).
+            prefill = text.rstrip()
+            cont["messages"] = list(payload["messages"]) + [{"role": "assistant", "content": prefill}]
+            data = await self._call(cont, timeout=timeout)
+            piece = self._raw_text(data)
+            if len(prefill) < len(text):
+                # The cut fell between words — put the one space back (and only
+                # one, however the continuation chooses to start).
+                text = prefill + " " + piece.lstrip()
+            else:
+                text = prefill + piece   # cut mid-word: join exactly
+        return text.strip()
+
     async def converse(
         self,
         system: str,
@@ -86,16 +119,14 @@ class ClaudeClient:
         model: str | None = None,      # latency-sensitive surfaces (phone) override the brain
     ) -> str:
         """Full-quality Jarvis reply (brain model)."""
-        data = await self._call(
-            {
-                "model": model or self.brain_model,
-                "max_tokens": max_tokens,
-                "system": system,
-                "messages": messages,
-            },
-            timeout=timeout,
-        )
-        return self._text_of(data)
+        payload = {
+            "model": model or self.brain_model,
+            "max_tokens": max_tokens,
+            "system": system,
+            "messages": messages,
+        }
+        data = await self._call(payload, timeout=timeout)
+        return await self._finish_cut_reply(payload, data, timeout)
 
     async def converse_with_tools(
         self,
@@ -115,20 +146,18 @@ class ClaudeClient:
         convo = list(messages)
         text = ""
         for _ in range(max_rounds):
-            data = await self._call(
-                {
-                    "model": model or self.brain_model,
-                    "max_tokens": max_tokens,
-                    "system": system,
-                    "messages": convo,
-                    "tools": tools,
-                },
-                timeout=timeout,
-            )
+            payload = {
+                "model": model or self.brain_model,
+                "max_tokens": max_tokens,
+                "system": system,
+                "messages": convo,
+                "tools": tools,
+            }
+            data = await self._call(payload, timeout=timeout)
             text = self._text_of(data)
             tool_uses = [b for b in data.get("content", []) if b.get("type") == "tool_use"]
             if not tool_uses:
-                return text
+                return await self._finish_cut_reply(payload, data, timeout)
             convo.append({"role": "assistant", "content": data["content"]})
             results = []
             for use in tool_uses:
