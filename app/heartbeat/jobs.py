@@ -215,6 +215,20 @@ class HeartbeatJobs:
                 logger.exception("ICS calendar read failed")
         return []
 
+    def calendar_feed(self):
+        """The cockpit's calendar source — the SAME live-Google-first,
+        ICS-fallback read the briefs and the mind use, so no surface can go
+        stale on its own wiring (7 Aug backlog step 4)."""
+        if self.gcal is None and self.calendar is None:
+            return None
+        jobs = self
+
+        class _Feed:
+            async def events_for(self, day, tz):
+                return await jobs._calendar_events(day, tz)
+
+        return _Feed()
+
     async def powered_off(self) -> bool:
         """The master switch (6 Aug): 'Jarvis off' means OFF — every job and
         every send, essential or not, stops until 'Jarvis on'."""

@@ -239,6 +239,86 @@ class TestCockpit(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["sobriety"]["days"], (date.today() - date(2026, 7, 1)).days)
 
 
+class TestCalendarFeed(unittest.IsolatedAsyncioTestCase):
+    """Backlog step 4 (7 Aug): the cockpit timeline rides the heartbeat's
+    live-Google-first calendar read — never its own second wiring that can
+    go stale while every other surface moved on."""
+
+    async def asyncSetUp(self):
+        import httpx
+
+        from app.clients.anthropic_client import ClaudeClient
+        from app.clients.telegram_client import TelegramClient
+        from app.heartbeat.jobs import HeartbeatJobs
+
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = SqliteDatabase(os.path.join(self._dir.name, "t.db"))
+        await self.db.init()
+        ok = httpx.MockTransport(lambda r: httpx.Response(200, json={"ok": True}))
+        self.jobs = HeartbeatJobs(
+            settings=Settings(telegram_owner_chat_id=111, _env_file=None),
+            db=self.db,
+            telegram=TelegramClient("TOK", transport=ok),
+            claude=ClaudeClient("K", transport=ok),
+        )
+        self.today = datetime.now(ZoneInfo("Europe/London")).date()
+        self.tz = ZoneInfo("Europe/London")
+
+    async def asyncTearDown(self):
+        await self.db.close()
+        self._dir.cleanup()
+
+    async def test_no_calendar_at_all_means_no_feed(self):
+        self.assertIsNone(self.jobs.calendar_feed())
+
+    async def test_feed_prefers_live_google(self):
+        class FakeGcal:
+            async def authorised(self):
+                return True
+
+            async def events_for(self, day, tz):
+                return [{"time": "14:00", "title": "BMI call", "all_day": False}]
+
+        class FakeIcs:
+            async def events_for(self, day, tz):
+                return [{"time": "09:00", "title": "stale ICS event", "all_day": False}]
+
+        self.jobs.gcal = FakeGcal()
+        self.jobs.calendar = FakeIcs()
+        events = await self.jobs.calendar_feed().events_for(self.today, self.tz)
+        self.assertEqual([e["title"] for e in events], ["BMI call"])
+
+    async def test_feed_falls_back_to_ics_when_google_unauthorised(self):
+        class DeadGcal:
+            async def authorised(self):
+                return False
+
+        class FakeIcs:
+            async def events_for(self, day, tz):
+                return [{"time": "09:00", "title": "ICS fallback", "all_day": False}]
+
+        self.jobs.gcal = DeadGcal()
+        self.jobs.calendar = FakeIcs()
+        events = await self.jobs.calendar_feed().events_for(self.today, self.tz)
+        self.assertEqual([e["title"] for e in events], ["ICS fallback"])
+
+    async def test_feed_lands_in_the_cockpit_timeline(self):
+        class FakeGcal:
+            async def authorised(self):
+                return True
+
+            async def events_for(self, day, tz):
+                return [{"time": "14:00", "title": "Zoom with Harry", "all_day": False}]
+
+        self.jobs.gcal = FakeGcal()
+        service = CockpitService(
+            self.db, living=LivingFacts(self.db), calendar=self.jobs.calendar_feed()
+        )
+        data = await service.gather()
+        titles = [s["title"] for s in data["today"]]
+        self.assertIn("Zoom with Harry", titles)
+
+
 class TestPage(unittest.TestCase):
     def test_render_injects_data_url_and_design(self):
         html = render_page("/cockpit/abc123/data")
