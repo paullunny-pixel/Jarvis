@@ -15,7 +15,7 @@ import hmac
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request, WebSocket
 
 from app.clients.anthropic_client import ClaudeClient
 from app.clients.deepgram_client import DeepgramClient
@@ -208,6 +208,11 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
     router_obj.phone_channel = phone_channel
     if phone_channel is not None:
         phone_channel.brain = router_obj.phone_turn
+        # Realtime upgrade (7 Aug): with the live engine up, inbound calls
+        # stream to the agent (interruptible); Gather stays the fallback.
+        phone_channel.realtime_available = (
+            voice_engine is not None and settings.phone_realtime_enabled
+        )
     # Google Calendar live read+write (6 Aug slice): needs only the OAuth
     # client keys — Paul authorises via the connect link; ICS stays fallback.
     if settings.google_oauth_client_id and settings.google_oauth_client_secret:
@@ -573,6 +578,7 @@ async def twilio_answer(secret: str, request: Request):
         )
         return Response(content=error_twiml(SIGNATURE_ERROR_LINE), media_type="text/xml")
     params["g"] = request.query_params.get("g", "")
+    params["fallback"] = request.query_params.get("fallback", "")
     try:
         twiml = await phone.handle_answer(params)
     except Exception:
@@ -619,6 +625,49 @@ async def twilio_audio(secret: str, audio_id: str, request: Request):
     if data is None:
         raise HTTPException(status_code=404)
     return Response(content=data, media_type="audio/mpeg")
+
+
+@app.websocket("/twilio/media/{secret}")
+async def twilio_media(websocket: WebSocket, secret: str):
+    """The realtime call (7 Aug): Twilio's Media Stream lands here and gets
+    bridged to the live ElevenLabs agent. Closing early (bad secret, engine
+    down, agent unreachable) makes Twilio run the <Redirect> fallback in the
+    answer TwiML — the caller drops to the turn-based flow, never dead air."""
+    from app.voice.media_bridge import MediaBridge
+
+    router: JarvisRouter = websocket.app.state.router
+    phone = getattr(router, "phone_channel", None)
+    engine = getattr(router, "voice_engine", None)
+    if phone is None or not hmac.compare_digest(
+        secret, router.settings.effective_phone_secret
+    ):
+        await websocket.close(code=4403)
+        return
+    await websocket.accept()
+    try:
+        if phone.eleven_connect is not None:
+            eleven = await phone.eleven_connect()
+        else:
+            if engine is None:
+                await websocket.close()
+                return
+            import websockets as _ws
+
+            url = await engine.signed_session_url("assistant")
+            eleven = await _ws.connect(url, max_size=2 ** 22)
+    except Exception:
+        logger.exception("Agent socket failed — closing so the Gather fallback runs")
+        await websocket.close()
+        return
+    try:
+        await MediaBridge(websocket, eleven).run()
+    except Exception:
+        logger.exception("Media bridge ended with an error")
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 # --- The Mac desktop app (6 Aug): 'Hey Jarvis' on Paul's desk. The app

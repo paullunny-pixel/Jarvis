@@ -1551,8 +1551,14 @@ class JarvisRouter:
             (
                 "- Phone calls (Twilio): CONNECTED — 'call me' rings Paul's actual "
                 "phone in your voice; Paul calling the Twilio number reaches you; the "
-                "wake-up sequence can escalate to a real call. Turn-based on the line: "
-                "he speaks, you answer. TIMED CALLS: 'call me in 40 minutes and "
+                "wake-up sequence can escalate to a real call. "
+                + (
+                    "Inbound calls run REALTIME — live and interruptible, Paul can "
+                    "talk over the top; outbound and wake calls stay turn-based. "
+                    if getattr(self.phone_channel, "realtime_available", False)
+                    else "Turn-based on the line: he speaks, you answer. "
+                )
+                + "TIMED CALLS: 'call me in 40 minutes and "
                 "remind me to X' — use your schedule_call tool; the machinery rings "
                 "him on the minute."
                 if (self.phone_channel is not None and self.phone_channel.configured)
