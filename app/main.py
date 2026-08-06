@@ -208,6 +208,19 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
     router_obj.phone_channel = phone_channel
     if phone_channel is not None:
         phone_channel.brain = router_obj.phone_turn
+    # Google Calendar live read+write (6 Aug slice): needs only the OAuth
+    # client keys — Paul authorises via the connect link; ICS stays fallback.
+    if settings.google_oauth_client_id and settings.google_oauth_client_secret:
+        from app.clients.gcal_client import GoogleCalendarClient
+        from app.heartbeat.gcalendar import GoogleCalendar
+
+        router_obj.gcal = GoogleCalendar(
+            GoogleCalendarClient(
+                settings.google_oauth_client_id, settings.google_oauth_client_secret
+            ),
+            db, SettingsStore(db),
+        )
+        jobs.gcal = router_obj.gcal
     # Zoom quick-start (Layer A, 6 Aug): 'start a new Zoom meeting' → both
     # links on Telegram + a Brain Dump backup card. Layer B (Otter) later.
     if settings.zoom_account_id and settings.zoom_client_id and settings.zoom_client_secret:
@@ -709,6 +722,76 @@ async def desktop_voice(secret: str, request: Request) -> dict:
             "transcript": transcript, "audio_b64": None,
             "reply": "Hit a snag processing that one — say it again and I'm on it.",
         }
+
+
+# --- Google Calendar OAuth (6 Aug): Paul clicks ONE link, Google asks for
+# consent, the refresh token lands in the settings store. State is the
+# desktop secret — unguessable, already shared with his own surfaces.
+
+@app.get("/google/connect/{secret}")
+async def google_connect(secret: str, request: Request):
+    from fastapi.responses import RedirectResponse
+
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    gcal = getattr(router, "gcal", None)
+    if gcal is None or not gcal.client.configured:
+        raise HTTPException(status_code=409, detail="Google OAuth keys not configured")
+    redirect_uri = f"{router.settings.public_url.rstrip('/')}/google/callback"
+    return RedirectResponse(url=gcal.client.auth_url(redirect_uri, state=secret))
+
+
+@app.get("/google/callback")
+async def google_callback(request: Request):
+    from fastapi.responses import HTMLResponse
+
+    router: JarvisRouter = request.app.state.router
+    state = request.query_params.get("state", "")
+    code = request.query_params.get("code", "")
+    _desktop_gate(router, state)
+    gcal = getattr(router, "gcal", None)
+    if gcal is None or not code:
+        return HTMLResponse("<h3>Something's missing — ask Jarvis to connect again.</h3>", status_code=400)
+    try:
+        redirect_uri = f"{router.settings.public_url.rstrip('/')}/google/callback"
+        refresh = await gcal.client.exchange_code(code, redirect_uri)
+        await gcal.store_token(refresh)
+    except Exception as exc:
+        logger.exception("Google Calendar code exchange failed")
+        return HTMLResponse(
+            f"<h3>Google said no: {str(exc)[:200]}</h3><p>Tell Jarvis and he'll sort it.</p>",
+            status_code=502,
+        )
+    return HTMLResponse(
+        "<h3>✅ Google Calendar connected.</h3>"
+        "<p>You can close this tab — Jarvis reads and writes your calendar live now.</p>"
+    )
+
+
+@app.get("/desktop/{secret}/calendar")
+async def desktop_calendar(secret: str, request: Request) -> dict:
+    """next_up / today / week for every thin surface (Mac app, cockpit)."""
+    from zoneinfo import ZoneInfo as _Z
+
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    gcal = getattr(router, "gcal", None)
+    if gcal is None or not await gcal.authorised():
+        return {"connected": False, "reason": "Google Calendar not connected — say 'connect google calendar' to Jarvis"}
+    from app.core.router import TIMEZONE_KEY
+
+    tz = _Z(await router.store.get(TIMEZONE_KEY, router.settings.timezone_default))
+    which = request.query_params.get("range", "next_up")
+    from app.clients.gcal_client import ReauthNeeded
+
+    try:
+        if which == "today":
+            return {"connected": True, "today": await gcal.today(tz)}
+        if which == "week":
+            return {"connected": True, "week": await gcal.week(tz)}
+        return {"connected": True, "next_up": await gcal.next_up(tz)}
+    except ReauthNeeded:
+        return {"connected": False, "reason": "Google token expired — say 'connect google calendar' to Jarvis"}
 
 
 async def merge_water_total(db, day_iso: str, water_ml: int) -> bool:

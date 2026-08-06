@@ -93,6 +93,7 @@ class HeartbeatJobs:
         self.elevenlabs = elevenlabs
         self.daily12 = daily12
         self.calendar = calendar
+        self.gcal = None   # GoogleCalendar (live API) — main.py wires it; ICS is fallback
         self.emailer = emailer
         self.kiefer_email = kiefer_email
         self.private_track = private_track
@@ -187,6 +188,32 @@ class HeartbeatJobs:
             return False
         await self._stamp(key)
         return True
+
+    async def _calendar_events(self, day, tz) -> list[dict]:
+        """Live Google Calendar when authorised (6 Aug slice); the stale ICS
+        feed only as fallback. A dead Google token nags Paul once a day with
+        the exact fix — never a silently blank calendar."""
+        if self.gcal is not None:
+            from app.clients.gcal_client import ReauthNeeded
+
+            try:
+                if await self.gcal.authorised():
+                    return await self.gcal.events_for(day, tz)
+            except ReauthNeeded:
+                if await self._once(f"gcal_reauth_nag:{day.isoformat()}"):
+                    await self._send_text(
+                        "🔑 Google Calendar needs re-authorising — say 'connect "
+                        "google calendar' and tap the link. Falling back to the "
+                        "slow feed meanwhile."
+                    )
+            except Exception:
+                logger.exception("Google Calendar read failed — falling back to ICS")
+        if self.calendar is not None:
+            try:
+                return await self.calendar.events_for(day, tz)
+            except Exception:
+                logger.exception("ICS calendar read failed")
+        return []
 
     async def powered_off(self) -> bool:
         """The master switch (6 Aug): 'Jarvis off' means OFF — every job and
@@ -340,7 +367,7 @@ class HeartbeatJobs:
                 plan_text = await self.daily12.format_plan(today)
             except Exception:
                 logger.exception("Daily 12 generation failed for the brief")
-        events = await self.calendar.events_for(today, tz) if self.calendar else []
+        events = await self._calendar_events(today, tz)
         snapshot = await self.streaks.snapshot(today)
         monthly = await self.streaks.monthly_activity(today)
 
@@ -1145,9 +1172,9 @@ class HeartbeatJobs:
                 parts.append("BOARD:\n" + await self.daily12.format_plan(today))
             except Exception:
                 pass
-        if self.calendar is not None:
+        if self.calendar is not None or self.gcal is not None:
             try:
-                events = await self.calendar.events_for(today, ZoneInfo(tz_name))
+                events = await self._calendar_events(today, ZoneInfo(tz_name))
                 if events:
                     parts.append(
                         "CALENDAR TODAY: " + " · ".join(f"{e['time']} {e['title']}" for e in events)

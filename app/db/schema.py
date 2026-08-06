@@ -182,6 +182,20 @@ TABLES: list[str] = [
         last_sent_at TEXT NOT NULL
     )
     """,
+    # --- Calendar write trail (6 Aug): every Google Calendar write Jarvis
+    # makes, plain-English detail + undo payload ('undo that').
+    """
+    CREATE TABLE IF NOT EXISTS calendar_log (
+        id {pk},
+        ts TEXT NOT NULL,
+        action TEXT NOT NULL,
+        title TEXT NOT NULL,
+        detail TEXT NOT NULL DEFAULT '',
+        calendar_id TEXT NOT NULL DEFAULT '',
+        event_id TEXT NOT NULL DEFAULT '',
+        undo TEXT NOT NULL DEFAULT '{{}}'
+    )
+    """,
     # --- Master Update: wake-up, sleep, hourly rhythm, med adherence ---
     """
     CREATE TABLE IF NOT EXISTS wake_log (
