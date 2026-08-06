@@ -5,10 +5,11 @@ hands-free voice note, press **Start conversation** for a turn-based
 back-and-forth, or just type. Everything hits the real Jarvis backend — same
 brain, memory and tools as Telegram and the phone line.
 
-Privacy: the wake word runs **locally** on the Mac (Picovoice Porcupine, no
-cloud). No audio leaves the machine until "Hey Jarvis" fires, the talk button
-is pressed, or you type. The mute button (🎙) switches the wake word off
-entirely; the status dot always shows what the app is doing.
+Privacy: the wake word runs **locally** on the Mac — the open-source
+openWakeWord "Hey Jarvis" model, executed on-device via ONNX. No account, no
+key, no cloud. No audio leaves the machine until "Hey Jarvis" fires, the talk
+button is pressed, or you type. The mute button (🎙) switches the wake word
+off entirely; the status dot always shows what the app is doing.
 
 ---
 
@@ -48,17 +49,15 @@ git pull
 npm install
 ```
 
-(This also downloads the small wake-word model automatically. If that step
-ever fails — e.g. no internet — run `npm run fetch-model` later.)
+(This also downloads the three small wake-word models automatically — about
+2MB total. If that step ever fails — e.g. no internet — run
+`npm run fetch-model` later.)
 
-### 4. Get your two keys
+### 4. Get your pairing values
 
-- **Desktop secret + backend URL** — message Jarvis on Telegram:
-  **"desktop setup"**. He replies with the exact two values to paste in.
-- **Picovoice AccessKey** (free, powers the wake word) — sign up at
-  https://console.picovoice.ai , copy the AccessKey shown on the dashboard.
-  Without it the wake word stays off, but the talk button and typing still
-  work fine.
+Message Jarvis on Telegram: **"desktop setup"**. He replies with the exact
+two values to paste in (backend URL + desktop secret). The wake word needs
+no key at all — it runs entirely on your Mac.
 
 ### 5. Run it
 
@@ -70,7 +69,6 @@ The window opens and shows Settings on first launch. Paste in:
 
 - **Backend URL** (from Jarvis's "desktop setup" reply)
 - **Desktop secret** (same reply)
-- **Picovoice AccessKey**
 
 Click **Save & connect** — you should see "Connected ✓" in the feed.
 macOS will ask for **microphone access** the first time — click Allow.
@@ -85,8 +83,8 @@ Just run `npm start` from `Jarvis/mac-app` (or keep the window open — it's
 meant to stay on the desktop).
 
 - **"Hey Jarvis"** → chime → speak your message → he answers out loud and in
-  the feed, then goes back to idle listening. (The built-in keyword is
-  "Jarvis", so plain "Jarvis" works too.)
+  the feed, then goes back to idle listening. (The model is trained on the
+  full phrase "Hey Jarvis" — say both words.)
 - **Start conversation** → turn-based chat: speak, he replies, speak again —
   press **End conversation** to stop (it also closes itself after two silent
   turns).
@@ -102,16 +100,16 @@ idle/muted.
 - **"Not connected"** — re-check the backend URL and desktop secret in ⚙️
   (ask Jarvis "desktop setup" again on Telegram; the values must match
   exactly).
-- **Wake word never fires** — is the Picovoice key pasted in ⚙️? Did
-  `assets/porcupine_params.pv` download (run `npm run fetch-model`)? Is 🎙
-  unmuted (dot should be green)?
+- **Wake word never fires** — did the three models download? Check
+  `mac-app/assets/` for `melspectrogram.onnx`, `embedding_model.onnx` and
+  `hey_jarvis_v0.1.onnx` (run `npm run fetch-model` if missing). Is 🎙
+  unmuted (dot should be green)? Say the full phrase, "Hey Jarvis".
+- **Fires too easily / not easily enough** — the sensitivity threshold lives
+  in `mac-app/wakeword.js` (`threshold: 0.5`); higher = stricter. Tell the
+  engineer and it's a one-line tweak.
 - **He hears nothing / empty recordings** — microphone permission (System
   Settings → Privacy & Security → Microphone → Electron), and if you're on
   AirPods try the built-in mic; Bluetooth mics can be flaky.
-- **Wants a true "Hey Jarvis" phrase** — train a custom keyword at
-  https://console.picovoice.ai (Porcupine → "Hey Jarvis" → macOS platform),
-  download the `.ppn`, save it as `mac-app/assets/hey-jarvis.ppn`, restart
-  the app. It's picked up automatically.
 
 ## What's next (already planned)
 
