@@ -212,7 +212,7 @@ class TestQuickStartConsentLine(unittest.IsolatedAsyncioTestCase):
         from datetime import datetime
 
         reply = await maker.quick_start("start a new zoom meeting", datetime(2026, 8, 6, 10, 0), "Europe/London")
-        self.assertIn("Otter's watching this one too", reply)
+        self.assertIn("Otter's already joining to record", reply)
 
     async def test_line_absent_when_no_notetaker(self):
         from app.clients.zoom_client import ZoomClient

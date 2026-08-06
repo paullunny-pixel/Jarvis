@@ -4,6 +4,13 @@ subscription — no new account, no bot for Jarvis to dispatch. The build
 order is explicit: 'ignore §1's custom auto-join bot — Otter does that;
 Jarvis just consumes Otter's output.' This module IS that consumption.
 
+Paul confirmed (7 Aug) OtterPilot for Zoom is connected at the Zoom-account
+level, not just via calendar-watching — so every meeting created through
+app/meetings.py (instant 'start a new zoom meeting' included, no calendar
+event needed) is on that same Zoom account and gets Otter automatically.
+There's no per-meeting join trigger for Jarvis to call even if it wanted
+one; the account-level connection is the whole mechanism.
+
 Route: the Otter public API needs its own credential Paul hasn't set up, so
 this rides the brief's 'robust fallback' — the meeting notes Otter emails,
 read through the mail accounts already wired for Phase 2. No new keys.

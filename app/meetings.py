@@ -6,8 +6,12 @@ join link to paste to anyone), and drops them on a Trello card as backup.
 
 Layer B (OtterPilot attend/transcribe → actions into Brain Dump) lives in
 app/meetings_notetaker.py, riding Paul's existing Otter.ai; this module
-only carries the consent-reminder line on the quick-start reply when it's
-switched on.
+only carries the confirmation + consent line on the quick-start reply when
+it's switched on. Paul confirmed (7 Aug) OtterPilot for Zoom is CONNECTED
+at the Zoom-account level — every meeting Jarvis creates here (instant or
+scheduled) is on that same Zoom account, so Otter auto-joins it without
+Jarvis dispatching anything: there's no per-meeting 'add Otter' API to
+call, and none is needed.
 """
 from __future__ import annotations
 
@@ -122,7 +126,8 @@ class MeetingMaker:
         lines.append("Links are on a Brain Dump card too, as backup.")
         if self.notetaker is not None and await self.notetaker.enabled():
             lines.append(
-                "Otter's watching this one too — worth telling the room it's being recorded."
+                "Otter's already joining to record — I'll turn its notes into Brain "
+                "Dump cards once it's done. Worth telling the room it's being recorded."
             )
         return "\n\n".join(lines)
 
