@@ -331,6 +331,53 @@ class TestProofsAndData(WakeBase):
         self.assertNotEqual(current, await self.h.routine.wake_code(-2))
 
 
+class TestFinishedMorningStaysFinished(WakeBase):
+    """08:34, 6 Aug: the water photo marked the morning 'done', but a minute-tick
+    that had already read 'hydrate' wrote its stale copy back — and the calls
+    never stopped. A terminal phase must never be overwritten back to life."""
+
+    async def test_stale_callback_cannot_resurrect_a_done_morning(self):
+        now = datetime.now(TZ)
+        stale = await self._put_state(
+            last_action=(now - timedelta(minutes=10)).isoformat(timespec="seconds"),
+        )
+        # Both proofs land while the tick is composing its callback…
+        await self.h.routine.proof_up("selfie", "PHOTO1")
+        await self.h.routine.proof_hydration()
+        self.phone.calls.clear()
+        # …and the tick then tries to place the call with its stale state.
+        await self.h.routine._place_call(dict(stale))
+        self.assertEqual(self.phone.calls, [])            # no undead ring
+        self.assertEqual((await self._state())["phase"], "done")
+
+    async def test_stale_hydrate_save_cannot_undo_the_water(self):
+        stale = await self._put_state(phase="hydrate")
+        await self.h.routine.proof_hydration()            # water accepted
+        self.assertFalse(await self.h.routine._save_active(dict(stale)))
+        self.assertEqual((await self._state())["phase"], "done")
+
+    async def test_override_survives_a_racing_tick_too(self):
+        stale = await self._put_state()
+        await self.h.routine.stand_down("override")
+        await self.h.routine._place_call(dict(stale))
+        self.assertEqual(self.phone.calls, [])
+        self.assertEqual((await self._state())["phase"], "stood_down")
+
+    async def test_a_new_day_saves_over_yesterdays_done(self):
+        now = datetime.now(TZ)
+        await self._put_state(
+            phase="done", date=(now - timedelta(days=1)).date().isoformat()
+        )
+        fresh = {
+            "date": now.date().isoformat(), "phase": "up", "test": False,
+            "started": now.isoformat(timespec="seconds"),
+            "last_action": now.isoformat(timespec="seconds"),
+            "calls": 0, "silences": 0, "pitch_i": 0,
+        }
+        self.assertTrue(await self.h.routine._save_active(fresh))
+        self.assertEqual((await self._state())["phase"], "up")
+
+
 class TestRouterLaneAndV1Handover(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self._dir = tempfile.TemporaryDirectory()
