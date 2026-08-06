@@ -418,11 +418,18 @@ class WakeRoutine:
         if state["phase"] == "up":
             await self._place_call(state)
         else:
+            # Hydrate chases GENTLY (08:3x, 6 Aug: a call every five minutes
+            # at a man who's already up is harassment, not help): Telegram
+            # each grace window, an actual ring only every third nudge.
             state["last_action"] = now.isoformat(timespec="seconds")
+            state["hydrate_nudges"] = state.get("hydrate_nudges", 0) + 1
             await self._save(state)
             await self._tell(HYDRATE_NUDGE)
             phone = self.jobs.phone_channel
-            if phone is not None and phone.configured:
+            if (
+                phone is not None and phone.configured
+                and state["hydrate_nudges"] % 3 == 2
+            ):
                 phone.script_handler = self.call_turn
                 await phone.call_paul(HYDRATE_NUDGE)
 

@@ -1034,7 +1034,11 @@ class JarvisRouter:
                             ack = STALE_CODE_LINE
                     elif kind in ("selfie", "desktop"):
                         ack = await wake2.proof_up(kind, message.photo_file_id)
-                elif verdict.get("kind") == "water":
+                else:
+                    # Hydrate phase: he was ASKED for a water photo and sent a
+                    # photo — that's the proof, whatever vision thinks it sees
+                    # (08:4x, 6 Aug: an electrolyte shot misclassified and the
+                    # calls kept coming at a man doing everything right).
                     ack = await wake2.proof_hydration()
                 if ack:
                     await self.log.log("out", ack, chat_id=message.chat_id, meta={"wake2": True})
