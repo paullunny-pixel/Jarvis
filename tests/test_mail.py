@@ -722,13 +722,21 @@ class TestMixedInstructionMessage(unittest.IsolatedAsyncioTestCase):
             telegram_calls.append((request.url.path.split("/")[-1], request.content))
             return _httpx.Response(200, json={"ok": True, "result": {}})
 
+        seen_systems = []
+
         def claude_handler(request: _httpx.Request) -> _httpx.Response:
             payload = json.loads(request.content)
             system = str(payload.get("system", ""))
+            seen_systems.append(system[:60])
             if system.startswith("You convert Paul's message into email"):
                 text = '[{"action":"check","account":"all"}]'
-            elif system.startswith("You convert Paul's message into Trello"):
-                text = '[{"action":"create","title":"VAT return card"}]'
+            elif system.startswith("You extract Trello card intents"):
+                text = (
+                    '{"cards":[{"action":"create","matchedCardId":null,"matchConfidence":0,'
+                    '"title":"VAT return card","description":null,"board":"master",'
+                    '"list":"Paul Today","domain":null,"priority":null,"owner":null,'
+                    '"due":null,"checklist":[],"uncertainties":[]}],"unassignedRemarks":[]}'
+                )
             else:
                 text = "Very good, sir."
             return _httpx.Response(200, json={"content": [{"type": "text", "text": text}]})
@@ -756,7 +764,14 @@ class TestMixedInstructionMessage(unittest.IsolatedAsyncioTestCase):
             if method == "sendMessage"
         ]
         self.assertTrue(any("unread" in t for t in texts))            # email half answered
-        self.assertTrue(any("VAT return card" in t for t in texts))   # board half executed
+        # The board half NEVER direct-writes any more (13:56, 6 Aug: the
+        # G-Prime search instruction became an Urgent card via the legacy
+        # parser, no confirm). It rides intake's confirm-first flow — and
+        # this router has no intake wired, so the correct outcome is
+        # silence, not a card. The confirm path itself is covered in
+        # tests/test_mixed_message.py.
+        self.assertFalse(any("VAT return card" in t for t in texts), texts)
+        self.assertNotIn("You convert Paul's message into Trello", "".join(seen_systems))
         self.assertFalse(any("Very good, sir." in t for t in texts))  # no stray brain turn
 
 

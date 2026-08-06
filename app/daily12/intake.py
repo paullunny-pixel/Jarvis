@@ -70,6 +70,12 @@ RULES (each matters):
   question, a mood/state report, reflection, or general chat — even when it
   mentions work words — return ZERO cards. Only concrete work instructions
   become cards.
+- AN INSTRUCTION TO JARVIS IS NOT A CARD (13:56, 6 Aug: 'search my emails
+  for g prime' became an Urgent card titled 'Search for information
+  regarding G-Prime in emails'): when Paul tells JARVIS to do something now
+  — search/read/summarise emails, look something up, call him, set a
+  reminder, update a brief — Jarvis simply does it; his own to-do list
+  never goes on the board. Cards are work for PAUL or the named humans.
 - NEVER invent: no card may contain a person, task or detail that is not in
   Paul's actual words. When in doubt, unassignedRemarks.
 - Nothing actionable at all -> {"cards":[],"unassignedRemarks":[...]}."""
