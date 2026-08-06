@@ -513,13 +513,25 @@ class JarvisRouter:
 
         if email_handled:
             # A mixed message ('draft the reply AND stick a card on the board'):
-            # the email half is answered, but the board half must still land —
-            # via the deterministic lane, since no brain turn follows.
-            if self.daily12 is not None and mentions_tasks(transcript):
+            # the email half is answered; any genuine board half goes through
+            # intake's extract-and-CONFIRM flow — never the direct-write
+            # parser. (13:56, 6 Aug: 'search my emails for g prime' grew an
+            # Urgent card titled 'Search for information regarding G-Prime in
+            # emails' — the instruction itself, filed as a task, no confirm.)
+            if (
+                intake is not None and self.settings.intake_enabled
+                and mentions_tasks(transcript)
+            ):
                 try:
-                    await self._handle_task_talk(message, transcript)
+                    summary = await intake.start_batch(transcript)
                 except Exception:
                     logger.exception("Board half of a mixed message failed")
+                    summary = None
+                if summary:
+                    await self.log.log(
+                        "out", summary, chat_id=message.chat_id, meta={"intake": True}
+                    )
+                    await self.telegram.send_text(message.chat_id, summary)
             return  # the email half answered; no brain turn on top
 
         # 2e-intake. Phase 3 capture: a long-form or voice message describing
