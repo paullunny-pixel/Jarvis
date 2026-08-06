@@ -313,6 +313,44 @@ TABLES: list[str] = [
         day_count INTEGER NOT NULL DEFAULT 0
     )
     """,
+    # --- WhatsApp/Telegram group intelligence (Build Slice Part 2, 7 Aug):
+    # channel-agnostic on purpose — 'channel' is 'telegram' today, 'whatsapp'
+    # the day group ingest exists there too, same table either way. Actions
+    # persist independently of the missed-summary's dismiss/clear watermark
+    # (settings keys group_intel_cleared_at / group_intel_last_action_id). ---
+    """
+    CREATE TABLE IF NOT EXISTS group_actions (
+        id {pk},
+        created_at TEXT NOT NULL,
+        channel TEXT NOT NULL DEFAULT 'telegram',
+        chat_id BIGINT NOT NULL DEFAULT 0,
+        chat_title TEXT NOT NULL DEFAULT '',
+        company_tag TEXT NOT NULL DEFAULT '',
+        asked_by TEXT NOT NULL DEFAULT '',
+        ask TEXT NOT NULL,
+        source_message TEXT NOT NULL DEFAULT '',
+        msg_ts TEXT NOT NULL DEFAULT '',
+        tagged INTEGER NOT NULL DEFAULT 0,      -- 1 = an @-mention, auto-promoted, never judged
+        status TEXT NOT NULL DEFAULT 'open',    -- open | trello | ignored
+        trello_card_id TEXT NOT NULL DEFAULT '',
+        dedupe_key TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_group_actions_status ON group_actions (status, created_at)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_group_actions_dedupe ON group_actions (dedupe_key)",
+    """
+    CREATE TABLE IF NOT EXISTS group_summaries (
+        id {pk},
+        channel TEXT NOT NULL DEFAULT 'telegram',
+        chat_id BIGINT NOT NULL DEFAULT 0,
+        chat_title TEXT NOT NULL DEFAULT '',
+        company_tag TEXT NOT NULL DEFAULT '',
+        gist TEXT NOT NULL DEFAULT '',
+        message_count INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_group_summaries_chat ON group_summaries (channel, chat_id)",
 ]
 
 PK = {

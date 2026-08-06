@@ -100,6 +100,7 @@ class HeartbeatJobs:
         self.gates = gates
         self.mail = mail
         self.notetaker = None   # MeetingNotetaker — main.py wires it once mail is up
+        self.group_intel = None   # GroupIntel — Part 2 group intelligence (main.py wires it)
         self.store = SettingsStore(db)
         self.streaks = Streaks(db)
         self.log = MessageLog(db)
@@ -709,6 +710,17 @@ class HeartbeatJobs:
             await self.notetaker.check_new()
         except Exception:
             logger.exception("Meeting notetaker tick failed (next beat retries)")
+
+    async def group_intel_tick(self) -> None:
+        """Group intelligence Part 2 (7 Aug): scan new group traffic for
+        gists, @-mention actions and the missed-summary. Cheap no-op when
+        nothing's new — refresh() returns fast on an empty diff."""
+        if self.group_intel is None:
+            return
+        try:
+            await self.group_intel.refresh()
+        except Exception:
+            logger.exception("Group intel tick failed (next beat retries)")
 
     SCHEDULED_CALLS_KEY = "scheduled_calls"
 

@@ -236,6 +236,13 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
         jobs.notetaker = MeetingNotetaker(
             mail, claude, jobs._chase_layer, memory, jobs.store, jobs._send_text
         )
+    # Group intelligence Part 2 (7 Aug): channel-agnostic, rides the
+    # Telegram org ingest that's already live — no new keys needed. Trello
+    # filing rides the same shared layer as everything else (one watcher).
+    from app.groups_intel import GroupIntel
+
+    jobs.group_intel = GroupIntel(db, claude, jobs.store, layer_factory=jobs._chase_layer)
+    router_obj.group_intel = jobs.group_intel
     # Zoom quick-start (Layer A, 6 Aug): 'start a new Zoom meeting' → both
     # links on Telegram + a Brain Dump backup card.
     if settings.zoom_account_id and settings.zoom_client_id and settings.zoom_client_secret:
@@ -876,6 +883,91 @@ async def desktop_calendar(secret: str, request: Request) -> dict:
         return {"connected": True, "next_up": await gcal.next_up(tz)}
     except ReauthNeeded:
         return {"connected": False, "reason": "Google token expired — say 'connect google calendar' to Jarvis"}
+
+
+# --- Group intelligence, Part 2 (7 Aug) — thin endpoints, GroupIntel does the work ---
+
+@app.get("/desktop/{secret}/groups/summaries")
+async def desktop_groups_summaries(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    gi = router.group_intel
+    if gi is None or await gi.status() == "not_connected":
+        return {"connected": False, "reason": "No group ingest connected yet"}
+    return {"connected": True, "groups": await gi.group_summaries()}
+
+
+@app.get("/desktop/{secret}/groups/actions")
+async def desktop_groups_actions(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    gi = router.group_intel
+    if gi is None or await gi.status() == "not_connected":
+        return {"connected": False, "reason": "No group ingest connected yet"}
+    return {"connected": True, "actions": await gi.open_actions()}
+
+
+@app.get("/desktop/{secret}/groups/missed-summary")
+async def desktop_groups_missed_summary(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    gi = router.group_intel
+    if gi is None or await gi.status() == "not_connected":
+        return {"connected": False, "reason": "No group ingest connected yet"}
+    return {"connected": True, **await gi.missed_summary()}
+
+
+@app.get("/desktop/{secret}/groups/uncleared-count")
+async def desktop_groups_uncleared_count(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    gi = router.group_intel
+    if gi is None or await gi.status() == "not_connected":
+        return {"connected": False, "count": 0}
+    return {"connected": True, "count": await gi.uncleared_count()}
+
+
+@app.post("/desktop/{secret}/groups/dismiss-summary")
+async def desktop_groups_dismiss_summary(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    gi = router.group_intel
+    if gi is None:
+        raise HTTPException(status_code=409, detail="group intelligence not wired up")
+    await gi.dismiss_summary()
+    return {"ok": True}
+
+
+@app.post("/desktop/{secret}/groups/actions/{action_id}/trello")
+async def desktop_groups_action_to_trello(secret: str, action_id: int, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    gi = router.group_intel
+    if gi is None:
+        raise HTTPException(status_code=409, detail="group intelligence not wired up")
+    return {"ok": True, "message": await gi.action_to_trello(action_id)}
+
+
+@app.post("/desktop/{secret}/groups/actions/{action_id}/ignore")
+async def desktop_groups_action_ignore(secret: str, action_id: int, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    gi = router.group_intel
+    if gi is None:
+        raise HTTPException(status_code=409, detail="group intelligence not wired up")
+    return {"ok": True, "message": await gi.action_ignore(action_id)}
+
+
+@app.get("/desktop/{secret}/groups/fixtures")
+async def desktop_groups_fixtures(secret: str, request: Request) -> dict:
+    """Sample payloads (§7) so every surface can be built and tested before
+    real group traffic exists — never mistaken for live data by a caller
+    that checks the endpoint path, not a flag inside the body."""
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    from app.groups_intel import GroupIntel
+
+    return GroupIntel.fixtures()
 
 
 async def merge_water_total(db, day_iso: str, water_ml: int) -> bool:

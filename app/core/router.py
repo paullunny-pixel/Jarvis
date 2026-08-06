@@ -84,6 +84,7 @@ class JarvisRouter:
         self.meetings = None             # MeetingMaker — Zoom quick-start (main.py wires it)
         self.gcal = None                 # GoogleCalendar — live read+write (main.py wires it)
         self.whatsapp = None             # WhatsAppClient — Part 1 1:1 chat (main.py wires it)
+        self.group_intel = None          # GroupIntel — Part 2 group intelligence (main.py wires it)
         self._speech_vocab: list[str] = []   # nova-3 keyterms, rebuilt hourly
         self._speech_vocab_ts: float = 0.0
 
