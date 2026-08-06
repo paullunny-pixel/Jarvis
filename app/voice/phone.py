@@ -79,6 +79,13 @@ class PhoneChannel:
         # constructor-time injection would be circular (router needs main's
         # components, main builds this before the router).
         self.brain = None
+        # Realtime upgrade (7 Aug): when the live voice engine is up, INBOUND
+        # calls stream straight to the ElevenLabs agent over Media Streams —
+        # interruptible, no turn lag. main.py flips this on; outbound
+        # greetings and the wake script keep the turn-based flow, and a
+        # failed stream Redirects back here with ?fallback=1.
+        self.realtime_available = False
+        self.eleven_connect = None   # test seam: async factory for the agent socket
         # Wake v2: while a wake sequence runs, its scripted handler intercepts
         # every turn (instant, no LLM); returning None falls through to the
         # brain. '[[bye]]'-prefixed replies are spoken and then hung up.
@@ -102,6 +109,14 @@ class PhoneChannel:
 
     def _audio_url(self, audio_id: str) -> str:
         return f"{self._public_url}/twilio/audio/{self._secret}/{audio_id}.mp3"
+
+    def media_ws_url(self) -> str:
+        base = self._public_url
+        for scheme, ws in (("https://", "wss://"), ("http://", "ws://")):
+            if base.startswith(scheme):
+                base = ws + base[len(scheme):]
+                break
+        return f"{base}/twilio/media/{self._secret}"
 
     # ------------------------------------------------------------ audio cache
 
@@ -207,7 +222,22 @@ class PhoneChannel:
 
     async def handle_answer(self, params: dict[str, str]) -> str:
         """First TwiML of a call — outbound (greeting token in `g`) or inbound
-        (Paul rang the Twilio number)."""
+        (Paul rang the Twilio number). An inbound call goes REALTIME when the
+        live engine is up: <Connect><Stream> into the media bridge, with a
+        Redirect back here (?fallback=1) so a failed stream still gets the
+        turn-based conversation, never dead air (invariant 5)."""
+        inbound = params.get("Direction", "").startswith("inbound")
+        if (
+            self.realtime_available
+            and self.script_handler is None
+            and inbound
+            and not params.get("g")
+            and params.get("fallback") != "1"
+        ):
+            return self._document(
+                f'<Connect><Stream url="{escape(self.media_ws_url())}"/></Connect>'
+                f'<Redirect method="POST">{escape(self.answer_url())}?fallback=1</Redirect>'
+            )
         greeting = self._greetings.pop(params.get("g", ""), "") or DEFAULT_GREETING
         return await self._speak_and_listen(greeting)
 

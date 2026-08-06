@@ -144,7 +144,12 @@ idempotent (`app/db/schema.py` runs on every startup; `IF NOT EXISTS` only).
   rings Paul, calling the Twilio number reaches Jarvis, wake-ups escalate to
   a real call; turn-based — Twilio `<Gather>` speech in → `router.phone_turn`
   (same brain/memory/tools/history, private wall enforced) → ElevenLabs MP3
-  out (Twilio `<Say>` fallback); inbound webhook self-heals on startup;
+  out (Twilio `<Say>` fallback); REALTIME upgrade (7 Aug,
+  `media_bridge.py`): INBOUND calls stream via `<Connect><Stream>` →
+  `/twilio/media/{secret}` WS → the live ElevenLabs assistant agent
+  (interruptible, barge-in; audioop transcodes mulaw8k⇄agent format);
+  wake/outbound stay turn-based, stream failure Redirects to the Gather
+  flow, `phone_realtime_enabled` kills it; inbound webhook self-heals on startup;
   needs TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/TWILIO_FROM_NUMBER/
   PAUL_PHONE_NUMBER in Render
 - `app/documents/` — library (upload → extract → chunk → embed → recall);

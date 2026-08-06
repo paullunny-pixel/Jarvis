@@ -120,6 +120,9 @@ class Settings(BaseSettings):
     twilio_account_sid: str = ""
     twilio_auth_token: str = ""
     twilio_from_number: str = ""
+    # Realtime upgrade (7 Aug): inbound calls stream to the live ElevenLabs
+    # agent (interruptible). Off switches every call back to turn-based.
+    phone_realtime_enabled: bool = True
 
     # --- Zoom meetings, Layer A (6 Aug): Server-to-Server OAuth app on
     # Paul's Zoom account (scopes meeting:write, user:read). All three set →

@@ -10,3 +10,4 @@ cryptography>=42     # private-room encryption at rest (Milestones 2/6)
 pypdf>=4             # document library: PDF text extraction
 python-docx>=1.1     # document library: Word text extraction
 boto3>=1.34          # document library: Cloudflare R2 (S3-compatible) storage
+websockets>=12       # phone realtime: bridge to the ElevenLabs agent (also a uvicorn[standard] dep — pinned because we import it directly)
