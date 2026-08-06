@@ -188,6 +188,13 @@ class HeartbeatJobs:
         await self._stamp(key)
         return True
 
+    async def powered_off(self) -> bool:
+        """The master switch (6 Aug): 'Jarvis off' means OFF — every job and
+        every send, essential or not, stops until 'Jarvis on'."""
+        from app.core.power import POWER_KEY
+
+        return await self.store.get(POWER_KEY, "") == "off"
+
     async def quiet_today(self) -> bool:
         return await self.store.get(QUIET_KEY, "") == (await self._today()).isoformat()
 
@@ -198,6 +205,9 @@ class HeartbeatJobs:
         chat_id = await self._owner_chat()
         if not chat_id:
             logger.warning("No owner chat yet — heartbeat message skipped")
+            return
+        if await self.powered_off():
+            logger.info("Master switch off — heartbeat message suppressed")
             return
         if not essential and await self.quiet_today():
             logger.info("Quiet day — heartbeat message suppressed")
@@ -210,6 +220,9 @@ class HeartbeatJobs:
     async def _send_voice(self, text: str, essential: bool = False) -> None:
         chat_id = await self._owner_chat()
         if not chat_id:
+            return
+        if await self.powered_off():
+            logger.info("Master switch off — heartbeat voice suppressed")
             return
         if not essential and await self.quiet_today():
             logger.info("Quiet day — heartbeat voice message suppressed")

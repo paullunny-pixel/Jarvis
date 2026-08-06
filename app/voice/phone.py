@@ -236,4 +236,8 @@ class PhoneChannel:
                 reply = (await self.brain(speech)) or BRAIN_STUMBLE
             except Exception:
                 logger.exception("Phone brain turn failed — honest stumble line")
+        # The brain can end a call too (6 Aug: the master switch answers an
+        # inbound call with one line and hangs up).
+        if reply.startswith("[[bye]]"):
+            return await self._speak_and_hangup(reply[len("[[bye]]"):])
         return await self._speak_and_listen(reply)

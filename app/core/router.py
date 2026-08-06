@@ -241,6 +241,32 @@ class JarvisRouter:
             ),
         )
 
+    async def _power_off_lane(self, message: IncomingMessage) -> None:
+        """Jarvis is deactivated. Total silence for everyone and everything —
+        except Paul saying 'Jarvis on' (typed or spoken), which brings the
+        whole system back."""
+        from app.core.power import ON_ACK, POWER_KEY, POWER_ON_RE
+
+        if not await self._is_owner(message.chat_id):
+            return
+        words = message.text or ""
+        if message.is_voice and not words:
+            try:
+                audio = await self.telegram.download_file(message.voice_file_id)
+                words = await self.deepgram.transcribe(audio, "audio/ogg")
+            except Exception:
+                logger.exception("Power-on voice check failed — staying silent")
+                return
+        if not POWER_ON_RE.search(words):
+            return   # completely off means completely off
+        await self.store.set(POWER_KEY, "")
+        await self.log.log(
+            "in", words, chat_id=message.chat_id,
+            kind="voice" if message.is_voice else "text",
+        )
+        await self.log.log("out", ON_ACK, chat_id=message.chat_id, meta={"power": "on"})
+        await self.telegram.send_text(message.chat_id, ON_ACK)
+
     async def _handle_message(self, message: IncomingMessage) -> None:
         # WORK GROUPS: ingest silently, reply never (Telegram org ingestion).
         if message.is_group:
@@ -248,6 +274,16 @@ class JarvisRouter:
                 await self._ingest_group_message(message)
             except Exception:
                 logger.exception("Group ingestion failed")
+            return
+
+        # THE MASTER SWITCH (6 Aug): while Jarvis is powered off, the work
+        # groups above still file silently and nothing else happens — no
+        # replies, no stranger lines, no lanes. Only Paul saying 'Jarvis on'
+        # gets through.
+        from app.core.power import POWER_KEY
+
+        if await self.store.get(POWER_KEY, "") == "off":
+            await self._power_off_lane(message)
             return
 
         if not await self._is_owner(message.chat_id):
@@ -322,6 +358,28 @@ class JarvisRouter:
             transcript = message.text
             if not transcript:
                 return  # stickers, photos etc. — Phase 2
+
+        # 1a-power. THE MASTER SWITCH: 'Jarvis off' — the whole message, so
+        # 'turn off the water reminders' can never trip it — deactivates
+        # everything until 'Jarvis on'. First look, before every other lane.
+        from app.core.power import OFF_ACK, POWER_KEY, POWER_OFF_RE
+
+        if POWER_OFF_RE.match(transcript or ""):
+            await self.store.set(POWER_KEY, "off")
+            wake2_live = getattr(self.heartbeat, "wake2", None) if self.heartbeat is not None else None
+            if wake2_live is not None:
+                try:
+                    if await wake2_live.active_phase():
+                        await wake2_live.stand_down("master switch off")
+                except Exception:
+                    logger.exception("Wake stand-down on power off failed")
+            await self.log.log(
+                "in", transcript, chat_id=message.chat_id,
+                kind="voice" if message.is_voice else "text",
+            )
+            await self.log.log("out", OFF_ACK, chat_id=message.chat_id, meta={"power": "off"})
+            await self.telegram.send_text(message.chat_id, OFF_ACK)
+            return
 
         # 1a-wake. WAKE GOSPEL (v2 §0/§0.5, 5 Aug): 'set wake 05:00' / 'wake
         # me at 5' and 'test alarm' get first look, before every other lane —
@@ -734,6 +792,12 @@ class JarvisRouter:
         transcript = (transcript or "").strip()
         if not transcript:
             return "Say again?"
+        # THE MASTER SWITCH holds on the phone too — an inbound call while
+        # Jarvis is off gets one honest line and nothing else runs.
+        from app.core.power import PHONE_OFF_LINE, POWER_KEY
+
+        if await self.store.get(POWER_KEY, "") == "off":
+            return "[[bye]]" + PHONE_OFF_LINE
         stored = await self.store.get(OWNER_KEY)
         chat_id = self.settings.telegram_owner_chat_id or (int(stored) if stored else 0)
         # THE PRIVATE WALL holds on the phone too: private topics never enter

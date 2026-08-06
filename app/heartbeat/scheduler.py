@@ -26,6 +26,17 @@ class Heartbeat:
         self.jobs = jobs
         self._scheduler = None
 
+    def _powered(self, func):
+        """The master switch (6 Aug): while 'Jarvis off' is set, NO scheduled
+        job runs — not the wake caller, not the mind, not the med reminders.
+        One wrapper here beats a guard in every job."""
+        async def wrapped(*args, **kwargs):
+            if await self.jobs.powered_off():
+                return None
+            return await func(*args, **kwargs)
+
+        return wrapped
+
     async def start(self) -> None:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -53,7 +64,7 @@ class Heartbeat:
         }
         for job_id, (hour, minute) in JOB_TIMES.items():
             self._scheduler.add_job(
-                callables[job_id],
+                self._powered(callables[job_id]),
                 CronTrigger(hour=hour, minute=minute, timezone=timezone),
                 id=job_id,
                 replace_existing=True,
@@ -102,7 +113,8 @@ class Heartbeat:
         ]
         for job_id, func, trigger, grace in extras:
             self._scheduler.add_job(
-                func, trigger, id=job_id, replace_existing=True, misfire_grace_time=grace
+                self._powered(func), trigger, id=job_id,
+                replace_existing=True, misfire_grace_time=grace,
             )
         logger.info("Heartbeat jobs registered in %s", timezone)
 
