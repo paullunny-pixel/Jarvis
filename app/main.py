@@ -57,6 +57,12 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
     settings = get_settings()
     db = get_database(settings.database_url, settings.sqlite_path)
 
+    claude = ClaudeClient(
+        settings.anthropic_api_key,
+        brain_model=settings.brain_model,
+        fast_model=settings.fast_model,
+    )
+
     # Second brain (Milestone 2). Voyage embeds in production; the local
     # embedder keeps everything working before that key exists.
     memory = living = library = None
@@ -77,14 +83,10 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
                 settings.r2_access_key, settings.r2_secret_key,
                 settings.r2_bucket, settings.r2_endpoint,
             ),
+            claude=claude,
         )
 
     # Trello + the Daily 12 (Milestone 3) — activates when the keys exist.
-    claude = ClaudeClient(
-        settings.anthropic_api_key,
-        brain_model=settings.brain_model,
-        fast_model=settings.fast_model,
-    )
     daily12 = None
     if settings.trello_key and settings.trello_token:
         daily12 = Daily12Service(
@@ -933,6 +935,197 @@ async def desktop_calendar(secret: str, request: Request) -> dict:
         return {"connected": True, "next_up": await gcal.next_up(tz)}
     except ReauthNeeded:
         return {"connected": False, "reason": "Google token expired — say 'connect google calendar' to Jarvis"}
+
+
+@app.get("/desktop/{secret}/today-focus")
+async def desktop_today_focus(secret: str, request: Request) -> dict:
+    """Today's Focus panel (Mac app v2, 4a) — the SAME data the cockpit
+    shows, grouped by company. `position` is the reference to tick a task."""
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    if router.daily12 is None:
+        return {"connected": False, "reason": "Trello isn't connected yet"}
+    service = CockpitService(router.db, timezone_default=router.settings.timezone_default)
+    return {"connected": True, **await service.today_focus()}
+
+
+@app.post("/desktop/{secret}/today-focus/{position}/done")
+async def desktop_today_focus_done(secret: str, position: str, request: Request) -> dict:
+    """Tickable-in-app (4a): writes straight back to Trello via the SAME
+    mark_done() every other surface uses — one source of truth."""
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    if router.daily12 is None:
+        raise HTTPException(status_code=409, detail="Trello isn't connected")
+    try:
+        message = await router.daily12.mark_done(position)
+    except Exception:
+        logger.exception("Desktop today-focus tick failed")
+        raise HTTPException(status_code=500, detail="couldn't mark that done — try again")
+    return {"ok": not message.startswith("Couldn't find"), "message": message}
+
+
+@app.post("/desktop/{secret}/documents/upload")
+async def desktop_document_upload(secret: str, request: Request) -> dict:
+    """Drag-a-file-to-brain (4d): raw bytes in the body — no python-multipart
+    in this project, so filename/mime ride as query params (same pattern as
+    the health webhook's raw-body ingests). Files it into the second brain
+    with a Claude-suggested room + tags Paul can correct in one click."""
+    from app.documents.extract import extract_text
+
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    if router.library is None:
+        raise HTTPException(status_code=409, detail="Second brain isn't enabled")
+    filename = request.query_params.get("filename", "").strip()
+    mime = request.query_params.get("mime", "").strip()
+    if not filename:
+        raise HTTPException(status_code=400, detail="filename required")
+    data = await request.body()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty upload")
+    text = extract_text(data, filename, mime)
+    suggestion = await router.library.suggest_filing(text, filename)
+    result = await router.library.ingest(
+        data, filename, mime=mime, room=suggestion["room"], tags=suggestion["tags"]
+    )
+    return {**result, "suggestion": suggestion}
+
+
+@app.get("/desktop/{secret}/documents/recent")
+async def desktop_documents_recent(secret: str, request: Request) -> dict:
+    """The 'recently filed' list (4d) — last 5, newest first."""
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    if router.library is None:
+        return {"connected": False, "reason": "Second brain isn't enabled"}
+    return {"connected": True, "documents": await router.library.recent(5)}
+
+
+@app.post("/desktop/{secret}/documents/{doc_id}/room")
+async def desktop_document_set_room(secret: str, doc_id: int, request: Request) -> dict:
+    """'Wrong? change it' — one click correction on the filing suggestion (4d)."""
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    if router.library is None:
+        raise HTTPException(status_code=409, detail="Second brain isn't enabled")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    room = str(body.get("room", "")).strip()
+    ok = await router.library.set_room(doc_id, room)
+    if not ok:
+        raise HTTPException(status_code=400, detail="unknown document or room")
+    return {"ok": True, "room": room}
+
+
+@app.post("/desktop/{secret}/documents/{doc_id}/trello")
+async def desktop_document_to_trello(secret: str, doc_id: int, request: Request) -> dict:
+    """The 'clearly actionable — create a card?' offer (4d)."""
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    if router.library is None or router.daily12 is None:
+        raise HTTPException(status_code=409, detail="not connected")
+    row = await router.db.fetch_one("SELECT filename FROM documents WHERE id = ?", (doc_id,))
+    if row is None:
+        raise HTTPException(status_code=404, detail="document not found")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    title = str(body.get("title") or f"Review {row['filename']}").strip()
+    message = await router.daily12.create(
+        title, description=f"From uploaded document: {row['filename']}"
+    )
+    return {"message": message}
+
+
+@app.get("/desktop/{secret}/notifications")
+async def desktop_notifications_list(secret: str, request: Request) -> dict:
+    """The notifications queue (§2) — recent, uncleared by default."""
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    if router.heartbeat is None:
+        return {"notifications": []}
+    include_dismissed = request.query_params.get("all") == "1"
+    notes = await router.heartbeat.desktop_notifications.recent(20, include_dismissed=include_dismissed)
+    return {"notifications": notes}
+
+
+@app.post("/desktop/{secret}/notifications/{notification_id}/dismiss")
+async def desktop_notifications_dismiss(secret: str, notification_id: int, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    if router.heartbeat is None:
+        raise HTTPException(status_code=409, detail="not connected")
+    ok = await router.heartbeat.desktop_notifications.dismiss(notification_id)
+    return {"ok": ok}
+
+
+@app.post("/desktop/{secret}/speak")
+async def desktop_speak(secret: str, request: Request) -> dict:
+    """Ad-hoc TTS for a spoken announcement (§2) — Jarvis's ElevenLabs voice
+    for the text of a notification; the app can fall back to macOS `say`
+    itself if this errors."""
+    from app.core.reply_policy import strip_for_speech
+
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    try:
+        body = await request.json()
+        text = str(body.get("text", "")).strip()
+    except Exception:
+        text = ""
+    if not text:
+        raise HTTPException(status_code=400, detail="text required")
+    if router.elevenlabs is None:
+        return {"audio_b64": None}
+    import base64 as _base64
+
+    try:
+        audio = await router.elevenlabs.synthesize(strip_for_speech(text))
+        return {"audio_b64": _base64.b64encode(audio).decode()}
+    except Exception:
+        logger.exception("Desktop speak failed — client falls back to `say`")
+        return {"audio_b64": None}
+
+
+@app.get("/desktop/{secret}/commands")
+async def desktop_commands(secret: str, request: Request) -> dict:
+    """The sidebar Commands tab's data (§3) — one registry, every surface
+    stays in sync automatically as commands are added."""
+    from app.core.commands_registry import commands_by_category
+
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    return {"categories": commands_by_category()}
+
+
+@app.get("/desktop/{secret}/portuguese")
+async def desktop_portuguese(secret: str, request: Request) -> dict:
+    """Portuguese lessons panel (4c): Brazil countdown + readiness gauge +
+    today's status + the current streak — same source PortugueseCoach and
+    the cockpit already use."""
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo as _Z
+
+    from app.core.router import TIMEZONE_KEY
+    from app.lessons.portuguese import PortugueseCoach
+
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    tz = _Z(await router.store.get(TIMEZONE_KEY, router.settings.timezone_default))
+    today = _dt.now(tz).date()
+    coach = PortugueseCoach(router.db)
+    readiness = await coach.readiness(today)
+    streak = (await Streaks(router.db).snapshot(today)).get("portuguese", {"current": 0, "done_today": False})
+    return {
+        "readiness": readiness,
+        "steph_phrase": await coach.steph_phrase(today),
+        "streak": streak,
+        "done_today": streak.get("done_today", False),
+    }
 
 
 # --- Group intelligence, Part 2 (7 Aug) — thin endpoints, GroupIntel does the work ---

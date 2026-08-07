@@ -52,7 +52,7 @@ class CockpitService:
             "location": _location_label(tz_name, now),
             "day_with_jarvis": await self._days_with_jarvis(today),
             "streaks": await self._streaks.snapshot(today),
-            "twelve": await self._twelve(today),
+            "twelve": await self.today_focus(today),
             "body": await self._body(),
             "villa": await self._villa(),
             "today": await self._timeline(today, tz),
@@ -107,6 +107,15 @@ class CockpitService:
             return 1
         first = datetime.fromisoformat(row["first"]).date()
         return max(1, (today - first).days + 1)
+
+    async def today_focus(self, today: date | None = None) -> dict[str, Any]:
+        """Today's Focus, grouped by company — the ONE source of truth every
+        surface (cockpit, Mac app) reads. `position` is the reference
+        Daily12Service.mark_done()/find_plan_task() expect."""
+        if today is None:
+            tz_name = await self._settings.get("current_timezone", self._tz_default)
+            today = datetime.now(ZoneInfo(tz_name)).date()
+        return await self._twelve(today)
 
     async def _twelve(self, today: date) -> dict[str, Any]:
         rows = await self._db.fetch_all(

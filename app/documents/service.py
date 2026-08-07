@@ -21,6 +21,26 @@ FETCH_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+FILING_SYSTEM = """\
+You are filing a document Paul just dropped into his second brain. Read \
+the extracted text and return ONLY a JSON object:
+{"room": "<one of: you, companies, health, finances, people, private>", \
+"tags": ["..."], "actionable": <true/false>, "action_kind": "<short label \
+like invoice/contract/demand notice, or empty>", "reason": "<one short \
+clause, e.g. 'mentions Prodermis and an invoice number'>"}
+
+Rules:
+- "room" MUST be one of the six listed — pick the closest fit, default to \
+"companies" if genuinely unclear.
+- "tags" are 1-4 short lowercase words (company names, doc type) — no \
+sentences.
+- "actionable" is true only for things that plainly need a response: an \
+invoice, a signed contract, a demand/legal notice. Reports and reference \
+material are false.
+- Never invent facts not in the text. If the text is too short/garbled to \
+judge, return room "companies", empty tags, actionable false.\
+"""
+
 
 def looks_like_document_request(text: str) -> bool:
     return bool(FETCH_PATTERN.search(text))
@@ -32,10 +52,12 @@ class DocumentLibrary:
         db: Database,
         memory: MemoryStore,
         object_store: ObjectStore | None = None,
+        claude: Any | None = None,
     ) -> None:
         self._db = db
         self._memory = memory
         self._objects = object_store
+        self._claude = claude
 
     async def ingest(
         self,
@@ -83,6 +105,55 @@ class DocumentLibrary:
             )
         logger.info("Ingested %s: %d chars, %d chunks", filename, len(text), len(chunks))
         return {"id": doc_id, "filename": filename, "chars": len(text), "chunks": len(chunks)}
+
+    async def suggest_filing(self, text: str, filename: str) -> dict[str, Any]:
+        """Drag-a-file-to-brain (Mac app v2, 4d): a best-guess room + tags +
+        actionable flag Paul can correct in one click. Falls back to a safe
+        default when there's no brain model wired or the model misbehaves —
+        this must never block the upload itself."""
+        from app.memory.store import ROOMS
+
+        default = {"room": "companies", "tags": [], "actionable": False, "action_kind": "", "reason": ""}
+        if self._claude is None or not text.strip():
+            return default
+        try:
+            raw = await self._claude.quick(
+                f"Filename: {filename}\n\nExtracted text (may be truncated):\n{text[:6000]}",
+                system=FILING_SYSTEM,
+                max_tokens=300,
+            )
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            data = json.loads(match.group(0)) if match else {}
+        except Exception:
+            logger.exception("Filing suggestion failed for %s — defaulting", filename)
+            return default
+        room = data.get("room") if data.get("room") in ROOMS else "companies"
+        tags = [str(t)[:40] for t in (data.get("tags") or [])][:4]
+        return {
+            "room": room,
+            "tags": tags,
+            "actionable": bool(data.get("actionable")),
+            "action_kind": str(data.get("action_kind") or "")[:60],
+            "reason": str(data.get("reason") or "")[:200],
+        }
+
+    async def set_room(self, doc_id: int, room: str) -> bool:
+        """The 'Wrong? change it' one-click correction (4d)."""
+        from app.memory.store import ROOMS
+
+        if room not in ROOMS:
+            return False
+        await self._db.execute("UPDATE documents SET room = ? WHERE id = ?", (room, doc_id))
+        row = await self._db.fetch_one("SELECT id FROM documents WHERE id = ? AND room = ?", (doc_id, room))
+        return row is not None
+
+    async def recent(self, limit: int = 5) -> list[dict[str, Any]]:
+        """The 'recently filed' list (4d) — last N uploads, newest first."""
+        rows = await self._db.fetch_all(
+            "SELECT id, filename, room, tags, uploaded_at FROM documents ORDER BY uploaded_at DESC LIMIT ?",
+            (limit,),
+        )
+        return [{**r, "tags": json.loads(r["tags"] or "[]")} for r in rows]
 
     async def find(self, query: str, k: int = 3) -> list[dict[str, Any]]:
         """Semantic search → the documents most relevant to the query."""

@@ -25,6 +25,7 @@ from app.daily12.scoring import COMPANY_NAMES
 from app.daily12.service import Daily12Service
 from app.db.base import Database
 from app.heartbeat.calendar_ics import IcsCalendar, travel_or_event_flags
+from app.heartbeat.desktop_notifications import DesktopNotifications
 from app.heartbeat.emailer import Emailer
 from app.heartbeat.streaks import STREAK_LABELS, Streaks
 from app.heartbeat.wake_channels import (
@@ -108,6 +109,7 @@ class HeartbeatJobs:
         self.store = SettingsStore(db)
         self.streaks = Streaks(db)
         self.log = MessageLog(db)
+        self.desktop_notifications = DesktopNotifications(db)
         self.wake_channel = TelegramWakeChannel(
             telegram, elevenlabs, self._owner_chat, self.log
         )
@@ -263,6 +265,7 @@ class HeartbeatJobs:
             return
         await self.log.log("out", text, chat_id=chat_id, meta={"heartbeat": True})
         await self.telegram.send_text(chat_id, text)
+        await self.desktop_notifications.record(text, kind="text", announce=False)
 
     async def _send_voice(self, text: str, essential: bool = False) -> None:
         chat_id = await self._owner_chat()
@@ -277,6 +280,7 @@ class HeartbeatJobs:
         if not await self._not_a_repeat(text):
             return
         await self.log.log("out", text, chat_id=chat_id, kind="voice", meta={"heartbeat": True})
+        await self.desktop_notifications.record(text, kind="voice", announce=True)
         if self.elevenlabs is not None:
             try:
                 audio = await self.elevenlabs.synthesize(strip_for_speech(text))

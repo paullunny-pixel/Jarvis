@@ -498,6 +498,24 @@ TABLES: list[str] = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_geofence_tasks_place ON geofence_tasks (place_name, active)",
+    # --- Mac app v2 hub, §2 (7 Aug): every proactive send (Telegram's
+    # existing funnel, unchanged) also lands here so the desktop app can show
+    # a native banner and — for the ones Jarvis judged worth speaking aloud
+    # on Telegram (voice sends) — a spoken announcement. Dismiss is
+    # server-side and shared across surfaces.
+    """
+    CREATE TABLE IF NOT EXISTS desktop_notifications (
+        id {pk},
+        text TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'text',
+        announce INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        dismissed INTEGER NOT NULL DEFAULT 0,
+        dismissed_at TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_desktop_notifications_dismissed"
+    " ON desktop_notifications (dismissed, created_at)",
 ]
 
 PK = {
