@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta
+from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -121,19 +122,22 @@ class IntakeBase(unittest.IsolatedAsyncioTestCase):
 
 class TestExtractionAndSummary(IntakeBase):
     async def test_batch_summary_is_numbered_with_routing_and_flags(self):
-        summary = await self.intake.start_batch("long ramble about work " * 10)
+        summary, unassigned = await self.intake.start_batch("long ramble about work " * 10)
         self.assertIn("Got 2 things", summary)
         self.assertIn("1. NEW · Chase printers", summary)
         self.assertIn("→ Paul x Harry / Harry Today", summary)
         self.assertIn("☐ Call printer", summary)
         self.assertIn("⚠ No deadline stated", summary)
-        self.assertIn("couldn't place", summary)          # unassignedRemarks surface
+        self.assertIn("couldn't place", summary)          # unassignedRemarks surface in the summary too
+        self.assertTrue(unassigned)                       # ...and are ALSO returned, to be answered
         self.assertIn("Reply OK to write", summary)
         self.assertIsNotNone(await self.intake.pending())
 
     async def test_no_actionable_content_creates_nothing(self):
         self.responses = ['{"cards": [], "unassignedRemarks": ["chat"]}']
-        self.assertIsNone(await self.intake.start_batch("just chatting"))
+        summary, unassigned = await self.intake.start_batch("just chatting")
+        self.assertIsNone(summary)
+        self.assertEqual(unassigned, ["chat"])
         self.assertIsNone(await self.intake.pending())
 
     async def test_uncertain_dedup_downgrades_to_ask(self):
@@ -141,9 +145,10 @@ class TestExtractionAndSummary(IntakeBase):
         card.update({"action": "update", "matchedCardId": "EX1",
                      "matchConfidence": 0.5, "title": "Something unrelated"})
         self.responses = [json.dumps({"cards": [card], "unassignedRemarks": []})]
-        summary = await self.intake.start_batch("ramble " * 30)
+        summary, unassigned = await self.intake.start_batch("ramble " * 30)
         self.assertIn("NEW ·", summary)                   # downgraded, not merged
         self.assertIn("Same as existing 'Review Derma Ads'", summary)
+        self.assertEqual(unassigned, [])
 
     def test_title_similarity_separates_near_misses(self):
         self.assertGreater(title_similarity("Review Derma Ads", "review the derma ads"), 0.6)
@@ -189,7 +194,7 @@ class TestConfirmLoop(IntakeBase):
              "board": "master", "list": None, "domain": None, "priority": None,
              "owner": None, "due": None, "checklist": [], "confidence": 0.9,
              "uncertainties": []}], "unassignedRemarks": []})]
-        summary = await self.intake.start_batch("delete the morning routine card please " * 4)
+        summary, _unassigned = await self.intake.start_batch("delete the morning routine card please " * 4)
         self.assertIn("ARCHIVE · Plan and code morning routine", summary)
         result = await self.intake.handle_reply("OK")
         self.assertIn("✅ archived", result)
@@ -203,7 +208,7 @@ class TestConfirmLoop(IntakeBase):
              "checklist": [], "confidence": 0.4,
              "uncertainties": ["Which card should I archive?"]}],
             "unassignedRemarks": []})]
-        summary = await self.intake.start_batch("bin that old card " * 8)
+        summary, _unassigned = await self.intake.start_batch("bin that old card " * 8)
         self.assertIn("⚠ Which card", summary)
         result = await self.intake.handle_reply("yes")
         self.assertIn("couldn't archive", result)
@@ -414,3 +419,111 @@ class TestTimeoutAndAccuracy(IntakeBase):
         self.assertIn("priority", report)
         self.assertIn("1 corrections", report)
         self.assertIn("owner", report)
+
+
+class TestUnassignedRemarksAreAnswered(unittest.IsolatedAsyncioTestCase):
+    """7 Aug bug: Paul's voice note rambled into a work fragment AND an
+    unrelated question ('best Brazilian restaurants in Dubai?'). The card
+    batch quoted the question as "couldn't place" but nothing ever
+    answered it — Paul had to say "No" to a card he never asked for just
+    to get a reply. A leftover fragment must be answered in the SAME turn
+    the card summary goes out, never blocked behind the confirmation."""
+
+    async def asyncSetUp(self):
+        from app.clients.deepgram_client import DeepgramClient
+        from app.clients.elevenlabs_client import ElevenLabsClient
+        from app.clients.telegram_client import TelegramClient
+        from app.core.router import JarvisRouter
+        from app.heartbeat.jobs import HeartbeatJobs
+
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = SqliteDatabase(os.path.join(self._dir.name, "t.db"))
+        await self.db.init()
+        self.sent = []
+
+        def telegram_handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("sendMessage"):
+                text = parse_qs(request.content.decode()).get("text", [""])[0]
+                self.sent.append(text)
+            return httpx.Response(200, json={"ok": True, "result": {}})
+
+        def claude_handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            system = body.get("system", "")
+            if "extract Trello card intents" in system:
+                text = json.dumps({
+                    "cards": [{
+                        "action": "create", "matchedCardId": None, "matchConfidence": 0.0,
+                        "title": "Ship stock to Dubai Derma", "description": None,
+                        "board": "master", "list": "Inbox", "domain": "Derma",
+                        "priority": "P3", "owner": "Harry", "due": None, "checklist": [],
+                        "confidence": 0.6, "uncertainties": ["Board routing unclear"],
+                    }],
+                    "unassignedRemarks": ["What are the best Brazilian restaurants in Dubai?"],
+                })
+                return httpx.Response(200, json={"content": [{"type": "text", "text": text}]})
+            # Any other call is the ordinary brain turn — answer the leftover for real.
+            return httpx.Response(200, json={"content": [{"type": "text", "text": (
+                "Fogueira downtown is your best bet — proper churrasco, skyline views."
+            )}]})
+
+        self.claude = ClaudeClient("K", transport=httpx.MockTransport(claude_handler))
+        settings = Settings(telegram_bot_token="TOK", telegram_owner_chat_id=1, _env_file=None)
+        jobs = HeartbeatJobs(
+            settings=settings, db=self.db,
+            telegram=TelegramClient("TOK", transport=httpx.MockTransport(telegram_handler)),
+            claude=self.claude,
+        )
+        self.router = JarvisRouter(
+            settings=settings, db=self.db, telegram=jobs.telegram, claude=self.claude,
+            deepgram=DeepgramClient("K", transport=httpx.MockTransport(lambda r: httpx.Response(500))),
+            elevenlabs=ElevenLabsClient("K", voice_id="V", transport=httpx.MockTransport(lambda r: httpx.Response(500))),
+            heartbeat=jobs,
+        )
+
+    async def asyncTearDown(self):
+        await self.db.close()
+        self._dir.cleanup()
+
+    async def test_leftover_question_gets_answered_in_the_same_turn(self):
+        from tests.test_telegram_client import text_update
+
+        text = (
+            "Add a card to ship some stock over to Dubai Derma for Harry, and "
+            "also what are the best Brazilian restaurants in Dubai downtown, "
+            "the top ones please?"
+        )
+        self.assertGreater(len(text), 120)  # satisfies the capture gate without needing is_voice
+        await self.router.handle_update(text_update(text, 1))
+        combined = " ".join(self.sent)
+        # The card confirmation still went out...
+        self.assertIn("Reply OK to write", combined)
+        # ...AND the actual question was answered in the SAME turn, not
+        # deferred behind Paul rejecting a card he never asked for.
+        self.assertIn("Fogueira", combined)
+
+    async def test_no_leftover_means_no_extra_message(self):
+        from tests.test_telegram_client import text_update
+
+        def claude_handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            if "extract Trello card intents" in body.get("system", ""):
+                text = json.dumps({
+                    "cards": [{
+                        "action": "create", "matchedCardId": None, "matchConfidence": 0.0,
+                        "title": "Ship stock to Dubai Derma", "description": None,
+                        "board": "master", "list": "Inbox", "domain": "Derma",
+                        "priority": "P3", "owner": "Harry", "due": None, "checklist": [],
+                        "confidence": 0.9, "uncertainties": [],
+                    }],
+                    "unassignedRemarks": [],
+                })
+                return httpx.Response(200, json={"content": [{"type": "text", "text": text}]})
+            return httpx.Response(200, json={"content": [{"type": "text", "text": "should not be called"}]})
+
+        self.router.claude = ClaudeClient("K", transport=httpx.MockTransport(claude_handler))
+        text = "Add a card to ship some stock over to Dubai Derma for Harry, priority three. " * 3
+        await self.router.handle_update(text_update(text, 1))
+        combined = " ".join(self.sent)
+        self.assertIn("Reply OK to write", combined)
+        self.assertNotIn("should not be called", combined)

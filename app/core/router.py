@@ -627,7 +627,7 @@ class JarvisRouter:
                 and mentions_tasks(transcript)
             ):
                 try:
-                    summary = await intake.start_batch(transcript)
+                    summary, _unassigned = await intake.start_batch(transcript)
                 except Exception:
                     logger.exception("Board half of a mixed message failed")
                     summary = None
@@ -656,11 +656,26 @@ class JarvisRouter:
             and mentions_tasks(transcript)
         ):
             try:
-                summary = await intake.start_batch(transcript)
+                summary, unassigned = await intake.start_batch(transcript)
             except Exception:
                 logger.exception("Intake extraction failed — conversation carries on")
-                summary = None
+                summary, unassigned = None, []
             if summary:
+                # A genuinely unrelated fragment inside the same ramble (a
+                # dinner question, anything conversational) must never sit
+                # blocked behind the card confirmation (7 Aug: Paul had to
+                # say "No" to a card he never asked for just to get an
+                # actual answer). Answer it NOW, in this same turn — never
+                # just quote it as "couldn't place" and leave it hanging.
+                if unassigned:
+                    try:
+                        leftover = "\n".join(unassigned)
+                        leftover_reply = await self._brain_reply(leftover, message)
+                        await self._deliver_reply(message, leftover, leftover_reply)
+                    except Exception:
+                        logger.exception(
+                            "Answering the unassigned remarks failed — card summary still sent"
+                        )
                 await self.log.log("out", summary, chat_id=message.chat_id, meta={"intake": True})
                 await self.telegram.send_text(message.chat_id, summary)
                 return

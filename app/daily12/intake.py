@@ -260,19 +260,26 @@ class VoiceIntake:
         except Exception:
             return None
 
-    async def start_batch(self, transcript: str) -> str | None:
-        """Extract + stash + return the summary; None means nothing actionable
-        (the caller lets the conversation flow on)."""
+    async def start_batch(self, transcript: str) -> tuple[str | None, list[str]]:
+        """Extract + stash + return (summary, unassigned remarks). summary is
+        None when nothing actionable came out (the caller lets the
+        conversation flow on). Remarks are returned EVEN WHEN a card batch
+        is also proposed — quoting a leftover fragment in the summary as
+        "couldn't place" is not the same as answering it (7 Aug: Paul asked
+        about dinner mid-ramble and had to say "No" to an unrelated card
+        just to get an actual answer). The caller decides what to do with
+        them; this layer only ever surfaces them, never drops them."""
         batch = await self.extract(transcript)
+        remarks = [str(r).strip() for r in (batch.get("unassignedRemarks") or []) if str(r).strip()]
         if not batch.get("cards"):
-            return None
+            return None, remarks
         now = datetime.now(ZoneInfo("Asia/Dubai"))
         await self.store.set(PENDING_KEY, json.dumps({
             "batch": batch, "transcript": transcript[:4000],
             "created": now.isoformat(timespec="seconds"), "reminded": False,
             "original": batch,   # what Jarvis proposed — the §9 baseline
         }))
-        return self.compose_summary(batch)
+        return self.compose_summary(batch), remarks
 
     async def handle_reply(self, text: str) -> str | None:
         """Paul's next message while a batch is pending: OK writes, cancel
