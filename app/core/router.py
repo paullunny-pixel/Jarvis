@@ -103,6 +103,9 @@ class JarvisRouter:
         self.warroom = None              # WarRoom — three-vendor board of advisors (main.py wires it)
         self.radar = None                 # TeamRadar — Harry/Adriana/Kiefer bird's-eye view (main.py wires it)
         self.location = None              # LocationAwareness — GPS + daily working memory (main.py wires it)
+        self.deadlines = None             # DeadlineRadar — key-date countdowns (main.py wires it)
+        self.med_supply = None            # MedSupply — refill tracking (main.py wires it)
+        self.outbound_watch = None        # OutboundWatch — follow-up chaser (main.py wires it)
         self._speech_vocab: list[str] = []   # nova-3 keyterms, rebuilt hourly
         self._speech_vocab_ts: float = 0.0
 
@@ -3108,8 +3111,16 @@ class JarvisRouter:
                     "meeting_notetaker turns the Otter meeting-notes pipeline off/on "
                     "('turn off the meeting notetaker', 'notetaker back on') — off "
                     "means Otter's emails stop turning into Brain Dump cards until "
-                    "he flips it back. Saying any of it back without the tool changes "
-                    "nothing. Only claim a rhythm change the result confirms."
+                    "he flips it back. watch_standdown: use the MOMENT Paul explains "
+                    "he's briefly away from his watch/phone for an ordinary reason "
+                    "('I'm at dinner', 'in the shower', 'left it charging') WHILE the "
+                    "watch chaser is on him — his word stands it down completely (no "
+                    "calls) for about an hour, no argument, even if the data still "
+                    "looks like the watch is off. test_watch_chase/test_move_reminder "
+                    "drill those two features on demand ('test watch chase', 'test "
+                    "move reminder') without touching real reminder state. Saying any "
+                    "of it back without the tool changes nothing. Only claim a rhythm "
+                    "change the result confirms."
                 ),
                 "input_schema": {
                     "type": "object",
@@ -3126,6 +3137,9 @@ class JarvisRouter:
                         "skip_reason": {"type": "string"},
                         "heat_day": {"type": "boolean"},
                         "meeting_notetaker": {"type": "boolean"},
+                        "watch_standdown": {"type": "boolean"},
+                        "test_watch_chase": {"type": "boolean"},
+                        "test_move_reminder": {"type": "boolean"},
                     },
                 },
             })
@@ -3325,6 +3339,85 @@ class JarvisRouter:
                     "required": ["action"],
                 },
             })
+        if self.deadlines is not None:
+            tools.append({
+                "name": "deadline_radar",
+                "description": (
+                    "Key dates Paul cares about — birthdays, the villa demand, move-out "
+                    "day, visa/passport/insurance renewals, anything with a real date "
+                    "attached. add: whenever Paul tells you a date worth tracking ('Eva's "
+                    "birthday is 28 Sept', 'the villa demand is due around 7 Jan') — needs "
+                    "label + date (YYYY-MM-DD; work out the year if he didn't say it), "
+                    "recurring_yearly=true for birthdays/anniversaries. remove: he says to "
+                    "stop tracking one. list: 'what's coming up' / 'what deadlines have I "
+                    "got' — shows everything on the radar (key dates + Trello due dates), "
+                    "nearest first. Countdown reminders (4 weeks/1 week/3 days/day-of) fire "
+                    "on their own — this tool is only for adding/removing/listing."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["add", "remove", "list"]},
+                        "label": {"type": "string"},
+                        "date": {"type": "string"},
+                        "recurring_yearly": {"type": "boolean"},
+                    },
+                    "required": ["action"],
+                },
+            })
+        if self.med_supply is not None:
+            tools.append({
+                "name": "meds_supply",
+                "description": (
+                    "Meds refill tracking — TRT and ADHD meds only. set_by_date: Paul "
+                    "gives a run-out/refill date directly ('ADHD meds run out on the "
+                    "20th') — needs item (adhd/trt/supplements) + date (YYYY-MM-DD). "
+                    "set_by_quantity: he gives a count instead ('I've got 30 ADHD "
+                    "tablets, started today, one a day') — needs item + quantity + "
+                    "doses_per_day; start_date defaults to today. status: 'how am I "
+                    "doing on meds' — shows run-out dates for everything tracked. "
+                    "warn_days_before defaults to 5 if he doesn't say. Only claim it's "
+                    "tracked when the result confirms."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["set_by_date", "set_by_quantity", "status"]},
+                        "item": {"type": "string", "enum": ["adhd", "trt", "supplements"]},
+                        "date": {"type": "string"},
+                        "quantity": {"type": "number"},
+                        "doses_per_day": {"type": "number"},
+                        "start_date": {"type": "string"},
+                        "warn_days_before": {"type": "integer"},
+                    },
+                    "required": ["action"],
+                },
+            })
+        if self.outbound_watch is not None:
+            tools.append({
+                "name": "follow_up",
+                "description": (
+                    "Track outbound items awaiting a reply so they don't vanish. "
+                    "chase: the MOMENT Paul says 'chase this' / 'keep an eye on this' "
+                    "about something he sent — resolve WHO it went to and WHAT it was "
+                    "about from the conversation into recipient + subject (never vague "
+                    "— 'chase the BMI thing' means recipient BMI, subject the actual "
+                    "topic). resolved: he says he got a reply / sort it / drop it — "
+                    "match by subject or recipient. list: 'what am I still waiting on' "
+                    "— shows everything open. Auto-detection from his Sent folder runs "
+                    "on its own; this tool is only for the explicit ask and for status."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["chase", "resolved", "list"]},
+                        "recipient": {"type": "string"},
+                        "subject": {"type": "string"},
+                        "note": {"type": "string"},
+                    },
+                    "required": ["action"],
+                },
+            })
         if self.gcal is not None:
             tools.append({
                 "name": "calendar",
@@ -3461,6 +3554,16 @@ class JarvisRouter:
             if isinstance(hour, int) and 4 <= hour <= 11:
                 await self.heartbeat.delay_wake(wake_date, hour)
                 done.append(f"the {wake_date.strftime('%d %b')} wake-up moved to {hour:02d}:00")
+            if tool_input.get("watch_standdown"):
+                await self.heartbeat.stand_down_watch_chase()
+                done.append(
+                    f"watch chase stood down for {self.settings.watch_standdown_minutes} "
+                    "minutes — no calls until then"
+                )
+            if tool_input.get("test_watch_chase"):
+                done.append(await self.heartbeat.test_watch_chase())
+            if tool_input.get("test_move_reminder"):
+                done.append(await self.heartbeat.test_move_reminder())
             return ("Confirmed: " + ", ".join(done) + ".") if done else "NO CHANGE — no valid switch given."
         if name == "trello_card":
             return await self._tool_trello_card(tool_input)
@@ -3491,6 +3594,47 @@ class JarvisRouter:
             return await self._tool_team_radar(tool_input)
         if name == "location" and self.location is not None:
             return await self._tool_location(tool_input)
+        if name == "deadline_radar" and self.deadlines is not None:
+            return await self._tool_deadline_radar(tool_input)
+        if name == "follow_up" and self.outbound_watch is not None:
+            action = str(tool_input.get("action") or "")
+            watch = self.outbound_watch
+            if action == "chase":
+                return await watch.flag(
+                    str(tool_input.get("recipient") or ""), str(tool_input.get("subject") or ""),
+                    str(tool_input.get("note") or ""),
+                )
+            if action == "resolved":
+                term = str(tool_input.get("recipient") or tool_input.get("subject") or "")
+                return await watch.resolve(term)
+            if action == "list":
+                items = await watch.list_open()
+                if not items:
+                    return "Nothing waiting on a reply right now."
+                return "; ".join(f"{i['subject']} → {i['recipient']}" for i in items)
+            return f"UNKNOWN ACTION '{action}'."
+        if name == "meds_supply" and self.med_supply is not None:
+            action = str(tool_input.get("action") or "")
+            supply = self.med_supply
+            if action == "set_by_date":
+                return await supply.set_by_date(
+                    str(tool_input.get("item") or ""), str(tool_input.get("date") or ""),
+                    int(tool_input.get("warn_days_before") or 5),
+                )
+            if action == "set_by_quantity":
+                return await supply.set_by_quantity(
+                    str(tool_input.get("item") or ""),
+                    float(tool_input.get("quantity") or 0),
+                    float(tool_input.get("doses_per_day") or 0),
+                    str(tool_input.get("start_date") or ""),
+                    int(tool_input.get("warn_days_before") or 5),
+                )
+            if action == "status":
+                rows = await supply.status()
+                if not rows:
+                    return "Nothing tracked yet."
+                return "; ".join(f"{r['item'].upper()} runs out {r['run_out_date']}" for r in rows)
+            return f"UNKNOWN ACTION '{action}'."
         if name == "schedule_call" and self.heartbeat is not None:
             import re as _sre
 
@@ -3699,6 +3843,24 @@ class JarvisRouter:
             stale_note = " Data's stale — over 2 hours since the last sync." if cov["stale"] else ""
             return f"Reading {len(cov['boards'])} board(s): {boards}.{stale_note} {cov['coverage_note']}"
         return "TEAM RADAR: unknown action."
+
+    async def _tool_deadline_radar(self, tool_input: dict) -> str:
+        action = str(tool_input.get("action") or "")
+        radar = self.deadlines
+        tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
+        today = datetime.now(ZoneInfo(tz_name)).date()
+        if action == "add":
+            label = str(tool_input.get("label") or "")
+            date_str = str(tool_input.get("date") or "")
+            return await radar.add_date(label, date_str, bool(tool_input.get("recurring_yearly")))
+        if action == "remove":
+            return await radar.remove_date(str(tool_input.get("label") or ""))
+        if action == "list":
+            items = await radar.upcoming(today)
+            if not items:
+                return "Nothing on the deadline radar yet."
+            return "; ".join(radar.countdown_line(i) for i in items[:15])
+        return f"UNKNOWN ACTION '{action}'."
 
     async def _tool_location(self, tool_input: dict) -> str:
         action = str(tool_input.get("action") or "")

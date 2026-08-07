@@ -516,6 +516,54 @@ TABLES: list[str] = [
     """,
     "CREATE INDEX IF NOT EXISTS idx_desktop_notifications_dismissed"
     " ON desktop_notifications (dismissed, created_at)",
+    # --- Smart move reminder (7 Aug build slice): active-energy running
+    # total per day, max-merged exactly like water_log — Apple Health's
+    # 'Today' export range resends the whole day's figure on every post. ---
+    """
+    CREATE TABLE IF NOT EXISTS move_energy_log (
+        day TEXT PRIMARY KEY,
+        active_kcal REAL NOT NULL DEFAULT 0
+    )
+    """,
+    # --- Deadline radar (7 Aug build slice): dates Paul just tells Jarvis
+    # about (birthdays, the villa demand, move-out, renewals) — Trello due
+    # dates and calendar events already live elsewhere and don't need a
+    # table of their own. ---
+    """
+    CREATE TABLE IF NOT EXISTS key_dates (
+        id {pk},
+        label TEXT NOT NULL,
+        date TEXT NOT NULL,
+        recurring_yearly INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+    )
+    """,
+    # --- Meds refill tracking (7 Aug build slice): the run-out date is
+    # computed ONCE when Paul sets it (from quantity + dosing, or given
+    # directly) — simpler and cheaper than re-deriving it every tick. ---
+    """
+    CREATE TABLE IF NOT EXISTS med_supply (
+        item TEXT PRIMARY KEY,
+        run_out_date TEXT NOT NULL,
+        warn_days_before INTEGER NOT NULL DEFAULT 5,
+        updated_at TEXT NOT NULL
+    )
+    """,
+    # --- Follow-up chaser (7 Aug build slice): outbound items awaiting a
+    # reply — Paul-flagged or auto-detected, chased after a tunable gap. ---
+    """
+    CREATE TABLE IF NOT EXISTS outbound_watch (
+        id {pk},
+        subject TEXT NOT NULL DEFAULT '',
+        recipient TEXT NOT NULL DEFAULT '',
+        note TEXT NOT NULL DEFAULT '',
+        sent_at TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'paul_flagged',
+        status TEXT NOT NULL DEFAULT 'open',
+        last_chased_at TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_outbound_watch_status ON outbound_watch (status)",
 ]
 
 PK = {
@@ -529,6 +577,9 @@ PK = {
 MIGRATIONS: list[str] = [
     "ALTER TABLE tasks ADD COLUMN board_id TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE tasks ADD COLUMN board_name TEXT NOT NULL DEFAULT ''",
+    # Withings smart-scale auto-logging (7 Aug): body-fat % has nowhere to
+    # land in the Apple-Health-shaped health_stats row until now.
+    "ALTER TABLE health_stats ADD COLUMN body_fat_pct REAL NOT NULL DEFAULT 0",
 ]
 
 

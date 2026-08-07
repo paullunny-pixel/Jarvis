@@ -325,6 +325,32 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
         db, memory=memory, living=living, daily12=daily12, mail=mail, jobs=jobs,
         timezone_default=settings.timezone_default,
     )
+    # Quick ADHD wins (7 Aug brief): deadline radar and meds-refill tracking
+    # need no external key — pure DB + existing Trello connection. The
+    # Withings client is dormant until keyed (see below); the follow-up
+    # chaser rides the existing mail connection when one exists.
+    from app.deadlines import DeadlineRadar
+    from app.meds_supply import MedSupply
+
+    jobs.deadlines = DeadlineRadar(db)
+    router_obj.deadlines = jobs.deadlines
+    jobs.med_supply = MedSupply(db)
+    router_obj.med_supply = jobs.med_supply
+
+    from app.clients.withings_client import WithingsClient
+    from app.withings_service import Withings
+
+    jobs.withings = Withings(
+        WithingsClient(settings.withings_client_id, settings.withings_client_secret),
+        db, jobs.store,
+    )
+    router_obj.withings = jobs.withings
+
+    if mail is not None:
+        from app.followup import OutboundWatch
+
+        jobs.outbound_watch = OutboundWatch(db, mail)
+        router_obj.outbound_watch = jobs.outbound_watch
     return router_obj, heartbeat
 
 
@@ -899,6 +925,46 @@ async def google_callback(request: Request):
     )
 
 
+@app.get("/withings/connect/{secret}")
+async def withings_connect(secret: str, request: Request):
+    from fastapi.responses import RedirectResponse
+
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    withings = getattr(router, "withings", None)
+    if withings is None or not withings.client.configured:
+        raise HTTPException(status_code=409, detail="Withings OAuth keys not configured")
+    redirect_uri = f"{router.settings.public_url.rstrip('/')}/withings/callback"
+    return RedirectResponse(url=withings.client.auth_url(redirect_uri, state=secret))
+
+
+@app.get("/withings/callback")
+async def withings_callback(request: Request):
+    from fastapi.responses import HTMLResponse
+
+    router: JarvisRouter = request.app.state.router
+    state = request.query_params.get("state", "")
+    code = request.query_params.get("code", "")
+    _desktop_gate(router, state)
+    withings = getattr(router, "withings", None)
+    if withings is None or not code:
+        return HTMLResponse("<h3>Something's missing — ask Jarvis to connect again.</h3>", status_code=400)
+    try:
+        redirect_uri = f"{router.settings.public_url.rstrip('/')}/withings/callback"
+        refresh = await withings.client.exchange_code(code, redirect_uri)
+        await withings.store_token(refresh)
+    except Exception as exc:
+        logger.exception("Withings code exchange failed")
+        return HTMLResponse(
+            f"<h3>Withings said no: {str(exc)[:200]}</h3><p>Tell Jarvis and he'll sort it.</p>",
+            status_code=502,
+        )
+    return HTMLResponse(
+        "<h3>✅ Withings connected.</h3>"
+        "<p>You can close this tab — Jarvis logs weight and body-fat every morning now.</p>"
+    )
+
+
 @app.get("/desktop/{secret}/card-grammar")
 async def desktop_card_grammar(secret: str, request: Request) -> dict:
     """The Card Script panel's data (6 Aug brief): the dictation grammar,
@@ -1351,6 +1417,27 @@ async def radar_project(secret: str, session_id: int, request: Request) -> dict:
     return await radar.project_status(session_id)
 
 
+async def merge_active_kcal_total(db, day_iso: str, active_kcal: float) -> bool:
+    """Same max-merge shape as merge_water_total — Health Auto Export resends
+    the day's whole running total on every 'Today'-range post."""
+    if active_kcal <= 0:
+        return False
+    row = await db.fetch_one("SELECT active_kcal FROM move_energy_log WHERE day = ?", (day_iso,))
+    total = max(float(row["active_kcal"]) if row else 0.0, active_kcal)
+    if db.dialect == "postgres":
+        await db.execute(
+            "INSERT INTO move_energy_log (day, active_kcal) VALUES (?, ?)"
+            " ON CONFLICT (day) DO UPDATE SET active_kcal = EXCLUDED.active_kcal",
+            (day_iso, total),
+        )
+    else:
+        await db.execute(
+            "INSERT OR REPLACE INTO move_energy_log (day, active_kcal) VALUES (?, ?)",
+            (day_iso, total),
+        )
+    return True
+
+
 async def merge_water_total(db, day_iso: str, water_ml: int) -> bool:
     """Apple Health (WaterMinder, the Watch, any water app) sends the day's
     CUMULATIVE total — merge by MAX so manual '300ml' logging and the export
@@ -1572,6 +1659,11 @@ async def apple_health(request: Request) -> dict:
     water_recorded = await merge_water_total(
         router.db, stat_date, int(payload.get("water_ml") or 0)
     )
+    await merge_active_kcal_total(router.db, stat_date, float(payload.get("active_kcal") or 0))
+    # Watch-wearing chaser (7 Aug): the freshest heart-rate sample timestamp
+    # we've ever seen — a gap here is the whole detection signal.
+    if payload.get("last_hr_at"):
+        await router.store.set("last_hr_sample_at", str(payload["last_hr_at"]))
     # The parsed picture rides the response so the export app's log shows
     # exactly what landed — no more blind debugging (the 750ml bug, 5 Aug).
     parsed = {

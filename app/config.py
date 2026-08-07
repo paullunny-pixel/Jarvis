@@ -86,6 +86,10 @@ class Settings(BaseSettings):
     focus_personal_max: int = 3
     google_oauth_client_id: str = ""
     google_oauth_client_secret: str = ""
+    # Withings smart scale (7 Aug build slice) — same OAuth2 shape as Google
+    # Calendar above; dormant (.client.configured False) until both are set.
+    withings_client_id: str = ""
+    withings_client_secret: str = ""
     r2_access_key: str = ""
     r2_secret_key: str = ""
     r2_bucket: str = ""
@@ -120,6 +124,19 @@ class Settings(BaseSettings):
     # waking day ≈ 3L — right for indoor Dubai; run/heat days drink harder.
     water_pace_ml_per_hour: int = 200
     water_heat_pace_ml: int = 275         # run days + declared heat days
+    # Smart move reminder (7 Aug build slice): pace-vs-goal exactly like
+    # water — the Move ring's kcal goal spread across a waking day, silent
+    # when on track. Apple doesn't export the GOAL itself (only what he's
+    # burned), so it's a tunable here, not read from Health.
+    move_goal_kcal: int = 500
+    move_active_hours: float = 14.0
+
+    # Watch-wearing chaser (7 Aug build slice): no heart-rate sample for
+    # this many minutes during the waking day = watch off wrist. Standing
+    # down (Paul's word, e.g. "I'm at dinner") pauses calls for this long.
+    watch_gap_minutes: int = 60
+    watch_standdown_minutes: int = 60
+
     # The custom Twilio voice channel (built 4 Aug): 'call me', inbound calls
     # and the wake-up escalation all ride these + paul_phone_number.
     twilio_account_sid: str = ""

@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime
 
 import httpx
 
@@ -239,6 +240,20 @@ class TestBrainHands(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertTrue(any("quiet day ON" in str(blk["content"]) for blk in results))
         self.assertIn("Silence engaged", b.sent())
+
+    async def test_rhythm_tool_stands_down_the_watch_chase(self):
+        b = BrainHarness(
+            self.db,
+            opus_responses=[
+                [tool_use("rhythm", watch_standdown=True)],
+                [text_block("No bother, sir — I'll leave the watch alone for a bit.")],
+            ],
+        )
+        await b.h.router.handle_update(
+            text_update("just so you know I'm at dinner, watch is upstairs", OWNER)
+        )
+        self.assertTrue(await b.jobs._watch_standdown_active(datetime.now(await b.jobs._tz())))
+        self.assertIn("No bother", b.sent())
 
     async def test_remember_tool_files_into_the_second_brain(self):
         from app.memory.crypto import PrivateBox

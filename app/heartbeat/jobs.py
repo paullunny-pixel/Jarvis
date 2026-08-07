@@ -11,6 +11,7 @@ THE WALL: the Kiefer note and all business output draw only from business data.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -104,6 +105,9 @@ class HeartbeatJobs:
         self.group_intel = None   # GroupIntel — Part 2 group intelligence (main.py wires it)
         self.radar_sync = None    # RadarSync — Team Radar's Trello poll (main.py wires it)
         self.radar = None         # TeamRadar — Team Radar's derivation layer (main.py wires it)
+        self.deadlines = None     # DeadlineRadar — key-date countdowns (main.py wires it)
+        self.withings = None      # Withings — smart-scale auto-logging (main.py wires it)
+        self.outbound_watch = None  # OutboundWatch — follow-up chaser (main.py wires it)
         self.location = None      # LocationAwareness — GPS + daily working memory (main.py wires it)
         self.maps = None          # MapsClient — §3 leave-now alerts, dormant until keyed (main.py wires it)
         self.store = SettingsStore(db)
@@ -770,6 +774,33 @@ class HeartbeatJobs:
         except Exception:
             logger.exception("Radar interrupt check failed")
 
+    async def withings_tick(self, now: datetime | None = None) -> None:
+        """Morning smart-scale sync — dormant until Withings is connected."""
+        if self.withings is None:
+            return
+        try:
+            await self.withings.daily_sync(now)
+        except Exception:
+            logger.exception("Withings sync failed (next beat retries)")
+
+    async def deadline_radar_tick(self, now: datetime | None = None) -> None:
+        """Daily countdown sweep — 4 weeks / 1 week / 3 days / day-of. Each
+        (date, lead-time) pair fires once, ever, via the usual _once guard."""
+        if self.deadlines is None:
+            return
+        now = now or datetime.now(await self._tz())
+        today = now.date()
+        try:
+            due = await self.deadlines.due_countdowns(today)
+        except Exception:
+            logger.exception("Deadline radar sweep failed (next beat retries)")
+            return
+        for item in due:
+            key = f"deadline:{item['ref']}:{item['days_until']}:{today.isoformat()}"
+            if not await self._once(key, hours=20):
+                continue
+            await self._send_text(self.deadlines.countdown_line(item))
+
     SCHEDULED_CALLS_KEY = "scheduled_calls"
 
     async def scheduled_calls_tick(self, now: datetime | None = None) -> None:
@@ -950,6 +981,194 @@ class HeartbeatJobs:
             f"and I'll log it. One minute on your feet too (movements {moves})."
         )
 
+    # ------------------------------------------- Watch-wearing chaser (A)
+    # Detection: no fresh heart-rate sample via the Apple Health pipe for
+    # watch_gap_minutes during the waking day = watch off wrist. Chase,
+    # never harass (Paul's rules, 7 Aug): ONE call ever per incident, a
+    # Telegram explainer if it goes unanswered, a silent re-check an hour
+    # later, then Telegram-only from there — and his own word ("I'm at
+    # dinner") stands the whole thing down for watch_standdown_minutes,
+    # no matter what the data says.
+    #
+    # Known gap (flagged honestly, not silently assumed away): there is no
+    # Twilio call-answered/no-answer webhook in this codebase. "No answer"
+    # is approximated — if the incident is STILL open at the next tick
+    # after the call, that's treated as unanswered and the Telegram
+    # explainer fires. If Paul actually answers and sorts it, HR resumes
+    # and the incident resolves silently before that ever fires.
+    LAST_HR_KEY = "last_hr_sample_at"
+    WATCH_INCIDENT_KEY = "watch_incident"
+    WATCH_STANDDOWN_KEY = "watch_standdown_until"
+
+    async def _hr_gap_minutes(self, now: datetime) -> float | None:
+        """Minutes since the last heart-rate sample; None if we've never
+        seen one (can't judge — never chase on an absence of evidence)."""
+        raw = await self.store.get(self.LAST_HR_KEY, "")
+        if not raw:
+            return None
+        try:
+            last = datetime.fromisoformat(raw)
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
+        return max(0.0, (now.astimezone(timezone.utc) - last.astimezone(timezone.utc)).total_seconds() / 60)
+
+    async def stand_down_watch_chase(self, now: datetime | None = None) -> None:
+        """Paul's word pauses it completely — no calls for the standdown
+        window, whether or not the watch is still undetected."""
+        now = now or datetime.now(await self._tz())
+        until = now + timedelta(minutes=self.settings.watch_standdown_minutes)
+        await self.store.set(self.WATCH_STANDDOWN_KEY, until.isoformat())
+
+    async def _watch_standdown_active(self, now: datetime) -> bool:
+        raw = await self.store.get(self.WATCH_STANDDOWN_KEY, "")
+        if not raw:
+            return False
+        try:
+            until = datetime.fromisoformat(raw)
+        except Exception:
+            return False
+        return now < until
+
+    async def _watch_incident(self) -> dict:
+        try:
+            return json.loads(await self.store.get(self.WATCH_INCIDENT_KEY, "") or "{}")
+        except Exception:
+            return {}
+
+    async def watch_check_tick(self, now: datetime | None = None) -> None:
+        if await self.store.get("hourly_nudges", "on") != "on":
+            return
+        now = now or datetime.now(await self._tz())
+        today = now.date()
+        if await self.wake_enabled() and not await self.woke_today(today) and now.hour < 12:
+            return  # still asleep — not the watch's business
+        if await self.before_wake(now):
+            return
+        gone_to_bed = await self.db.fetch_one(
+            "SELECT id FROM sleep_log WHERE day = ?", (today.isoformat(),)
+        )
+        if gone_to_bed and now.hour >= 12:
+            return
+        if self.gates is not None and await self.gates.is_overridden("watch", today):
+            return
+        gap = await self._hr_gap_minutes(now)
+        incident = await self._watch_incident()
+        if gap is None or gap < self.settings.watch_gap_minutes:
+            if incident:  # readings flowing again — incident closed, silently
+                await self.store.set(self.WATCH_INCIDENT_KEY, "")
+            return
+        if await self._watch_standdown_active(now):
+            return  # his word, still holding
+        if not incident:
+            incident = {"since": now.isoformat(), "called": False, "telegram_sent": False, "last_chase": ""}
+            await self.store.set(self.WATCH_INCIDENT_KEY, json.dumps(incident))
+        if not incident.get("called"):
+            called = False
+            if self.phone_channel is not None and self.phone_channel.configured:
+                called = await self.phone_channel.call_paul("Your watch isn't on your wrist, sir.")
+            incident["called"] = True
+            incident["call_time"] = now.isoformat()
+            incident["call_placed"] = called
+            await self.store.set(self.WATCH_INCIDENT_KEY, json.dumps(incident))
+            return  # give the call a real chance before assuming it went unanswered
+        if not incident.get("telegram_sent"):
+            since = incident.get("since", now.isoformat())
+            try:
+                since_time = datetime.fromisoformat(since).strftime("%H:%M")
+            except Exception:
+                since_time = "earlier"
+            await self._send_text(
+                f"Rang you just now — no heart-rate since {since_time}, so the watch is "
+                "off. Stick it on.",
+                essential=True,
+            )
+            incident["telegram_sent"] = True
+            incident["last_chase"] = now.isoformat()
+            await self.store.set(self.WATCH_INCIDENT_KEY, json.dumps(incident))
+            return
+        last_chase = incident.get("last_chase", "")
+        try:
+            due = datetime.fromisoformat(last_chase) + timedelta(hours=1) <= now if last_chase else True
+        except Exception:
+            due = True
+        if not due:
+            return
+        await self._send_text("Watch still isn't on your wrist, sir — no heart-rate coming through.")
+        incident["last_chase"] = now.isoformat()
+        await self.store.set(self.WATCH_INCIDENT_KEY, json.dumps(incident))
+
+    async def test_watch_chase(self) -> str:
+        """Voice/text trigger ('test watch chase'): drills the call line for
+        real, without touching live incident state."""
+        called = False
+        if self.phone_channel is not None and self.phone_channel.configured:
+            called = await self.phone_channel.call_paul(
+                "This is a test of the watch chase, sir — no real incident."
+            )
+        return "Test call placed." if called else "Phone channel isn't configured — nothing to ring."
+
+    # ------------------------------------------- Smart move reminder (B)
+    # Exactly like water pacing: goal spread across the waking day, ahead
+    # of the curve = silence, one honest line with real numbers when behind
+    # — and never at all when the watch is off (no data, no nag) or asleep.
+    async def move_pace_status(self, now: datetime) -> dict:
+        today = now.date()
+        goal = self.settings.move_goal_kcal
+        pace = goal / self.settings.move_active_hours if self.settings.move_active_hours else 0
+        hours_awake = max(0.0, (now.hour + now.minute / 60) - await self._wake_start_hour(today))
+        expected = round(hours_awake * pace)
+        row = await self.db.fetch_one(
+            "SELECT active_kcal FROM move_energy_log WHERE day = ?", (today.isoformat(),)
+        )
+        actual = round(float(row["active_kcal"])) if row else 0
+        return {
+            "pace": round(pace, 1), "hours_awake": hours_awake,
+            "expected": expected, "actual": actual, "behind": expected - actual,
+        }
+
+    async def move_pace_nudge(self, now: datetime | None = None) -> None:
+        if await self.store.get("hourly_nudges", "on") != "on":
+            return
+        now = now or datetime.now(await self._tz())
+        today = now.date()
+        if await self.wake_enabled() and not await self.woke_today(today) and now.hour < 12:
+            return
+        if await self.before_wake(now):
+            return
+        gone_to_bed = await self.db.fetch_one(
+            "SELECT id FROM sleep_log WHERE day = ?", (today.isoformat(),)
+        )
+        if gone_to_bed and now.hour >= 12:
+            return
+        gap = await self._hr_gap_minutes(now)
+        if gap is not None and gap >= self.settings.watch_gap_minutes:
+            return  # watch is off — no data, no nag (reuses the chaser's own detection)
+        if not await self._once(f"movepace:{today.isoformat()}:{now.hour}", hours=0.9):
+            return
+        status = await self.move_pace_status(now)
+        if status["behind"] < status["pace"]:
+            return  # on or ahead of the curve — silence is the reward
+        await self._send_text(
+            f"{now.strftime('%H:%M')}, sir — you're {status['behind']} kcal behind the "
+            f"move pace ({status['actual']} down, {status['expected']} expected). "
+            "A short walk squares it."
+        )
+
+    async def test_move_reminder(self) -> str:
+        """Voice/text trigger ('test move reminder'): shows today's pace
+        line regardless of whether he's actually behind."""
+        now = datetime.now(await self._tz())
+        status = await self.move_pace_status(now)
+        line = (
+            f"Move pace: {status['actual']} of {status['expected']} kcal expected by now "
+            f"(goal {self.settings.move_goal_kcal} kcal/day). "
+            + ("Behind." if status["behind"] >= status["pace"] else "On track — silence is the reward.")
+        )
+        await self._send_text(line)
+        return line
+
     # --------------------------------------------------- §6 meds & supplements
 
     async def med_taken(self, today: date, item: str) -> bool:
@@ -984,6 +1203,55 @@ class HeartbeatJobs:
             "Tell me when it's in and I'll log it.",
             essential=True,
         )
+
+    async def followup_chaser_tick(self, now: datetime | None = None) -> None:
+        """Follow-up chaser (7 Aug): sweep for auto-detectable unanswered
+        sends, then surface anything — flagged or auto-detected — that's
+        gone quiet past the threshold. One gentle line per item, not a
+        wall of them."""
+        if self.outbound_watch is None:
+            return
+        now = now or datetime.now(await self._tz())
+        today = now.date()
+        try:
+            await self.outbound_watch.auto_detect_sweep()
+        except Exception:
+            logger.exception("Follow-up auto-detect sweep failed (next beat retries)")
+        try:
+            due = await self.outbound_watch.due_chases(today)
+        except Exception:
+            logger.exception("Follow-up chase check failed (next beat retries)")
+            return
+        for item in due[:5]:  # a handful at once is a nudge; a dozen is noise
+            if not await self._once(f"followup:{item['id']}:{today.isoformat()}", hours=20):
+                continue
+            await self._send_text(
+                f"You messaged {item['recipient']} about '{item['subject']}' "
+                f"{item['days_waiting']} days ago, no reply — want to chase?"
+            )
+            await self.outbound_watch.mark_chased(item["id"])
+
+    async def meds_refill_tick(self, now: datetime | None = None) -> None:
+        """Meds refill tracking (7 Aug): warns ahead of running out, once per
+        item per day it's inside the warn window. Essential — a non-
+        negotiable, same as the daily reminder itself."""
+        if self.med_supply is None:
+            return
+        now = now or datetime.now(await self._tz())
+        today = now.date()
+        try:
+            due = await self.med_supply.due_warnings(today)
+        except Exception:
+            logger.exception("Meds refill check failed (next beat retries)")
+            return
+        for item in due:
+            if not await self._once(f"refill:{item['item']}:{today.isoformat()}", hours=20):
+                continue
+            days = item["days_left"]
+            when = "today" if days == 0 else f"in {days} day{'s' if days != 1 else ''}"
+            await self._send_text(
+                f"{item['item'].upper()} meds run out {when} — reorder.", essential=True
+            )
 
     async def gate_chaser(self, now: datetime | None = None) -> None:
         """Gates chase, they don't block (Paul, 3 Aug): one gentle reminder an

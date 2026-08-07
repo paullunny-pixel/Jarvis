@@ -95,6 +95,19 @@ class Heartbeat:
             ("radar_tick", self.jobs.radar_tick, CronTrigger(minute="*/15", timezone=timezone), 600),
             # §5: hourly move + water through the waking day
             ("move_water", self.jobs.move_water_nudge, CronTrigger(hour="8-20", minute=5, timezone=timezone), 900),
+            # Watch-wearing chaser: checked every 15 min so a gap is caught
+            # close to when it actually starts, not an hour late
+            ("watch_check", self.jobs.watch_check_tick, CronTrigger(hour="7-22", minute="*/15", timezone=timezone), 600),
+            # Smart move reminder: pace-vs-goal, same hourly beat as water
+            ("move_pace", self.jobs.move_pace_nudge, CronTrigger(hour="8-20", minute=35, timezone=timezone), 900),
+            # Deadline radar: once a day is plenty for a 4-week/1-week/3-day/day-of sweep
+            ("deadline_radar", self.jobs.deadline_radar_tick, CronTrigger(hour=8, minute=15, timezone=timezone), 1800),
+            # Withings smart scale: morning weigh-in sync, dormant until connected
+            ("withings_sync", self.jobs.withings_tick, CronTrigger(hour=7, minute=10, timezone=timezone), 1800),
+            # Meds refill tracking: once a day is plenty for a day-granularity warn window
+            ("meds_refill", self.jobs.meds_refill_tick, CronTrigger(hour=9, minute=0, timezone=timezone), 1800),
+            # Follow-up chaser: sweeps Sent folders — once a day, IMAP isn't cheap
+            ("followup_chaser", self.jobs.followup_chaser_tick, CronTrigger(hour=10, minute=0, timezone=timezone), 1800),
             # §6: meds/supplements/TRT (TRT job self-checks for Saturday)
             ("med_adhd", partial(self.jobs.med_reminder, "adhd"), CronTrigger(hour=9, minute=30, timezone=timezone), 1800),
             ("med_supplements", partial(self.jobs.med_reminder, "supplements"), CronTrigger(hour=14, minute=0, timezone=timezone), 1800),

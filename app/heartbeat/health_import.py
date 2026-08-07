@@ -54,6 +54,17 @@ def flatten_export(payload: dict, now_local: datetime) -> dict:
             flat["weight_kg"] = round(latest * 0.45359237, 2) if units in ("lb", "lbs") else latest
         elif name == "resting_heart_rate":
             flat["resting_hr"] = int(round(total / len(points)))
+        elif name == "heart_rate":
+            # Continuous samples (distinct from the daily resting_heart_rate
+            # average) — the Watch-wearing chaser needs only the freshest
+            # timestamp, to know how long it's been since a sample arrived.
+            latest_at = max((str(p.get("date", "")) for p in points), default="")
+            if latest_at:
+                flat["last_hr_at"] = latest_at
+        elif name in ("active_energy", "active_energy_burned"):
+            # HAE reports the day's running total for a 'Today' export range —
+            # same max-merge shape as water_ml (see merge_active_kcal_total).
+            flat["active_kcal"] = round(total, 1)
         elif name == "heart_rate_variability":
             flat["hrv"] = round(total / len(points), 1)
         elif name == "sleep_analysis":
