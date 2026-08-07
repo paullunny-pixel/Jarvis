@@ -3,7 +3,11 @@
 // Privacy model: openWakeWord runs LOCALLY (ONNX models via onnxruntime-node,
 // right in this process). Not one byte of audio leaves the Mac until either
 // the wake word fires, the talk button is pressed, or something is typed.
-// The status dot always tells the truth.
+// The status pill always tells the truth.
+//
+// Layout (v3, 7 Aug): three panes always visible — sidebar (nav + reference
+// panes) · centre (live conversation) · right (Today's Focus / Next up /
+// Portuguese / WhatsApp groups, always on, not a switchable "Hub" tab).
 const fs = require("fs");
 const path = require("path");
 const { execFile } = require("child_process");
@@ -14,6 +18,7 @@ const MODEL_DIR = path.join(__dirname, "..", "assets");
 
 // --- DOM ---
 const feedEl = document.getElementById("feed");
+const statusPillEl = document.getElementById("status-pill");
 const dotEl = document.getElementById("status-dot");
 const statusEl = document.getElementById("status-text");
 const recBadgeEl = document.getElementById("rec-badge");
@@ -52,7 +57,6 @@ let capturing = false;
 let captureOnChunk = null;
 
 // --- desktop notifications (§2) ---
-const notifNavEl = document.getElementById("notif-nav");
 const notifBadgeEl = document.getElementById("notif-badge");
 const notifListEl = document.getElementById("notif-list");
 const notifMuteBtn = document.getElementById("notif-mute-btn");
@@ -69,12 +73,17 @@ function cfg() {
   };
 }
 
+function escapeHtml(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
 function setStatus(next, text) {
   state = next;
-  dotEl.className = "dot " + (muted && next === "idle" ? "muted" : next === "idle" && wakeReady && !muted ? "listening" : next);
+  const cls = muted && next === "idle" ? "muted" : (next === "idle" && wakeReady && !muted ? "listening" : next);
+  statusPillEl.className = "pill " + cls;
   statusEl.textContent = text;
   recBadgeEl.classList.toggle("hidden", next !== "recording");
-  mainColEl.classList.toggle("rec-active", next === "recording");
 }
 
 function idleStatus() {
@@ -83,13 +92,37 @@ function idleStatus() {
   return setStatus("idle", "Wake word off — models missing (run `npm run fetch-model`)");
 }
 
+// --- the live conversation feed ---
+let lastMsgDay = null;
+
+function maybeDaySeparator() {
+  const day = new Date().toDateString();
+  if (day === lastMsgDay) return;
+  lastMsgDay = day;
+  const sep = document.createElement("div");
+  sep.className = "daysep";
+  sep.textContent = new Date().toLocaleDateString([], { weekday: "long", day: "numeric", month: "long" });
+  feedEl.appendChild(sep);
+}
+
 function addMsg(kind, text) {
-  const div = document.createElement("div");
-  div.className = "msg " + kind;
-  div.textContent = text;
-  feedEl.appendChild(div);
+  maybeDaySeparator();
+  const wrap = document.createElement("div");
+  wrap.className = "msg" + (kind === "jarvis" ? "" : " " + kind);
+  const bub = document.createElement("div");
+  bub.className = "bub";
+  bub.textContent = text;
+  wrap.appendChild(bub);
+  if (kind !== "system") {
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    meta.innerHTML = `<span class="who">${kind === "you" ? "You" : "Jarvis"}</span> · ${time}`;
+    wrap.appendChild(meta);
+  }
+  feedEl.appendChild(wrap);
   feedEl.scrollTop = feedEl.scrollHeight;
-  return div;
+  return wrap;
 }
 
 function tone(ctx, freq, startAt, durationMs = 0.12) {
@@ -131,12 +164,10 @@ function chimeStop() {
 // --- the Card Script panel (6 Aug brief) ---
 // A rendered view of Jarvis's ACTUAL card-parsing config, served by the
 // backend — nothing here is hard-coded, so a renamed Trello list shows up
-// on the next sync. Standalone component: needs only a container + data,
-// so the War Room can reuse it verbatim later.
+// on the next sync.
 function renderCardScript(container, data, stale) {
   const colours = data.colours || {};
-  const esc = (s) => String(s).replace(/[&<>"]/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const esc = escapeHtml;
   const sentence = (data.example_parts || [])
     .map((p) => `<span style="color:${esc(colours[p.colour] || "#9db0c6")}${p.colour === "slate" ? ";font-weight:400" : ""}">${esc(p.text)}</span>`)
     .join("");
@@ -177,12 +208,12 @@ async function loadCardScript() {
     renderCardScript(container, data, false);
   } catch (_) {
     // Backend unreachable: the cached render above stands; if there was no
-    // cache at all the space stays empty rather than erroring (brief §7.3).
+    // cache at all the space stays empty rather than erroring.
   }
 }
 
-// --- Reference tabs (§3): Script (existing, live) / Cheat-sheet (verbatim,
-// static) / Commands (live, backend registry) ---
+// --- Reference nav (§3): Trello card script (live) / Cheat-sheet (verbatim,
+// static) / Commands (live, backend registry) / Filed documents / Notifications ---
 function renderCheatSheet() {
   const container = document.getElementById("cheatsheet-panel");
   container.innerHTML = `
@@ -215,8 +246,7 @@ async function loadCommands(force = false) {
   if (commandsLoaded && !force) return;
   try {
     const data = await backendFetch("/commands");
-    const esc = (s) => String(s).replace(/[&<>"]/g, (c) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const esc = escapeHtml;
     const groups = Object.entries(data.categories || {})
       .map(([cat, cmds]) => `
         <div class="cmd-group">
@@ -237,17 +267,40 @@ async function loadCommands(force = false) {
   }
 }
 
-function switchRefTab(tab) {
-  document.querySelectorAll(".ref-tab").forEach((btn) =>
-    btn.classList.toggle("on", btn.dataset.tab === tab));
-  document.getElementById("card-script").classList.toggle("hidden", tab !== "script");
-  document.getElementById("cheatsheet-panel").classList.toggle("hidden", tab !== "cheatsheet");
-  document.getElementById("commands-panel").classList.toggle("hidden", tab !== "commands");
-  if (tab === "commands") loadCommands();
+const REF_PANES = ["script", "cheatsheet", "commands", "notifications", "files"];
+
+function switchRefPane(name) {
+  document.querySelectorAll(".nav[data-ref]").forEach((el) =>
+    el.classList.toggle("on", el.dataset.ref === name));
+  REF_PANES.forEach((n) =>
+    document.getElementById(`ref-pane-${n}`).classList.toggle("hidden", n !== name));
+  if (name === "commands") loadCommands();
+  if (name === "files") loadRecentFiles();
 }
 
-document.querySelectorAll(".ref-tab").forEach((btn) =>
-  btn.addEventListener("click", () => switchRefTab(btn.dataset.tab)));
+document.querySelectorAll(".nav[data-ref]").forEach((el) =>
+  el.addEventListener("click", () => switchRefPane(el.dataset.ref)));
+
+// --- sidebar panel-nav: jump to + flash the matching card in the right column ---
+function flashEl(el) {
+  el.classList.remove("flash");
+  void el.offsetWidth; // restart the animation
+  el.classList.add("flash");
+}
+
+document.querySelectorAll(".nav[data-scroll]").forEach((el) => {
+  el.addEventListener("click", () => {
+    const card = document.getElementById(el.dataset.scroll);
+    if (card) {
+      card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      flashEl(card);
+    }
+  });
+});
+
+document.getElementById("nav-feed").addEventListener("click", () => {
+  feedEl.scrollTop = feedEl.scrollHeight;
+});
 
 function setConnected(ok, text) {
   const dot = document.getElementById("side-dot");
@@ -366,11 +419,6 @@ function startNotifPolling() {
   if (notifPollTimer) return;
   pollNotifications();
   notifPollTimer = setInterval(pollNotifications, NOTIF_POLL_MS);
-}
-
-function stopNotifPolling() {
-  if (notifPollTimer) clearInterval(notifPollTimer);
-  notifPollTimer = null;
 }
 
 notifMuteBtn.addEventListener("click", () => {
@@ -620,7 +668,7 @@ async function conversationLoop() {
     }
   }
   inConversation = false;
-  talkBtn.textContent = "Start conversation";
+  talkBtn.textContent = "🎙 Start conversation";
   talkBtn.classList.remove("live");
   idleStatus();
 }
@@ -632,7 +680,7 @@ talkBtn.addEventListener("click", () => {
     return;
   }
   inConversation = true;
-  talkBtn.textContent = "End conversation";
+  talkBtn.textContent = "🔴 End conversation";
   talkBtn.classList.add("live");
   conversationLoop();
 });
@@ -796,6 +844,7 @@ document.getElementById("cfg-save").addEventListener("click", async () => {
     loadCardScript();
     commandsLoaded = false;
     startNotifPolling();
+    startPanelsRefresh();
     settingsPanel.classList.add("hidden");
   } catch (err) {
     cfgStatus.textContent = describeError(err);
@@ -806,21 +855,17 @@ document.getElementById("cfg-save").addEventListener("click", async () => {
 });
 
 // =====================================================================
-// The Hub (§4): five panels, each a thin window onto the existing backend.
-// No new logic lives here — every panel reads an endpoint already built.
+// The right-hand panels (§4): always-visible windows onto the existing
+// backend — Today's Focus, Next up, Portuguese, WhatsApp groups. No new
+// logic lives here — every panel reads an endpoint already built.
 // =====================================================================
-const PANELS = ["focus", "calendar", "portuguese", "dropzone", "whatsapp"];
-let hubRefreshTimer = null;
-
-function escapeHtml(s) {
-  return String(s == null ? "" : s).replace(/[&<>"]/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-}
+const PANELS = ["focus", "calendar", "portuguese", "whatsapp"];
+let panelsRefreshTimer = null;
 
 function applyPanelCollapsedState() {
   for (const name of PANELS) {
     const collapsed = localStorage.getItem(`jarvis_panel_${name}_collapsed`) === "1";
-    const el = document.querySelector(`.panel[data-panel="${name}"]`);
+    const el = document.querySelector(`.card[data-panel="${name}"]`);
     if (el) el.classList.toggle("collapsed", collapsed);
   }
 }
@@ -828,51 +873,43 @@ function applyPanelCollapsedState() {
 document.querySelectorAll(".panel-toggle").forEach((btn) => {
   btn.addEventListener("click", () => {
     const name = btn.dataset.toggle;
-    const panel = document.querySelector(`.panel[data-panel="${name}"]`);
+    const panel = document.querySelector(`.card[data-panel="${name}"]`);
     const collapsed = !panel.classList.contains("collapsed");
     panel.classList.toggle("collapsed", collapsed);
     localStorage.setItem(`jarvis_panel_${name}_collapsed`, collapsed ? "1" : "0");
   });
 });
 
-// --- view switching (Live feed / Hub) ---
-function switchView(view) {
-  document.getElementById("nav-feed").classList.toggle("on", view === "feed");
-  document.getElementById("nav-hub").classList.toggle("on", view === "hub");
-  feedEl.classList.toggle("hidden", view !== "feed");
-  document.getElementById("hub-view").classList.toggle("hidden", view !== "hub");
-  if (view === "hub") {
-    refreshHub();
-    if (!hubRefreshTimer) hubRefreshTimer = setInterval(refreshHub, 30000);
-  } else if (hubRefreshTimer) {
-    clearInterval(hubRefreshTimer);
-    hubRefreshTimer = null;
-  }
-}
-
-document.getElementById("nav-feed").addEventListener("click", () => switchView("feed"));
-document.getElementById("nav-hub").addEventListener("click", () => switchView("hub"));
-
-function refreshHub() {
+function refreshPanels() {
   loadFocusPanel();
   loadCalendarPanel();
   loadPortuguesePanel();
-  loadRecentFiles();
   loadWhatsappPanel();
+}
+
+function startPanelsRefresh() {
+  if (panelsRefreshTimer) return;
+  refreshPanels();
+  panelsRefreshTimer = setInterval(refreshPanels, 30000);
 }
 
 // --- 4a: Today's Focus (tickable) ---
 async function loadFocusPanel() {
   const body = document.getElementById("focus-body");
   const countEl = document.getElementById("focus-count");
+  const navBadge = document.getElementById("focus-nav-badge");
   try {
     const data = await backendFetch("/today-focus");
     if (!data.connected) {
       body.innerHTML = `<div class="panel-empty">${escapeHtml(data.reason || "Trello isn't connected yet.")}</div>`;
       countEl.textContent = "";
+      navBadge.classList.add("hidden");
       return;
     }
     countEl.textContent = `${data.done} of ${data.total} done`;
+    const remaining = data.total - data.done;
+    navBadge.textContent = String(remaining);
+    navBadge.classList.toggle("hidden", remaining <= 0);
     if (!data.total) {
       body.innerHTML = '<div class="panel-empty">Nothing on Today’s Focus yet.</div>';
       return;
@@ -880,37 +917,48 @@ async function loadFocusPanel() {
     body.innerHTML = "";
     for (const company of data.by_company) {
       if (!company.tasks.length) continue;
-      const section = document.createElement("div");
-      section.className = "focus-company";
-      section.innerHTML = `<div class="focus-company-head">
-        <span class="focus-chip" style="background:${escapeHtml(company.gradient)}">${escapeHtml(company.initials)}</span>
-        <span class="focus-cname">${escapeHtml(company.name)}</span></div>`;
+      const heading = document.createElement("div");
+      heading.className = "cmp";
+      heading.textContent = company.name;
+      body.appendChild(heading);
       for (const task of company.tasks) {
         const row = document.createElement("div");
-        row.className = "focus-task" + (task.done ? " done" : "");
-        row.innerHTML = `<input type="checkbox" ${task.done ? "checked" : ""} /><span class="focus-tname">${escapeHtml(task.title)}</span>`;
-        row.querySelector("input").addEventListener("change", (e) => {
-          if (!e.target.checked) { e.target.checked = true; return; } // one-way: done, not undone
-          tickFocusTask(task.position, row);
+        row.className = "task" + (task.done ? " done" : "");
+        const label = document.createElement("label");
+        label.className = "box" + (task.done ? " done" : "");
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = task.done;
+        input.disabled = task.done;
+        label.appendChild(input);
+        const span = document.createElement("span");
+        span.textContent = task.title;
+        row.appendChild(label);
+        row.appendChild(span);
+        input.addEventListener("change", () => {
+          if (input.checked) tickFocusTask(task.position, row, label, input);
         });
-        section.appendChild(row);
+        body.appendChild(row);
       }
-      body.appendChild(section);
     }
   } catch (_) {
     body.innerHTML = '<div class="panel-empty">Couldn’t reach Jarvis.</div>';
   }
 }
 
-async function tickFocusTask(position, row) {
+async function tickFocusTask(position, row, label, input) {
   row.classList.add("done"); // optimistic — instant feel
+  label.classList.add("done");
+  input.disabled = true;
   try {
     const data = await backendFetch(`/today-focus/${position}/done`, { method: "POST" });
     if (!data.ok) throw new Error(data.message || "failed");
     loadFocusPanel(); // reconcile counts + streak-driven header
   } catch (_) {
     row.classList.remove("done");
-    row.querySelector("input").checked = false;
+    label.classList.remove("done");
+    input.checked = false;
+    input.disabled = false;
     const toast = document.createElement("span");
     toast.className = "toast";
     toast.textContent = "Couldn’t save — try again";
@@ -939,17 +987,25 @@ async function loadCalendarPanel() {
       return;
     }
     const next = nextData.next_up;
-    let html = next
-      ? `<div class="cal-next"><div class="t">${escapeHtml(next.title)}</div>
-          <div class="when">${escapeHtml(next.time)} — ${fmtCountdown(next.minutes_until)}</div>
-          ${next.join_url ? `<button class="cal-join" data-url="${escapeHtml(next.join_url)}">Join</button>` : ""}</div>`
-      : '<div class="panel-empty">Nothing else in the diary today.</div>';
+    let html = "";
+    if (next) {
+      html += `<div class="next">
+          <div class="when"><b>${escapeHtml(next.time)}</b><span>today</span></div>
+          <div style="flex:1"><div class="next-t">${escapeHtml(next.title)}</div>
+            <div class="next-s">${fmtCountdown(next.minutes_until)}</div></div>
+          ${next.join_url ? `<button class="join" data-url="${escapeHtml(next.join_url)}">Join</button>` : ""}
+        </div>`;
+    } else {
+      html += '<div class="panel-empty">Nothing else in the diary today.</div>';
+    }
     const rest = (todayData.today || [])
       .filter((e) => !next || e.title !== next.title || e.time !== next.time)
       .slice(0, 6);
-    html += rest.map((e) => `<div class="cal-row"><span>${escapeHtml(e.title)}</span><span>${escapeHtml(e.time)}</span></div>`).join("");
+    if (rest.length) {
+      html += '<div class="later">' + rest.map((e) => `<div><i>${escapeHtml(e.time)}</i>${escapeHtml(e.title)}</div>`).join("") + "</div>";
+    }
     body.innerHTML = html;
-    const joinBtn = body.querySelector(".cal-join");
+    const joinBtn = body.querySelector(".join");
     if (joinBtn) joinBtn.addEventListener("click", () => shell.openExternal(joinBtn.dataset.url));
   } catch (_) {
     body.innerHTML = '<div class="panel-empty">Couldn’t reach Jarvis.</div>';
@@ -962,21 +1018,17 @@ async function loadPortuguesePanel() {
   try {
     const data = await backendFetch("/portuguese");
     const r = data.readiness;
-    const countdown = r.days_left > 0 ? `${r.days_left} days to Brazil` : "Brazil trip is here!";
+    const countdown = r.days_left > 0 ? `${r.days_left}<span>days to Brazil</span>` : "<span>Brazil trip is here!</span>";
     body.innerHTML = `
-      <div class="pt-countdown">🇧🇷 ${escapeHtml(countdown)}</div>
-      <div class="pt-gauge">
-        <div class="pt-gauge-item">
-          <div class="pt-gauge-label">Speech ${r.speech_pct}%</div>
-          <div class="pt-bar"><div class="pt-bar-fill" style="width:${r.speech_pct}%"></div></div>
-        </div>
-        <div class="pt-gauge-item">
-          <div class="pt-gauge-label">Survival ${r.survival_pct}%</div>
-          <div class="pt-bar"><div class="pt-bar-fill" style="width:${r.survival_pct}%"></div></div>
+      <div class="pt-top">
+        <div class="cd">${countdown}</div>
+        <div class="gauge">
+          Speech <div class="bar"><i style="width:${r.speech_pct}%"></i></div>
+          <div style="margin-top:6px">Basics <div class="bar g"><i style="width:${r.survival_pct}%"></i></div></div>
         </div>
       </div>
-      <div class="pt-status">${data.done_today ? "✅ Done today" : "Not done today"} · streak ${data.streak.current}</div>
-      <button class="pt-start-btn" id="pt-start-btn">Start today’s lesson</button>`;
+      <button class="lesson" id="pt-start-btn">▶︎ Start today’s lesson</button>
+      <div class="streak">${data.done_today ? "✅ Done today" : "Not done today"} · streak ${data.streak.current}</div>`;
     document.getElementById("pt-start-btn").addEventListener("click", startPortugueseLesson);
   } catch (_) {
     body.innerHTML = '<div class="panel-empty">Couldn’t reach Jarvis.</div>';
@@ -986,7 +1038,7 @@ async function loadPortuguesePanel() {
 // One click, no phone: types the trigger phrase, then drops straight into
 // a spoken conversation loop so Paul talks and Jarvis corrects — no typing.
 async function startPortugueseLesson() {
-  switchView("feed");
+  feedEl.scrollTop = feedEl.scrollHeight;
   const text = "Start my Portuguese lesson";
   addMsg("you", text);
   setStatus("thinking", "Jarvis is thinking…");
@@ -1005,7 +1057,7 @@ async function startPortugueseLesson() {
   }
   if (!inConversation) {
     inConversation = true;
-    talkBtn.textContent = "End conversation";
+    talkBtn.textContent = "🔴 End conversation";
     talkBtn.classList.add("live");
     conversationLoop();
   }
@@ -1016,6 +1068,7 @@ const ROOM_LABELS = { you: "You", companies: "Companies", health: "Health", fina
 function roomLabel(room) { return ROOM_LABELS[room] || room || "Companies"; }
 
 async function uploadDroppedFile(file) {
+  switchRefPane("files");
   const listEl = document.getElementById("recent-files");
   const row = document.createElement("div");
   row.className = "file-row";
@@ -1040,7 +1093,7 @@ function renderFiledRow(row, docId, filename, s) {
   const tags = s.tags && s.tags.length ? " · " + s.tags.join(", ") : "";
   row.innerHTML = `
     <div class="fn">${escapeHtml(filename)}</div>
-    <div class="fmeta">Filed under Companies → ${escapeHtml(roomLabel(s.room))}${escapeHtml(tags)}</div>
+    <div class="fmeta">Filed under ${escapeHtml(roomLabel(s.room))}${escapeHtml(tags)}</div>
     <div class="file-confirm">Wrong?<button class="correct-room">change it</button></div>
     ${s.actionable ? `<div class="file-actionable">Looks like ${escapeHtml(s.action_kind || "something actionable")} — <button class="mk-card">create a Trello card?</button></div>` : ""}`;
   row.querySelector(".correct-room").addEventListener("click", () => correctDocRoom(docId, row, filename, s));
@@ -1096,12 +1149,13 @@ async function loadRecentFiles() {
   } catch (_) {}
 }
 
-const dropTarget = document.getElementById("drop-target");
+// Drag anywhere onto the centre pane (matches the brief's "drag onto the app
+// window" — a small hint pill in the composer shows the affordance visually).
 ["dragenter", "dragover"].forEach((evt) =>
-  dropTarget.addEventListener(evt, (e) => { e.preventDefault(); dropTarget.classList.add("dragover"); }));
+  mainColEl.addEventListener(evt, (e) => { e.preventDefault(); feedEl.classList.add("dragover"); }));
 ["dragleave", "drop"].forEach((evt) =>
-  dropTarget.addEventListener(evt, (e) => { e.preventDefault(); dropTarget.classList.remove("dragover"); }));
-dropTarget.addEventListener("drop", (e) => {
+  mainColEl.addEventListener(evt, (e) => { e.preventDefault(); feedEl.classList.remove("dragover"); }));
+mainColEl.addEventListener("drop", (e) => {
   Array.from(e.dataTransfer.files || []).forEach(uploadDroppedFile);
 });
 
@@ -1113,27 +1167,29 @@ function buildWhatsappHtml(groups, actions, missedText, live) {
   }
   let html = "";
   for (const g of groups) {
-    html += `<div class="wa-group"><span class="gt">${escapeHtml(g.chat_title)}</span> — <span class="gm">${escapeHtml(g.gist || "no gist yet")} (${g.message_count})</span></div>`;
+    html += `<div class="grp"><span class="gn">${escapeHtml(g.chat_title)}</span><span class="gs">· ${escapeHtml(g.gist || "no gist yet")} (${g.message_count})</span></div>`;
   }
   for (const a of sorted) {
-    html += `<div class="wa-action${a.tagged ? " tagged" : ""}">
-      <div>${a.tagged ? "🏷 You were tagged — " : ""}<span class="who">${escapeHtml(a.asked_by)}</span>: ${escapeHtml(a.ask)}</div>
-      <div class="btns">
-        <button class="wa-trello" data-id="${a.id}" data-live="${live ? "1" : "0"}">Add to Trello</button>
-        <button class="wa-ignore" data-id="${a.id}" data-live="${live ? "1" : "0"}">Ignore</button>
+    html += `<div class="tag">
+      ${a.tagged ? '<span class="lbl">⚑ You were tagged</span>' : ""}
+      “${escapeHtml(a.ask)}”
+      <span class="who">${escapeHtml(a.asked_by)}</span>
+      <div class="acts">
+        <div class="btn-s" data-action="trello" data-id="${a.id}" data-live="${live ? "1" : "0"}">+ Add to Trello</div>
+        <div class="btn-s ghost" data-action="ignore" data-id="${a.id}" data-live="${live ? "1" : "0"}">Ignore</div>
       </div></div>`;
   }
   if (missedText) {
-    html += `<div class="wa-missed">${escapeHtml(missedText)}<br/><button id="wa-dismiss" data-live="${live ? "1" : "0"}">Dismiss</button></div>`;
+    html += `<div class="dismiss" id="wa-dismiss" data-live="${live ? "1" : "0"}">${escapeHtml(missedText)}</div>`;
   }
   return html;
 }
 
 function wireWhatsappButtons(body, reload) {
-  body.querySelectorAll(".wa-trello, .wa-ignore").forEach((btn) => {
+  body.querySelectorAll(".btn-s").forEach((btn) => {
     btn.addEventListener("click", () => {
       if (btn.dataset.live !== "1") return alert("Sample data — connect the SIM to make this real.");
-      actOnGroupAction(btn.dataset.id, btn.classList.contains("wa-trello") ? "trello" : "ignore", reload);
+      actOnGroupAction(btn.dataset.id, btn.dataset.action, reload);
     });
   });
   const dismissBtn = document.getElementById("wa-dismiss");
@@ -1154,6 +1210,7 @@ async function actOnGroupAction(id, kind, reload) {
 async function loadWhatsappPanel() {
   const body = document.getElementById("whatsapp-body");
   const badge = document.getElementById("whatsapp-badge");
+  const navBadge = document.getElementById("whatsapp-nav-badge");
   try {
     const [summaries, actions, missed, count] = await Promise.all([
       backendFetch("/groups/summaries"),
@@ -1161,14 +1218,15 @@ async function loadWhatsappPanel() {
       backendFetch("/groups/missed-summary"),
       backendFetch("/groups/uncleared-count"),
     ]);
-    badge.textContent = count.count ? String(count.count) : "";
-    badge.classList.toggle("hidden", !count.count);
+    const n = count.count || 0;
+    badge.textContent = n ? `${n} need you` : "";
+    navBadge.textContent = String(n);
+    navBadge.classList.toggle("hidden", !n);
     if (!summaries.connected) {
       body.innerHTML =
-        '<div class="panel-empty">WhatsApp group reading isn’t connected yet. Set up the second number and this fills in automatically.</div>' +
-        '<button id="wa-sample-btn" style="margin-top:8px;font-size:11px;padding:4px 9px;border-radius:6px;border:1px solid var(--border);background:none;color:var(--text);cursor:pointer;">Preview with sample data</button>';
-      const sampleBtn = document.getElementById("wa-sample-btn");
-      sampleBtn.addEventListener("click", async () => {
+        `<div class="panel-empty">${escapeHtml(summaries.reason || "WhatsApp group reading isn’t connected yet.")} Set up the second number and this fills in automatically.</div>` +
+        '<button class="sample-btn" id="wa-sample-btn">Preview with sample data</button>';
+      document.getElementById("wa-sample-btn").addEventListener("click", async () => {
         try {
           const fx = await backendFetch("/groups/fixtures");
           body.innerHTML = buildWhatsappHtml(fx.group_summaries, fx.open_actions, fx.missed_summary.text, false);
@@ -1203,6 +1261,7 @@ async function loadWhatsappPanel() {
     addMsg("system", "Connected to Jarvis ✓");
     setConnected(true, "Connected · brain online");
     startNotifPolling();
+    startPanelsRefresh();
     // Dashboard on boot (Paul, 6 Aug: no URLs to remember, ever) —
     // opt-out lives in Settings.
     if (localStorage.getItem("jarvis_dash_boot") !== "off") {

@@ -6,100 +6,103 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div id="shell">
-    <!-- sidebar (v3 hub, first slice): nav that exists + the Card Script panel -->
-    <aside class="sidebar">
-      <div class="side-label">Jarvis</div>
-      <div class="nav on" id="nav-feed" data-view="feed"><span class="ic">💬</span> Live feed</div>
-      <div class="nav" id="nav-hub" data-view="hub"><span class="ic">🗂</span> Hub</div>
-      <div class="nav" id="notif-nav">
-        <span class="ic">🔔</span> Notifications
-        <span id="notif-badge" class="badge hidden">0</span>
-        <button id="notif-mute-btn" class="icon-btn" title="Mute spoken announcements">🔊</button>
-      </div>
-      <div id="notif-list"></div>
-      <div class="side-label">Reference</div>
-      <div class="ref-tabs">
-        <button class="ref-tab on" data-tab="script">Script</button>
-        <button class="ref-tab" data-tab="cheatsheet">Cheat-sheet</button>
-        <button class="ref-tab" data-tab="commands">Commands</button>
-      </div>
-      <div id="card-script" class="ref-pane"></div>
-      <div id="cheatsheet-panel" class="ref-pane hidden"></div>
-      <div id="commands-panel" class="ref-pane hidden"></div>
-      <div class="side-foot">
-        <div class="conn"><span class="dot-mini" id="side-dot"></span> <span id="side-conn">Connecting…</span></div>
-      </div>
-    </aside>
-
-    <div id="main-col">
-      <header>
-        <div id="status-dot" class="dot idle"></div>
-        <div id="status-text">Starting…</div>
+  <div id="window" class="window">
+    <header class="titlebar">
+      <div class="title"><b>Jarvis</b> &nbsp;·&nbsp; Desktop Hub</div>
+      <div class="tb-right">
+        <div class="pill" id="status-pill"><span class="dot" id="status-dot"></span><span id="status-text">Starting…</span></div>
         <div id="rec-badge" class="rec-badge hidden">● REC</div>
-        <div class="header-actions">
-          <button id="dashboard-btn" title="Open the dashboard">🖥</button>
-          <button id="pin-btn" title="Keep on top">📌</button>
-          <button id="mute-btn" title="Mute the wake word">🎙</button>
-          <button id="settings-btn" title="Settings">⚙️</button>
+        <button id="mute-btn" class="icon-btn" title="Mute the wake word">🎙</button>
+        <button id="notif-mute-btn" class="icon-btn" title="Mute spoken announcements">🔊</button>
+        <button id="pin-btn" class="icon-btn" title="Keep on top">📌</button>
+        <button id="dashboard-btn" class="icon-btn" title="Open the dashboard">🖥</button>
+        <button id="settings-btn" class="icon-btn" title="Settings">⚙️</button>
+      </div>
+    </header>
+
+    <div class="body">
+      <!-- sidebar -->
+      <aside class="sidebar">
+        <div class="side-label">Jarvis</div>
+        <div class="nav on" id="nav-feed"><span class="ic">💬</span> Live feed</div>
+        <div class="nav" id="nav-focus" data-scroll="panel-focus"><span class="ic">🎯</span> Today's Focus <span id="focus-nav-badge" class="badge blue hidden">0</span></div>
+        <div class="nav" id="nav-calendar" data-scroll="panel-calendar"><span class="ic">📅</span> Next up</div>
+        <div class="nav" id="nav-portuguese" data-scroll="panel-portuguese"><span class="ic">🇧🇷</span> Portuguese</div>
+        <div class="nav" id="nav-whatsapp" data-scroll="panel-whatsapp"><span class="ic">👥</span> WhatsApp groups <span id="whatsapp-nav-badge" class="badge hidden">0</span></div>
+        <div class="nav" id="nav-files" data-ref="files"><span class="ic">📥</span> Filed documents</div>
+
+        <div class="side-label">Reference</div>
+        <div class="nav on" id="nav-script" data-ref="script"><span class="ic">📇</span> Trello card script</div>
+        <div class="nav" id="nav-cheatsheet" data-ref="cheatsheet"><span class="ic">📋</span> Cheat-sheet</div>
+        <div class="nav" id="nav-commands" data-ref="commands"><span class="ic">⌨️</span> Commands</div>
+        <div class="nav" id="nav-notifications" data-ref="notifications"><span class="ic">🔔</span> Notifications <span id="notif-badge" class="badge hidden">0</span></div>
+
+        <div id="ref-pane-script" class="ref-pane">
+          <div id="card-script"></div>
         </div>
-      </header>
-
-      <main id="feed"></main>
-
-      <div id="hub-view" class="hub hidden">
-        <div class="panel" data-panel="focus">
-          <div class="panel-head">
-            <span class="panel-title">🎯 Today's Focus</span>
-            <span class="panel-meta" id="focus-count"></span>
-            <button class="panel-toggle" data-toggle="focus" title="Show/hide">👁</button>
-          </div>
-          <div class="panel-body" id="focus-body"></div>
+        <div id="ref-pane-cheatsheet" class="ref-pane hidden">
+          <div id="cheatsheet-panel"></div>
         </div>
-
-        <div class="panel" data-panel="calendar">
-          <div class="panel-head">
-            <span class="panel-title">📅 Next up</span>
-            <button class="panel-toggle" data-toggle="calendar" title="Show/hide">👁</button>
-          </div>
-          <div class="panel-body" id="calendar-body"></div>
+        <div id="ref-pane-commands" class="ref-pane hidden">
+          <div id="commands-panel"></div>
         </div>
-
-        <div class="panel" data-panel="portuguese">
-          <div class="panel-head">
-            <span class="panel-title">🇧🇷 Portuguese</span>
-            <button class="panel-toggle" data-toggle="portuguese" title="Show/hide">👁</button>
-          </div>
-          <div class="panel-body" id="portuguese-body"></div>
+        <div id="ref-pane-notifications" class="ref-pane hidden">
+          <div id="notif-list"></div>
         </div>
-
-        <div class="panel" data-panel="dropzone">
-          <div class="panel-head">
-            <span class="panel-title">📥 Drop into the brain</span>
-            <button class="panel-toggle" data-toggle="dropzone" title="Show/hide">👁</button>
-          </div>
-          <div class="panel-body" id="dropzone-body">
-            <div id="drop-target" class="drop-target">Drag a file here — PDF, Word, image, spreadsheet</div>
+        <div id="ref-pane-files" class="ref-pane hidden">
+          <div class="ref-card">
+            <div class="hint" style="margin-bottom:8px">Drag a file anywhere onto the window — PDF, Word, image, spreadsheet.</div>
             <div id="recent-files" class="recent-files"></div>
           </div>
         </div>
 
-        <div class="panel" data-panel="whatsapp">
-          <div class="panel-head">
-            <span class="panel-title">🟢 WhatsApp groups</span>
-            <span class="panel-meta" id="whatsapp-badge"></span>
-            <button class="panel-toggle" data-toggle="whatsapp" title="Show/hide">👁</button>
+        <div class="side-foot">
+          <div class="conn"><span class="dot-mini" id="side-dot"></span> <span id="side-conn">Connecting…</span></div>
+        </div>
+      </aside>
+
+      <!-- centre: live feed -->
+      <div id="main-col" class="centre">
+        <div class="centre-head">
+          <div>
+            <div class="ch-title">Live conversation</div>
+            <div class="ch-sub">Same brain as Telegram — everything here is remembered</div>
           </div>
-          <div class="panel-body" id="whatsapp-body"></div>
+        </div>
+
+        <main id="feed"></main>
+
+        <div class="composer">
+          <button id="talk-btn" class="talk">🎙 Start conversation</button>
+          <form id="type-form">
+            <input id="type-input" type="text" placeholder="Or type to Jarvis…" autocomplete="off" />
+          </form>
+          <div class="drop">⬇︎ Drop a file here → straight into your brain</div>
         </div>
       </div>
 
-      <footer>
-        <button id="talk-btn" class="talk">Start conversation</button>
-        <form id="type-form">
-          <input id="type-input" type="text" placeholder="Or type to Jarvis…" autocomplete="off" />
-        </form>
-      </footer>
+      <!-- right: panels -->
+      <div class="right" id="panels-col">
+        <div class="card" id="panel-focus" data-panel="focus">
+          <div class="card-h"><h3>🎯 Today's Focus</h3><span class="count" id="focus-count"></span><button class="panel-toggle" data-toggle="focus" title="Show/hide">👁</button></div>
+          <div class="panel-body" id="focus-body"></div>
+        </div>
+
+        <div class="card" id="panel-calendar" data-panel="calendar">
+          <div class="card-h"><h3>📅 Next up</h3><span class="count">Google Calendar</span><button class="panel-toggle" data-toggle="calendar" title="Show/hide">👁</button></div>
+          <div class="panel-body" id="calendar-body"></div>
+        </div>
+
+        <div class="card" id="panel-portuguese" data-panel="portuguese">
+          <div class="card-h"><h3>🇧🇷 Portuguese</h3><button class="panel-toggle" data-toggle="portuguese" title="Show/hide">👁</button></div>
+          <div class="panel-body" id="portuguese-body"></div>
+        </div>
+
+        <div class="card" id="panel-whatsapp" data-panel="whatsapp">
+          <div class="card-h"><h3>👥 WhatsApp groups</h3><span class="count" id="whatsapp-badge"></span><button class="panel-toggle" data-toggle="whatsapp" title="Show/hide">👁</button></div>
+          <div class="panel-body" id="whatsapp-body"></div>
+        </div>
+      </div>
     </div>
   </div>
 
