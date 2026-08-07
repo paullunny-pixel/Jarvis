@@ -103,6 +103,8 @@ class HeartbeatJobs:
         self.group_intel = None   # GroupIntel — Part 2 group intelligence (main.py wires it)
         self.radar_sync = None    # RadarSync — Team Radar's Trello poll (main.py wires it)
         self.radar = None         # TeamRadar — Team Radar's derivation layer (main.py wires it)
+        self.location = None      # LocationAwareness — GPS + daily working memory (main.py wires it)
+        self.maps = None          # MapsClient — §3 leave-now alerts, dormant until keyed (main.py wires it)
         self.store = SettingsStore(db)
         self.streaks = Streaks(db)
         self.log = MessageLog(db)
@@ -441,6 +443,16 @@ class HeartbeatJobs:
                     message += "\n\n" + radar_line
             except Exception:
                 logger.exception("Team Radar daily line failed — brief goes out without it")
+        # Daily working memory (7 Aug §5): assembled fresh each morning so
+        # location+time surfacing has today's events/resources ready before
+        # Paul takes his first step. get_daily_memory() would lazily build
+        # it anyway on first access, but building it now means it's ready
+        # the moment he leaves the house, not the moment he asks.
+        if self.location is not None:
+            try:
+                await self.location.build_daily_memory(today)
+            except Exception:
+                logger.exception("Daily working memory build failed — will lazily rebuild on first access")
         # Eat the frog (§8): the most-avoided item goes first, every day.
         if self.daily12 is not None:
             try:

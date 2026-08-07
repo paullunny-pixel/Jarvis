@@ -87,6 +87,7 @@ class JarvisRouter:
         self.group_intel = None          # GroupIntel — Part 2 group intelligence (main.py wires it)
         self.warroom = None              # WarRoom — three-vendor board of advisors (main.py wires it)
         self.radar = None                 # TeamRadar — Harry/Adriana/Kiefer bird's-eye view (main.py wires it)
+        self.location = None              # LocationAwareness — GPS + daily working memory (main.py wires it)
         self._speech_vocab: list[str] = []   # nova-3 keyterms, rebuilt hourly
         self._speech_vocab_ts: float = 0.0
 
@@ -774,6 +775,18 @@ class JarvisRouter:
                 "or open replies with bedtime talk. 'goodnight' still closes the day "
                 "when HE says it. He can bring the 22:30 rule back any time."
             )
+        if self.location is not None:
+            try:
+                if await self.location.is_travel_day(now_local.date()):
+                    rhythm_lines.append(
+                        "TRAVEL DAY (GPS-confirmed): Paul confirmed he's flying today. Keep "
+                        "the day light — don't pile on tasks, be gentle about the schedule."
+                    )
+                pending_note = await self.location.pending_situation_note()
+                if pending_note:
+                    rhythm_lines.append(pending_note)
+            except Exception:
+                logger.exception("Location rhythm-state injection failed — continuing without")
         system_status += "\n\nRHYTHM STATE (switch truth beats memory):\n- " + "\n- ".join(rhythm_lines)
         # The Continuous Mind's nightly notes ride today's turns (Phase A3).
         try:
@@ -3243,6 +3256,42 @@ class JarvisRouter:
                     "required": ["action"],
                 },
             })
+        if self.location is not None:
+            tools.append({
+                "name": "location",
+                "description": (
+                    "GPS awareness + daily working memory. teach_place: 'this is home' / "
+                    "'mark this as the warehouse' — needs name + kind (home/warehouse/office/"
+                    "gym/other), uses Paul's LAST known GPS fix as the anchor (don't ask him "
+                    "for coordinates). forget_place / list_places manage the taught places. "
+                    "add_geofence_task: 'remind me about the Harry stuff when I get to the "
+                    "warehouse' — needs place_name + text; the place must already be taught, "
+                    "if not, tell him to teach it first. remove_geofence_task clears one. "
+                    "confirm_travel: call this the MOMENT Paul answers a pending "
+                    "'flying today?' question you see in your context (GPS ARRIVAL note) — "
+                    "flying=true/false. This is the ONLY thing that declares a travel day; "
+                    "never say 'travel day noted' without calling it. daily_memory: today's "
+                    "assembled plan (focus tasks, events with location/attendees/resources, "
+                    "meds) — use this to answer 'what's my day look like' with the full "
+                    "picture, not just Trello. Only claim what the tool result confirms."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": [
+                            "teach_place", "forget_place", "list_places",
+                            "add_geofence_task", "remove_geofence_task",
+                            "confirm_travel", "daily_memory",
+                        ]},
+                        "name": {"type": "string"},
+                        "kind": {"type": "string", "enum": ["home", "warehouse", "office", "gym", "other"]},
+                        "place_name": {"type": "string"},
+                        "text": {"type": "string"},
+                        "flying": {"type": "boolean"},
+                    },
+                    "required": ["action"],
+                },
+            })
         if self.gcal is not None:
             tools.append({
                 "name": "calendar",
@@ -3407,6 +3456,8 @@ class JarvisRouter:
             return await self._tool_war_room(tool_input)
         if name == "team_radar" and self.radar is not None:
             return await self._tool_team_radar(tool_input)
+        if name == "location" and self.location is not None:
+            return await self._tool_location(tool_input)
         if name == "schedule_call" and self.heartbeat is not None:
             import re as _sre
 
@@ -3615,6 +3666,59 @@ class JarvisRouter:
             stale_note = " Data's stale — over 2 hours since the last sync." if cov["stale"] else ""
             return f"Reading {len(cov['boards'])} board(s): {boards}.{stale_note} {cov['coverage_note']}"
         return "TEAM RADAR: unknown action."
+
+    async def _tool_location(self, tool_input: dict) -> str:
+        action = str(tool_input.get("action") or "")
+        loc = self.location
+        if action == "teach_place":
+            place_name = str(tool_input.get("name") or "").strip()
+            if not place_name:
+                return "TEACH FAILED — need a name for this place."
+            fix = await loc.latest_fix()
+            if fix is None:
+                return "TEACH FAILED — no GPS fix on file yet, so there's nowhere to anchor this."
+            return await loc.teach_place(
+                place_name, str(tool_input.get("kind") or "other"), fix["lat"], fix["lon"]
+            )
+        if action == "forget_place":
+            place_name = str(tool_input.get("name") or "").strip()
+            if not place_name:
+                return "Which place?"
+            return await loc.forget_place(place_name)
+        if action == "list_places":
+            places = await loc.list_places()
+            if not places:
+                return "No places taught yet."
+            return "; ".join(f"{p['name']} ({p['kind']})" for p in places)
+        if action == "add_geofence_task":
+            place_name = str(tool_input.get("place_name") or "").strip()
+            text = str(tool_input.get("text") or "").strip()
+            if not place_name or not text:
+                return "ADD FAILED — need both place_name and text."
+            return await loc.add_geofence_task(place_name, text)
+        if action == "remove_geofence_task":
+            place_name = str(tool_input.get("place_name") or "").strip()
+            text = str(tool_input.get("text") or "").strip()
+            if not place_name or not text:
+                return "REMOVE FAILED — need both place_name and text."
+            return await loc.remove_geofence_task(place_name, text)
+        if action == "confirm_travel":
+            flying = tool_input.get("flying")
+            if not isinstance(flying, bool):
+                return "CONFIRM FAILED — need flying=true or flying=false."
+            return await loc.confirm_travel(flying)
+        if action == "daily_memory":
+            memory = await loc.get_daily_memory()
+            focus_n = len(memory.get("focus", []))
+            events = memory.get("events", [])
+            lines = [f"{focus_n} focus task(s), {len(events)} calendar event(s) today."]
+            for ev in events[:6]:
+                bit = ev["title"]
+                if ev.get("location"):
+                    bit += f" @ {ev['location']}"
+                lines.append(bit)
+            return " | ".join(lines)
+        return "LOCATION: unknown action."
 
     async def _tool_trello_card(self, tool_input: dict) -> str:
         """The brain's full-schema hands on the Phase 1 layer — same layer

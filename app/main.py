@@ -303,6 +303,22 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
         jobs.radar_sync = RadarSync(radar_client, db, jobs.store)
         jobs.radar = TeamRadar(db, jobs.store)
         router_obj.radar = jobs.radar
+    # GPS awareness + daily working memory (7 Aug brief): extends the
+    # existing timezone-following pipe (app/heartbeat/location.py), never
+    # replaces it. No new key needed for §1/§2/§4/§5 — only §3's
+    # traffic-aware leave-now alerts need GOOGLE_MAPS_API_KEY, which is
+    # flagged as needed and hasn't been supplied; that client stays
+    # dormant (.configured gates it) until it is.
+    from app.clients.maps_client import MapsClient
+    from app.location.service import LocationAwareness
+
+    jobs.maps = MapsClient(settings.google_maps_api_key)
+    jobs.location = LocationAwareness(
+        db, jobs.store, living, jobs._send_text,
+        gcal=router_obj.gcal, daily12=daily12, memory=memory, private_track=private_track,
+        timezone_default=settings.timezone_default,
+    )
+    router_obj.location = jobs.location
     router_obj.voice_tools = VoiceTools(
         db, memory=memory, living=living, daily12=daily12, mail=mail, jobs=jobs,
         timezone_default=settings.timezone_default,
@@ -1195,6 +1211,14 @@ async def phone_location(request: Request) -> dict:
                 )
             except Exception:
                 logger.exception("Timezone-change note failed — clocks moved anyway")
+    # GPS awareness (7 Aug): history + place classification + arrival
+    # consumers, layered on TOP of the timezone-following above, never
+    # replacing it.
+    if router.location is not None:
+        try:
+            await router.location.record_fix(lat, lon)
+        except Exception:
+            logger.exception("Location awareness record_fix failed — timezone handling still succeeded")
     return {"ok": True, **result}
 
 

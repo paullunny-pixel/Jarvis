@@ -192,6 +192,13 @@ class Settings(BaseSettings):
     warroom_monthly_ceiling_usd: float = 100.0
     warroom_escalate_value_gbp: float = 10000.0
 
+    # --- GPS awareness + daily working memory (7 Aug brief) §3's leave-now
+    # alerts need a maps/traffic key — flagged as needed, not yet supplied.
+    # Everything else in the brief (location history, named places,
+    # situational confirm, geofenced tasks, daily working memory) needs no
+    # new key and runs on the existing GPS pipe.
+    google_maps_api_key: str = ""
+
     def email_accounts(self) -> list[tuple[str, str]]:
         """(address, app_password) for every configured inbox slot."""
         slots = [

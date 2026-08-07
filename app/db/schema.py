@@ -457,6 +457,47 @@ TABLES: list[str] = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_radar_snapshots_card ON radar_snapshots (card_id, ts)",
+    # --- GPS awareness + daily working memory (Build Slice, 7 Aug). Extends
+    # the existing timezone-following pipe (app/heartbeat/location.py) —
+    # doesn't replace it. Named places are Paul's own, taught by voice
+    # ('this is home'), never assumed; only 'airport' has a curated seed
+    # (app/location/geo.py), and even that is confirmed before acted on. ---
+    """
+    CREATE TABLE IF NOT EXISTS location_history (
+        id {pk},
+        ts TEXT NOT NULL,
+        lat REAL NOT NULL,
+        lon REAL NOT NULL,
+        place_name TEXT NOT NULL DEFAULT '',
+        place_kind TEXT NOT NULL DEFAULT '',
+        tz TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_location_history_ts ON location_history (ts)",
+    """
+    CREATE TABLE IF NOT EXISTS named_places (
+        id {pk},
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'other',
+        lat REAL NOT NULL,
+        lon REAL NOT NULL,
+        radius_m INTEGER NOT NULL DEFAULT 200,
+        created_at TEXT NOT NULL
+    )
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_named_places_name ON named_places (name)",
+    """
+    CREATE TABLE IF NOT EXISTS geofence_tasks (
+        id {pk},
+        place_name TEXT NOT NULL,
+        text TEXT NOT NULL,
+        trello_card_id TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        fired_at TEXT NOT NULL DEFAULT '',
+        active INTEGER NOT NULL DEFAULT 1
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_geofence_tasks_place ON geofence_tasks (place_name, active)",
 ]
 
 PK = {
