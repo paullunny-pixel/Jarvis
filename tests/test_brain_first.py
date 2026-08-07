@@ -139,13 +139,16 @@ class TestBrainHands(unittest.IsolatedAsyncioTestCase):
         await self.db.close()
         self._dir.cleanup()
 
-    async def test_fuzzy_board_talk_creates_the_card_through_the_tool(self):
-        # No 'Jarvis add to Trello' prefix, typos and all — the brain routes it.
+    async def test_fuzzy_board_talk_drafts_not_writes_the_card(self):
+        # No 'Jarvis add to Trello' prefix, typos and all — the brain routes
+        # it, but a NEW card from conversation is drafted, not written (7
+        # Aug: brainstorming out loud once produced 3 near-duplicate cards
+        # with no chance to say no).
         b = BrainHarness(
             self.db,
             opus_responses=[
                 [tool_use("trello", instruction="Create a card: Pay the BMI invoice — £480, urgent, for Paul")],
-                [text_block("Card's on the board, sir — BMI invoice, flagged urgent.")],
+                [text_block("I'd put 'Pay the BMI invoice — £480' on the board for you, flagged urgent — say the word and I'll add it.")],
             ],
             parser_actions=[{"action": "create", "title": "Pay the BMI invoice — £480",
                             "assignee": "paul", "domain": "prodermis", "flags": ["urgent", "money"]}],
@@ -154,9 +157,67 @@ class TestBrainHands(unittest.IsolatedAsyncioTestCase):
             text_update("cna you put the bmi invocie on the borad, urgent one", OWNER)
         )
         creates = [w for w in b.board.trello_writes if w[1] == "/1/cards"]
+        self.assertEqual(len(creates), 0)  # nothing written yet
+        self.assertIn("say the word", b.sent())
+        pending = await b.board.service.pending_creates_preview()
+        self.assertEqual(len(pending), 1)
+        self.assertIn("BMI invoice", pending[0]["title"])
+
+    async def test_confirming_a_draft_writes_exactly_one_card(self):
+        b = BrainHarness(
+            self.db,
+            opus_responses=[
+                [tool_use("trello", instruction="Create a card: Pay the BMI invoice — £480")],
+                [text_block("Drafted — say the word.")],
+                [tool_use("trello", instruction="confirm the pending card")],
+                [text_block("Done — it's on the board now.")],
+            ],
+            parser_actions=[{"action": "create", "title": "Pay the BMI invoice — £480"}],
+        )
+        await b.h.router.handle_update(text_update("put the bmi invoice on the board", OWNER))
+        await b.h.router.handle_update(text_update("yes go ahead", OWNER))
+        creates = [w for w in b.board.trello_writes if w[1] == "/1/cards"]
         self.assertEqual(len(creates), 1)
         self.assertIn("BMI invoice", creates[0][2]["name"])
-        self.assertIn("Card's on the board", b.sent())
+        self.assertEqual(await b.board.service.pending_creates_preview(), [])
+
+    async def test_cancelling_a_draft_writes_nothing(self):
+        b = BrainHarness(
+            self.db,
+            opus_responses=[
+                [tool_use("trello", instruction="Create a card: Pay the BMI invoice — £480")],
+                [text_block("Drafted — say the word.")],
+                [tool_use("trello", instruction="cancel the pending card")],
+                [text_block("Dropped, never touched the board.")],
+            ],
+            parser_actions=[{"action": "create", "title": "Pay the BMI invoice — £480"}],
+        )
+        await b.h.router.handle_update(text_update("put the bmi invoice on the board", OWNER))
+        await b.h.router.handle_update(text_update("no, never mind", OWNER))
+        creates = [w for w in b.board.trello_writes if w[1] == "/1/cards"]
+        self.assertEqual(len(creates), 0)
+        self.assertEqual(await b.board.service.pending_creates_preview(), [])
+
+    async def test_repeated_conversational_creates_stage_without_duplicating(self):
+        # The original bug: an evolving conversation re-called the trello
+        # tool three times for slightly-reworded versions of the same plan.
+        # Now none of them touch Trello until Paul actually says yes.
+        b = BrainHarness(
+            self.db,
+            opus_responses=[
+                [tool_use("trello", instruction="Create a card: Book travel option A")],
+                [text_block("Drafted option A.")],
+                [tool_use("trello", instruction="Create a card: Book travel option A, revised")],
+                [text_block("Drafted the revised version too.")],
+                [tool_use("trello", instruction="Create a card: Book travel option A, final")],
+                [text_block("Drafted the final version.")],
+            ],
+            parser_actions=[{"action": "create", "title": "Book travel option A"}],
+        )
+        for msg in ("book it one way", "actually here's a better plan", "final version now"):
+            await b.h.router.handle_update(text_update(msg, OWNER))
+        creates = [w for w in b.board.trello_writes if w[1] == "/1/cards"]
+        self.assertEqual(len(creates), 0)
 
     async def test_rhythm_tool_flips_the_real_quiet_switch(self):
         b = BrainHarness(

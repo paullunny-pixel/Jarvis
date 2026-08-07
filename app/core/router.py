@@ -7,6 +7,7 @@ per the smart-mix policy. Errors degrade gracefully — Jarvis always answers.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -36,6 +37,20 @@ logger = logging.getLogger(__name__)
 
 OWNER_KEY = "owner_chat_id"
 TIMEZONE_KEY = "current_timezone"
+
+# Confirm/cancel a drafted Trello card (7 Aug: brainstorming out loud once
+# produced 3 near-duplicate cards with no chance to say no). Checked ONLY
+# when a draft is actually pending, so ordinary "yes"/"no" board talk
+# elsewhere is never misread as touching it.
+TRELLO_CONFIRM = re.compile(
+    r"\b(confirm|yes|yeah|yep|go ahead|do it|add it|create it|make it|"
+    r"book it|put it on|add that|add the card|board it)\b",
+    re.IGNORECASE,
+)
+TRELLO_CANCEL = re.compile(
+    r"\b(cancel|no|nah|never ?mind|scrap it|drop it|forget it|don'?t add)\b",
+    re.IGNORECASE,
+)
 
 STRANGER_REPLY = "This is a private assistant. If you're looking for Jarvis, he's taken."
 
@@ -702,6 +717,16 @@ class JarvisRouter:
                     "present it as still owed. If it genuinely matters, ask Paul or "
                     "offer to check, don't assert."
                 )
+                pending_creates = await self.daily12.pending_creates_preview()
+                if pending_creates:
+                    previews = "; ".join(self.daily12.preview_line(p) for p in pending_creates)
+                    system_status += (
+                        "\n\nDRAFTED CARD(S) AWAITING PAUL'S OKAY (not on the board yet): "
+                        + previews
+                        + ". If his reply confirms, call trello with 'confirm the pending "
+                        "card'; if he declines, use 'cancel the pending card'. Unaddressed "
+                        "is fine too — it never blocks anything and quietly expires."
+                    )
             except Exception:
                 logger.exception("Board truth injection failed — continuing without")
         # Links in the message → fetch the pages so the brain reads them NOW.
@@ -3004,10 +3029,18 @@ class JarvisRouter:
                     "tick things done, defer, queue for tomorrow, archive, comment, calendar "
                     "cards, or show the list. Pass ONE clear instruction in plain words with "
                     "Paul's meaning cleaned up — fix his typos, resolve 'those'/'the first one' "
-                    "from the conversation into explicit names. The result says exactly what "
-                    "happened: report THAT, never your intention. A NOTE about the run/meds "
-                    "still owed may ride along — mention it gently AFTER the board answer; "
-                    "it never blocks anything."
+                    "from the conversation into explicit names. "
+                    "NEW CARDS ARE DRAFTED, NOT WRITTEN (7 Aug — brainstorming out loud once "
+                    "produced 3 near-duplicate cards with no chance to say no): the result "
+                    "tells you what would be created and asks Paul to confirm — relay THAT, "
+                    "never say the card exists yet. When he confirms, call this tool again "
+                    "with an instruction like 'confirm the pending card'; if he declines, use "
+                    "'cancel the pending card'. Ticking done / deferring / queueing / "
+                    "archiving / commenting on EXISTING cards still happens immediately — "
+                    "only brand-new cards need his yes. "
+                    "The result says exactly what happened: report THAT, never your "
+                    "intention. A NOTE about the run/meds still owed may ride along — "
+                    "mention it gently AFTER the board answer; it never blocks anything."
                 ),
                 "input_schema": {
                     "type": "object",
@@ -3841,7 +3874,8 @@ class JarvisRouter:
 
     async def _tool_trello(self, instruction: str) -> str:
         """The brain's hands on the board — same parser, same executor, same
-        gates as the deterministic lane."""
+        gates as the deterministic lane. New cards from THIS conversational
+        lane are drafted, not written — see Daily12Service.stage_create."""
         if not instruction.strip():
             return "NO ACTION — empty instruction."
         owed = ""
@@ -3854,6 +3888,11 @@ class JarvisRouter:
                     "answer; it never blocks anything): "
                     + " and ".join(g["label"] for g in outstanding)
                 )
+        if await self.daily12.pending_creates_preview():
+            if TRELLO_CONFIRM.search(instruction):
+                return await self.daily12.confirm_pending_creates() + owed
+            if TRELLO_CANCEL.search(instruction):
+                return await self.daily12.cancel_pending_creates() + owed
         plan_date = await self.daily12.paul_today()
         if wants_plan(instruction):
             await self.daily12.generate(plan_date)
@@ -3862,7 +3901,7 @@ class JarvisRouter:
         actions = await parse_actions(self.claude, instruction, plan_text)
         if not actions:
             return "NO ACTION RECOGNISED — nothing was changed on the board." + owed
-        results, show = await execute_actions(self.daily12, actions)
+        results, show = await execute_actions(self.daily12, actions, stage_creates=True)
         out = " ".join(results) if results else ""
         if show or not results:
             await self.daily12.generate(plan_date)
