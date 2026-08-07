@@ -269,6 +269,28 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
             settings.whatsapp_phone_number_id,
             sending_enabled=settings.whatsapp_sending_enabled,
         )
+    # The War Room (7 Aug brief): three vendors, two tiers. Built now per
+    # Paul's ask — dormant on the two seats that need new keys until both
+    # OPENAI_API_KEY and GOOGLE_AI_API_KEY exist; .configured gates every
+    # real run so a half-configured board never fires with a silent gap.
+    # Trello filing rides the SAME shared layer as everything else — no
+    # second watcher; card-watching is a registration seam for Team Radar's
+    # (not-yet-built) detection engine, per the brief's own instruction.
+    from app.clients.gemini_client import GeminiClient
+    from app.clients.openai_client import OpenAIClient
+    from app.daily12.scoring import COMPANY_NAMES
+    from app.warroom.service import WarRoom
+
+    router_obj.warroom = WarRoom(
+        db, claude, jobs.store, memory, living, jobs._chase_layer, settings,
+        openai_client=OpenAIClient(settings.openai_api_key) if settings.openai_api_key else None,
+        gemini_client=GeminiClient(settings.google_ai_api_key) if settings.google_ai_api_key else None,
+        company_names=list(COMPANY_NAMES.values()),
+        full_budget_usd=settings.warroom_full_budget_usd,
+        quick_budget_usd=settings.warroom_quick_budget_usd,
+        monthly_ceiling_usd=settings.warroom_monthly_ceiling_usd,
+        escalate_value_gbp=settings.warroom_escalate_value_gbp,
+    )
     router_obj.voice_tools = VoiceTools(
         db, memory=memory, living=living, daily12=daily12, mail=mail, jobs=jobs,
         timezone_default=settings.timezone_default,
@@ -968,6 +990,100 @@ async def desktop_groups_fixtures(secret: str, request: Request) -> dict:
     from app.groups_intel import GroupIntel
 
     return GroupIntel.fixtures()
+
+
+# --- The War Room (7 Aug) — thin endpoints, WarRoom does the work ---
+
+def _warroom_gate(router: "JarvisRouter", secret: str):
+    _desktop_gate(router, secret)
+    if router.warroom is None:
+        raise HTTPException(status_code=409, detail="War Room not wired up")
+    return router.warroom
+
+
+@app.post("/desktop/{secret}/warroom/frame")
+async def warroom_frame(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    wr = _warroom_gate(router, secret)
+    if not wr.configured:
+        return {"configured": False, "reason": "OPENAI_API_KEY / GOOGLE_AI_API_KEY not set"}
+    body = await request.json()
+    question = str(body.get("question", "")).strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question required")
+    framed = await wr.frame(question, forced_tier=str(body.get("tier", "")))
+    return {"configured": True, **framed}
+
+
+@app.post("/desktop/{secret}/warroom/confirm")
+async def warroom_confirm(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    wr = _warroom_gate(router, secret)
+    body = await request.json() if await request.body() else {}
+    return await wr.confirm_and_run(unredacted=bool(body.get("unredacted")))
+
+
+@app.post("/desktop/{secret}/warroom/escalate/{session_id}")
+async def warroom_escalate(secret: str, session_id: int, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    wr = _warroom_gate(router, secret)
+    return await wr.escalate(session_id)
+
+
+@app.get("/desktop/{secret}/warroom/session/{session_id}")
+async def warroom_session(secret: str, session_id: int, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    wr = _warroom_gate(router, secret)
+    session = await wr.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    return session
+
+
+@app.get("/desktop/{secret}/warroom/archive")
+async def warroom_archive(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    wr = _warroom_gate(router, secret)
+    query = request.query_params.get("q", "")
+    return {"sessions": await wr.search_archive(query)}
+
+
+@app.post("/desktop/{secret}/warroom/actions/{session_id}/{action_id}/approve")
+async def warroom_approve(secret: str, session_id: int, action_id: int, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    wr = _warroom_gate(router, secret)
+    body = await request.json() if await request.body() else {}
+    return {"message": await wr.approve_action(session_id, action_id, owner_override=str(body.get("owner", "")))}
+
+
+@app.post("/desktop/{secret}/warroom/actions/{session_id}/{action_id}/reject")
+async def warroom_reject(secret: str, session_id: int, action_id: int, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    wr = _warroom_gate(router, secret)
+    body = await request.json() if await request.body() else {}
+    return {"message": await wr.reject_action(session_id, action_id, reason=str(body.get("reason", "")))}
+
+
+@app.get("/desktop/{secret}/warroom/preview/{session_id}")
+async def warroom_preview(secret: str, session_id: int, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    wr = _warroom_gate(router, secret)
+    return {"cards": await wr.preview_project(session_id)}
+
+
+@app.post("/desktop/{secret}/warroom/create/{session_id}")
+async def warroom_create(secret: str, session_id: int, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    wr = _warroom_gate(router, secret)
+    body = await request.json() if await request.body() else {}
+    return await wr.create_project(session_id, edited_cards=body.get("cards"))
+
+
+@app.post("/desktop/{secret}/warroom/undo")
+async def warroom_undo(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    wr = _warroom_gate(router, secret)
+    return {"message": await wr.undo()}
 
 
 async def merge_water_total(db, day_iso: str, water_ml: int) -> bool:

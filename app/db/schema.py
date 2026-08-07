@@ -351,6 +351,56 @@ TABLES: list[str] = [
     )
     """,
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_group_summaries_chat ON group_summaries (channel, chat_id)",
+    # --- The War Room (Build Slice, 7 Aug): three-vendor board of advisors.
+    # Sessions archived permanently (§8); action points live separately so
+    # Full Board's per-point approve/reject/discuss has somewhere to hang
+    # its state. warroom_watch is a REGISTRATION SEAM ONLY — Team Radar's
+    # detection engine (not built here, per the brief's own instruction)
+    # reads this table; this module never runs its own watcher. ---
+    """
+    CREATE TABLE IF NOT EXISTS warroom_sessions (
+        id {pk},
+        created_at TEXT NOT NULL,
+        tier TEXT NOT NULL,
+        session_type TEXT NOT NULL DEFAULT '',
+        company TEXT NOT NULL DEFAULT '',
+        question TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'framed',
+        report TEXT NOT NULL DEFAULT '{{}}',
+        transcript TEXT NOT NULL DEFAULT '[]',
+        seats TEXT NOT NULL DEFAULT '[]',
+        cost_usd REAL NOT NULL DEFAULT 0,
+        consensus_weak INTEGER NOT NULL DEFAULT 0,
+        escalated_from INTEGER NOT NULL DEFAULT 0,
+        verdict TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_warroom_sessions_created ON warroom_sessions (created_at)",
+    """
+    CREATE TABLE IF NOT EXISTS warroom_action_points (
+        id {pk},
+        session_id INTEGER NOT NULL,
+        idx INTEGER NOT NULL DEFAULT 0,
+        title TEXT NOT NULL,
+        why TEXT NOT NULL DEFAULT '',
+        owner_suggestion TEXT NOT NULL DEFAULT '',
+        due TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'pending',
+        reject_reason TEXT NOT NULL DEFAULT '',
+        card_id TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_warroom_action_points_session ON warroom_action_points (session_id)",
+    """
+    CREATE TABLE IF NOT EXISTS warroom_watch (
+        id {pk},
+        session_id INTEGER NOT NULL,
+        card_id TEXT NOT NULL,
+        board_key TEXT NOT NULL DEFAULT 'master',
+        created_at TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_warroom_watch_session ON warroom_watch (session_id)",
 ]
 
 PK = {

@@ -85,6 +85,7 @@ class JarvisRouter:
         self.gcal = None                 # GoogleCalendar — live read+write (main.py wires it)
         self.whatsapp = None             # WhatsAppClient — Part 1 1:1 chat (main.py wires it)
         self.group_intel = None          # GroupIntel — Part 2 group intelligence (main.py wires it)
+        self.warroom = None              # WarRoom — three-vendor board of advisors (main.py wires it)
         self._speech_vocab: list[str] = []   # nova-3 keyterms, rebuilt hourly
         self._speech_vocab_ts: float = 0.0
 
@@ -3164,6 +3165,51 @@ class JarvisRouter:
                 },
             },
         })
+        if self.warroom is not None:
+            tools.append({
+                "name": "war_room",
+                "description": (
+                    "The multi-vendor board of advisors — three AI models from three "
+                    "different vendors debate a business question blind and "
+                    "independent, then cross-examine each other and hand Paul a "
+                    "decision-ready report. Triggers: 'war room this' / 'take this "
+                    "to the war room' (you pick the tier), 'full board this' / "
+                    "'quick board this' (forces the tier), 'what did the board say "
+                    "about X' (search), 'escalate that to the full board'. "
+                    "ALWAYS call action='frame' FIRST and read the result back to "
+                    "Paul verbatim (question, tier, why, cost estimate) — NEVER "
+                    "call action='confirm' in the same turn as 'frame'; wait for "
+                    "Paul's actual next message giving the go-ahead, same as any "
+                    "other spend-gated tool. 'confirm' runs the debate and returns "
+                    "the report. 'escalate' carries a Quick Board session forward "
+                    "into a Full Board (session_id required) — ask before doing "
+                    "this, never silently upgrade. 'approve'/'reject' act on one "
+                    "Full Board action point (session_id + action_id); owner is "
+                    "optional, default is Paul. 'preview_project' shows the Quick "
+                    "Board's card set (session_id); 'create_project' files the "
+                    "whole thing at once — undo works for 60 seconds after. "
+                    "'search' finds a past session by question or company. Only "
+                    "claim an outcome the tool result confirms."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": [
+                            "frame", "confirm", "escalate", "approve", "reject",
+                            "preview_project", "create_project", "undo", "search",
+                        ]},
+                        "question": {"type": "string"},
+                        "tier": {"type": "string", "enum": ["full", "quick"]},
+                        "session_id": {"type": "integer"},
+                        "action_id": {"type": "integer"},
+                        "owner": {"type": "string"},
+                        "reason": {"type": "string"},
+                        "query": {"type": "string"},
+                        "unredacted": {"type": "boolean"},
+                    },
+                    "required": ["action"],
+                },
+            })
         if self.gcal is not None:
             tools.append({
                 "name": "calendar",
@@ -3324,6 +3370,8 @@ class JarvisRouter:
             rulings[alias.lower()] = domain
             await self.store.set(key, _json.dumps(rulings))
             return f"Ruled — '{alias}' files under {domain} from now on, every card."
+        if name == "war_room" and self.warroom is not None:
+            return await self._tool_war_room(tool_input)
         if name == "schedule_call" and self.heartbeat is not None:
             import re as _sre
 
@@ -3379,6 +3427,133 @@ class JarvisRouter:
                 wishes = []
             return self._build_list_show(wishes)
         return f"UNKNOWN TOOL '{name}' — tell Paul honestly that this isn't wired in."
+
+    def _format_warroom_result(self, result: dict) -> str:
+        report = result["report"]
+        lines = [
+            f"SESSION #{result['session_id']} ({result['tier'].upper()} board, "
+            f"~${result['cost_usd']:.2f})",
+            f"Verdict: {report.get('verdict', '')}",
+            f"Recommendation: {report.get('recommendation', '')}",
+        ]
+        aps = report.get("action_points") or []
+        if aps:
+            lines.append("Action points:")
+            lines.extend(
+                f"  {i + 1}. {ap.get('title', '')} (suggest: {ap.get('owner_suggestion') or 'Paul'})"
+                for i, ap in enumerate(aps)
+            )
+        disagreement = report.get("disagreement", "")
+        lines.append(f"Where they disagreed: {disagreement}")
+        discarded = report.get("discarded", "")
+        discarded_text = discarded if isinstance(discarded, str) else "; ".join(discarded) or "nothing discarded"
+        lines.append(f"Discarded: {discarded_text}")
+        lines.append(f"Gaps: {report.get('gaps', '')}")
+        confidence = report.get("confidence") or {}
+        lines.append(
+            f"Confidence: {confidence.get('level', '')} — would change if: {confidence.get('would_change', '')}"
+        )
+        if report.get("jarvis_note"):
+            lines.append(f"Jarvis's note: {report['jarvis_note']}")
+        if report.get("measurable"):
+            lines.append(f"Measurable: {report['measurable']}")
+        if result.get("consensus_weak"):
+            lines.append(
+                "NOTE: the board converged with no real dissent — treat this as weak evidence, not strong."
+            )
+        if result.get("wall_clock_hit") or result.get("budget_hit"):
+            lines.append("NOTE: the session hit its time/budget cap and delivered from what existed at that point.")
+        return "\n".join(lines)
+
+    async def _tool_war_room(self, tool_input: dict) -> str:
+        action = str(tool_input.get("action") or "")
+        wr = self.warroom
+        if action == "frame":
+            question = str(tool_input.get("question") or "").strip()
+            if not question:
+                return "FRAME FAILED — no question given."
+            if not wr.configured:
+                return (
+                    "The War Room needs two more keys before it can run — "
+                    "OPENAI_API_KEY and GOOGLE_AI_API_KEY aren't set in Render yet. "
+                    "Tell Paul that's what's missing."
+                )
+            framed = await wr.frame(question, forced_tier=str(tool_input.get("tier") or ""))
+            lines = [
+                f"Question: {framed['question']}",
+                f"Tier: {framed['tier'].upper()} — {framed['tier_reason']}",
+                f"Estimated cost: ~${framed['cost_estimate_usd']:.2f} "
+                f"(this month so far: ${framed['month_spent_usd']:.2f})",
+            ]
+            if framed["over_monthly_ceiling"]:
+                lines.append("NOTE: this would push the month over the ceiling — flag that to Paul before running.")
+            if framed["trivial_hint"]:
+                lines.append("This looks answerable directly — check Paul still wants the board before running.")
+            return (
+                "FRAMED (read this back to Paul verbatim, then WAIT for his go-ahead "
+                "before calling action='confirm'):\n" + "\n".join(lines)
+            )
+        if action == "confirm":
+            result = await wr.confirm_and_run(unredacted=bool(tool_input.get("unredacted")))
+            if result.get("error"):
+                return f"CONFIRM FAILED — {result['error']}"
+            return self._format_warroom_result(result)
+        if action == "escalate":
+            session_id = tool_input.get("session_id")
+            if not isinstance(session_id, int):
+                return "ESCALATE FAILED — need the session_id."
+            result = await wr.escalate(session_id)
+            if result.get("error"):
+                return f"ESCALATE FAILED — {result['error']}"
+            return self._format_warroom_result(result)
+        if action == "approve":
+            session_id, action_id = tool_input.get("session_id"), tool_input.get("action_id")
+            if not isinstance(session_id, int) or not isinstance(action_id, int):
+                return "APPROVE FAILED — need session_id and action_id."
+            return await wr.approve_action(
+                session_id, action_id, owner_override=str(tool_input.get("owner") or "")
+            )
+        if action == "reject":
+            session_id, action_id = tool_input.get("session_id"), tool_input.get("action_id")
+            if not isinstance(session_id, int) or not isinstance(action_id, int):
+                return "REJECT FAILED — need session_id and action_id."
+            return await wr.reject_action(session_id, action_id, reason=str(tool_input.get("reason") or ""))
+        if action == "preview_project":
+            session_id = tool_input.get("session_id")
+            if not isinstance(session_id, int):
+                return "PREVIEW FAILED — need the session_id."
+            cards = await wr.preview_project(session_id)
+            if not cards:
+                return "Nothing pending to preview."
+            lines = [
+                f"{c['list_name']}: {c['title']} — {c['owner']}" + (f" [{c['warning']}]" if c["warning"] else "")
+                for c in cards
+            ]
+            return "PREVIEW (say 'create the project' to file the lot):\n" + "\n".join(lines)
+        if action == "create_project":
+            session_id = tool_input.get("session_id")
+            if not isinstance(session_id, int):
+                return "CREATE FAILED — need the session_id."
+            result = await wr.create_project(session_id)
+            if not result["created"]:
+                return "CREATE FAILED — " + ("; ".join(result["warnings"]) or "nothing to create")
+            lines = [f"Created: {c['title']} ({c['list_name']})" for c in result["created"]]
+            if result["warnings"]:
+                lines.append("Warnings: " + "; ".join(result["warnings"]))
+            return "\n".join(lines)
+        if action == "undo":
+            return await wr.undo()
+        if action == "search":
+            query = str(tool_input.get("query") or "").strip()
+            if not query:
+                return "Give me something to search for."
+            hits = await wr.search_archive(query)
+            if not hits:
+                return f"Nothing in the War Room archive about '{query}'."
+            return "\n".join(
+                f"[{h['created_at'][:10]}] ({h['tier']}) {h['question']} → {h['verdict']}" for h in hits
+            )
+        return "WAR ROOM: unknown action."
 
     async def _tool_trello_card(self, tool_input: dict) -> str:
         """The brain's full-schema hands on the Phase 1 layer — same layer

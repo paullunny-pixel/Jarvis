@@ -173,6 +173,25 @@ class Settings(BaseSettings):
     welfare_contact: str = ""             # optional email to notify on backstop
     wake_code_refresh_min: int = 5        # cockpit anti-cheat code rotation
 
+    # --- The War Room (7 Aug brief): three seats, three vendors, two tiers.
+    # Dormant until BOTH new keys exist — Anthropic's is already in place
+    # for Seat A and the chair. Model ids are config, never hard-coded, so
+    # the lineup can move without a release; the model-availability guard
+    # in app/warroom/ falls back and flags rather than failing silently.
+    openai_api_key: str = ""
+    google_ai_api_key: str = ""
+    warroom_full_model_a: str = "claude-fable-5"
+    warroom_full_model_b: str = "gpt-5.6-sol"
+    warroom_full_model_c: str = "gemini-3.1-pro-preview"
+    warroom_quick_model_a: str = "claude-sonnet-5"
+    warroom_quick_model_b: str = "gpt-5.6-terra"
+    warroom_quick_model_c: str = "gemini-3.6-flash"
+    warroom_full_effort_b: str = "ultra"   # Seat B (OpenAI) is the only seat with a effort knob
+    warroom_full_budget_usd: float = 5.0
+    warroom_quick_budget_usd: float = 0.50
+    warroom_monthly_ceiling_usd: float = 100.0
+    warroom_escalate_value_gbp: float = 10000.0
+
     def email_accounts(self) -> list[tuple[str, str]]:
         """(address, app_password) for every configured inbox slot."""
         slots = [
