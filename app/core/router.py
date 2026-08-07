@@ -94,6 +94,7 @@ class JarvisRouter:
         self.streaks = Streaks(db)
         self.pt = PortugueseCoach(db)    # Brazil Portuguese course (7 Aug)
         self._sprint_tasks: set = set()  # strong refs to running buzzer timers
+        self._guest_histories: dict[str, list] = {}  # per-CallSid guest-call turns
         self.web_transport = None        # httpx transport seam for link-fetch tests
         self.phone_channel = None        # PhoneChannel — Twilio calls (main.py wires it)
         self.meetings = None             # MeetingMaker — Zoom quick-start (main.py wires it)
@@ -992,6 +993,66 @@ class JarvisRouter:
             task.add_done_callback(self._sprint_tasks.discard)
         return reply
 
+    async def contact_turn(self, contact_key: str, speech: str, call_sid: str) -> str:
+        """One turn of a WHITELISTED-contact call (7 Aug — 'call John'). A
+        third party is on the line: scoped persona, NO tools, NO memory
+        recall, hard privacy wall (app/voice/contacts.GUEST_RULES). Every
+        word both ways is logged so Paul can see exactly what was said."""
+        from app.voice.contacts import CONTACTS, guest_system_prompt
+
+        contact = next((c for c in CONTACTS if c["key"] == contact_key), None)
+        if contact is None:
+            return ""   # unknown key — the phone channel winds up warmly
+        stored = await self.store.get(OWNER_KEY)
+        chat_id = self.settings.telegram_owner_chat_id or (int(stored) if stored else 0)
+        history = self._guest_histories.setdefault(call_sid, [])
+        history.append({"role": "user", "content": speech})
+        await self.log.log(
+            "in", speech, chat_id=chat_id, kind="voice",
+            channel="phone_guest", meta={"contact": contact_key},
+        )
+        try:
+            reply = strip_for_speech(await self.claude.converse(
+                system=guest_system_prompt(contact),
+                messages=list(history),
+                max_tokens=300,
+                model=self.settings.phone_model or None,
+            )).strip()
+        except Exception:
+            logger.exception("Guest call brain turn failed")
+            return ""   # phone channel signs off warmly, then reports back
+        if reply:
+            history.append({"role": "assistant", "content": reply})
+            del history[:-16]   # phone-length bound, same as Paul's calls
+            await self.log.log(
+                "out", reply, chat_id=chat_id, kind="voice",
+                channel="phone_guest", meta={"contact": contact_key},
+            )
+        return reply
+
+    async def guest_call_event(self, event: str, contact: dict, detail: str = "") -> None:
+        """The honest outcome report to Paul's Telegram: answered, wrapped up,
+        no answer, busy or failed — never a claimed connection that didn't
+        happen."""
+        stored = await self.store.get(OWNER_KEY)
+        chat_id = self.settings.telegram_owner_chat_id or (int(stored) if stored else 0)
+        if not chat_id:
+            return
+        short = contact.get("short", contact.get("name", "them"))
+        lines = {
+            "answered": f"{short}'s picked up — having a natter now.",
+            "ended": f"Wrapped up the call with {short}" + (f" — {detail}." if detail else "."),
+            "no-answer": f"{short} didn't pick up — no answer. I'll leave it with you.",
+            "busy": f"{short}'s line was engaged — didn't get through.",
+            "failed": f"The call to {short} didn't connect — Twilio refused it. It did NOT go through.",
+            "canceled": f"The call to {short} was cancelled before it connected.",
+        }
+        line = lines.get(event, f"Call update on {short}: {event}.")
+        if event != "answered":
+            self._guest_histories.clear()   # call over — nothing lingers
+        await self.log.log("out", line, chat_id=chat_id, meta={"contact_call": True})
+        await self.telegram.send_text(chat_id, line)
+
     # --- The Mac desktop app (6 Aug) — another mouth on the same mind ---
 
     async def desktop_turn(self, transcript: str, spoken: bool = True) -> str:
@@ -1681,7 +1742,11 @@ class JarvisRouter:
                 )
                 + "TIMED CALLS: 'call me in 40 minutes and "
                 "remind me to X' — use your schedule_call tool; the machinery rings "
-                "him on the minute."
+                "him on the minute. WHITELISTED CONTACTS: 'call John' rings John "
+                "Debono for a friendly catch-up on Paul's behalf — the machinery "
+                "handles it before you see the message; that call runs a scoped "
+                "guest persona (no tools, no private context). Only registered "
+                "contacts, never arbitrary numbers."
                 if (self.phone_channel is not None and self.phone_channel.configured)
                 else "- Phone calls: not connected yet (Twilio keys pending in Render)."
             ),
@@ -2165,6 +2230,77 @@ class JarvisRouter:
             await self.log.log("out", reply, chat_id=message.chat_id, meta={"phone_call": True})
             await self.telegram.send_text(message.chat_id, reply)
             return True
+
+        # 'Call John' → ring a WHITELISTED contact (7 Aug). The list is code,
+        # not chat — a garbled transcript can never dial a stranger. Any
+        # number Paul reads out must MATCH what we hold, or nothing dials.
+        from app.voice.contacts import (
+            CONTACTS, find_contact, number_matches, pick_greeting,
+        )
+
+        contact_verb = re.search(
+            r"^\s*(?:jarvis[,!.\s]+)?(?:please\s+|can\s+you\s+|could\s+you\s+)?"
+            r"(?:call|ring|phone)\s+(?!me\b)(?P<who>.{2,80})$",
+            lowered,
+        )
+        if contact_verb and len(transcript) <= 200:
+            who = contact_verb.group("who")
+            contact = find_contact(who)
+            if contact is not None:
+                spoken_number = re.search(r"\+?\d[\d\s]{8,14}\d", transcript)
+                phone = self.phone_channel
+                if spoken_number and not number_matches(contact, spoken_number.group(0)):
+                    reply = (
+                        f"That number doesn't match what I hold for {contact['short']} "
+                        f"({contact['number']}) — not dialling until that's squared. "
+                        "If the number's changed, the engineer updates the list."
+                    )
+                elif phone is None or not phone.configured:
+                    reply = (
+                        "No phone line wired up yet, sir — the Twilio keys need to "
+                        "land in Render before I can ring anyone."
+                    )
+                else:
+                    greeting = pick_greeting(contact)
+                    told = re.search(
+                        r"\b(?:and\s+)?(?:tell|ask)\s+(?:him|her|them)\s+(.{3,200})",
+                        transcript, re.IGNORECASE,
+                    )
+                    if told:
+                        greeting += (
+                            " Oh, and Paul wanted me to pass this on: "
+                            + told.group(1).strip().rstrip(".") + "."
+                        )
+                    if await phone.call_contact(contact, greeting):
+                        reply = (
+                            f"Ringing {contact['name']} on {contact['number']} now — "
+                            "I'll report back how it goes."
+                        )
+                    else:
+                        reply = (
+                            f"The call to {contact['short']} didn't go through — Twilio "
+                            "refused it. If the account's on trial it can only ring "
+                            "verified numbers. Nothing connected."
+                        )
+                await self.log.log("out", reply, chat_id=message.chat_id, meta={"contact_call": True})
+                await self.telegram.send_text(message.chat_id, reply)
+                return True
+            # A short, unambiguous 'call <name>' for someone NOT on the list
+            # gets an honest refusal; anything wordier ('call the dentist
+            # about…') stays conversation for the brain to handle.
+            bare_name = re.fullmatch(r"[a-z][a-z'.-]*(?:\s+[a-z][a-z'.-]*)?", who.strip(" .!?"))
+            if bare_name and who.split()[0] not in (
+                "the", "a", "an", "it", "that", "them", "off", "in", "back", "up",
+            ):
+                names = ", ".join(c["name"] for c in CONTACTS)
+                reply = (
+                    f"I can only ring registered contacts — right now that's {names}. "
+                    "Want someone added? Stick them on the build list and the "
+                    "engineer wires them in."
+                )
+                await self.log.log("out", reply, chat_id=message.chat_id, meta={"contact_call": True})
+                await self.telegram.send_text(message.chat_id, reply)
+                return True
 
         # THE UNIVERSAL OVERRIDE (Master Update §1). Unconditional failsafe:
         # nothing may suppress it. One confirm, reason logged, gates released

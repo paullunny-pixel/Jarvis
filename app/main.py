@@ -210,6 +210,10 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
     router_obj.phone_channel = phone_channel
     if phone_channel is not None:
         phone_channel.brain = router_obj.phone_turn
+        # Whitelisted-contact calls (7 Aug): a third party on the line gets
+        # the scoped guest persona, never Paul's brain/tools/memory.
+        phone_channel.guest_brain = router_obj.contact_turn
+        phone_channel.on_guest_event = router_obj.guest_call_event
         # Realtime upgrade (7 Aug): with the live engine up, inbound calls
         # stream to the agent (interruptible); Gather stays the fallback.
         phone_channel.realtime_available = (
@@ -720,6 +724,29 @@ async def twilio_turn(secret: str, request: Request):
         logger.exception("Twilio turn handler failed — speaking the error instead")
         twiml = error_twiml()
     return Response(content=twiml, media_type="text/xml")
+
+
+@app.post("/twilio/voice/{secret}/status")
+async def twilio_status(secret: str, request: Request):
+    """Final CallStatus for outbound guest calls — how 'John didn't pick up'
+    reaches Paul honestly instead of silence."""
+    from fastapi.responses import Response
+
+    router: JarvisRouter = request.app.state.router
+    phone = _phone_gate(router, secret)
+    params = await _twilio_form(request)
+    logger.info(
+        "Twilio status webhook: CallSid=%s status=%s",
+        params.get("CallSid", "?"), params.get("CallStatus", "?"),
+    )
+    if not _twilio_signed(router, request, params):
+        logger.warning("Twilio signature check FAILED on %s — ignoring", request.url.path)
+        return Response(status_code=204)
+    try:
+        await phone.handle_status(params)
+    except Exception:
+        logger.exception("Twilio status handler failed (nothing to speak — logged only)")
+    return Response(status_code=204)
 
 
 @app.get("/twilio/audio/{secret}/{audio_id}.mp3")

@@ -94,6 +94,14 @@ class PhoneChannel:
         self._audio: dict[str, tuple[float, bytes]] = {}
         self._greetings: dict[str, str] = {}
         self._tts_memo: dict[str, bytes] = {}   # scripted lines synth once, replay free
+        # Whitelisted-contact calls (7 Aug): a third party on the line NEVER
+        # reaches Paul's brain/tools/memory — their turns route to guest_brain
+        # (router injects a scoped, privacy-walled persona). Keyed by CallSid,
+        # registered at placement so the status callback can report a call
+        # that was never answered.
+        self.guest_brain = None      # async (contact_key, speech, call_sid) -> reply
+        self.on_guest_event = None   # async (event, contact, detail) -> None
+        self._guest_calls: dict[str, dict] = {}
 
     # ------------------------------------------------------------ URLs
 
@@ -109,6 +117,9 @@ class PhoneChannel:
 
     def _audio_url(self, audio_id: str) -> str:
         return f"{self._public_url}/twilio/audio/{self._secret}/{audio_id}.mp3"
+
+    def status_url(self) -> str:
+        return f"{self._public_url}/twilio/voice/{self._secret}/status"
 
     def media_ws_url(self) -> str:
         base = self._public_url
@@ -183,17 +194,19 @@ class PhoneChannel:
             logger.exception("Phone TTS failed — Twilio <Say> carries the line")
             return f'<Say voice="Polly.Brian">{escape(text)}</Say>'
 
-    async def _speak_and_listen(self, text: str) -> str:
-        """Say `text`, then listen for Paul's next utterance. Silence past the
-        Gather normally ends the call politely; while a wake script is driving
-        (script_handler set), silence REDIRECTS back to the turn endpoint so
-        the script can pitch — the script bounds its own silence loop."""
+    async def _speak_and_listen(self, text: str, farewell: str | None = None) -> str:
+        """Say `text`, then listen for the next utterance. Silence past the
+        Gather normally ends the call politely (with `farewell` — a guest call
+        gets its own warm sign-off, never Paul's); while a wake script is
+        driving (script_handler set), silence REDIRECTS back to the turn
+        endpoint so the script can pitch — the script bounds its own silence
+        loop."""
         voiced = await self._voiced(text)
         wait = f' timeout="{int(self.listen_timeout)}"' if self.listen_timeout else ""
         if self.script_handler is not None:
             after = f"<Redirect method='POST'>{escape(self._turn_url())}</Redirect>"
         else:
-            after = f'<Say voice="Polly.Brian">{escape(FAREWELL)}</Say><Hangup/>'
+            after = f'<Say voice="Polly.Brian">{escape(farewell or FAREWELL)}</Say><Hangup/>'
         return self._document(
             f'<Gather input="speech" language="en-GB" speechTimeout="auto"{wait} '
             f'speechModel="experimental_conversations" profanityFilter="false" '
@@ -220,12 +233,66 @@ class PhoneChannel:
             self._greetings.pop(token, None)
         return bool(sid)
 
+    async def call_contact(self, contact: dict, greeting: str) -> str:
+        """Ring a WHITELISTED contact (7 Aug — John Debono seeded). The caller
+        (router) has already matched the name against the whitelist; this
+        layer never sees an arbitrary number. Returns the CallSid ('' on
+        failure). The status callback is how no-answer/busy/failed get
+        reported honestly instead of Paul assuming it connected."""
+        if not self.configured:
+            return ""
+        sid = await self.twilio.place_call(
+            contact["number"], self.from_number, self.answer_url(),
+            status_callback=self.status_url(),
+        )
+        if sid:
+            self._guest_calls[sid] = {
+                "contact": contact,
+                "greeting": greeting,
+                "answered": False,
+                "farewell": (
+                    f"Cheers {contact['short']} — I'll tell Paul you said "
+                    "hello. Take care now."
+                ),
+            }
+        return sid
+
+    def _guest(self, params: dict[str, str]) -> dict | None:
+        return self._guest_calls.get(params.get("CallSid", ""))
+
+    async def _guest_event(self, event: str, contact: dict, detail: str = "") -> None:
+        if self.on_guest_event is None:
+            return
+        try:
+            await self.on_guest_event(event, contact, detail)
+        except Exception:
+            logger.exception("Guest-call event report failed (call carries on)")
+
+    async def handle_status(self, params: dict[str, str]) -> None:
+        """Twilio's final word on an outbound guest call. 'completed' after an
+        answer needs no report here (the goodbye turn already told Paul);
+        anything else means the chat never happened — say so honestly."""
+        record = self._guest_calls.pop(params.get("CallSid", ""), None)
+        if record is None:
+            return
+        status = (params.get("CallStatus") or "").lower()
+        if status in ("no-answer", "busy", "failed", "canceled"):
+            await self._guest_event(status, record["contact"])
+        elif status == "completed" and not record["answered"]:
+            # Answered by machine/voicemail-cut so fast no turn ever ran.
+            await self._guest_event("no-answer", record["contact"])
+
     async def handle_answer(self, params: dict[str, str]) -> str:
         """First TwiML of a call — outbound (greeting token in `g`) or inbound
         (Paul rang the Twilio number). An inbound call goes REALTIME when the
         live engine is up: <Connect><Stream> into the media bridge, with a
         Redirect back here (?fallback=1) so a failed stream still gets the
         turn-based conversation, never dead air (invariant 5)."""
+        guest = self._guest(params)
+        if guest is not None:
+            guest["answered"] = True
+            await self._guest_event("answered", guest["contact"])
+            return await self._speak_and_listen(guest["greeting"], farewell=guest["farewell"])
         inbound = params.get("Direction", "").startswith("inbound")
         if (
             self.realtime_available
@@ -246,6 +313,11 @@ class PhoneChannel:
         A live wake script gets first refusal — instant scripted lines, no
         LLM; its None means 'off-script, give it to the brain'."""
         speech = (params.get("SpeechResult") or "").strip()
+        guest = self._guest(params)
+        if guest is not None:
+            # A third party on the line: their words NEVER reach Paul's brain,
+            # tools or memory — only the scoped guest persona. Hard wall.
+            return await self._guest_turn(guest, params.get("CallSid", ""), speech)
         if self.script_handler is not None:
             try:
                 scripted = await self.script_handler(speech)
@@ -271,3 +343,35 @@ class PhoneChannel:
         if reply.startswith("[[bye]]"):
             return await self._speak_and_hangup(reply[len("[[bye]]"):])
         return await self._speak_and_listen(reply)
+
+    async def _guest_turn(self, guest: dict, call_sid: str, speech: str) -> str:
+        """One turn of a whitelisted-contact call. Chit-chat until they say
+        goodbye or hang up; every path degrades to a warm sign-off, never
+        dead air."""
+        contact = guest["contact"]
+        if not speech:
+            return await self._speak_and_listen(
+                f"Sorry {contact['short']}, I didn't catch that — say again?",
+                farewell=guest["farewell"],
+            )
+        if GOODBYE.search(speech) and len(speech) <= 60:
+            self._guest_calls.pop(call_sid, None)
+            await self._guest_event("ended", contact, "they said goodbye")
+            return await self._speak_and_hangup(guest["farewell"])
+        reply = ""
+        if self.guest_brain is not None:
+            try:
+                reply = (await self.guest_brain(contact["key"], speech, call_sid)) or ""
+            except Exception:
+                logger.exception("Guest brain turn failed — warm sign-off instead")
+        if not reply:
+            # No scoped brain (or it stumbled): never wing it with a third
+            # party on the line — wind up warmly and report back.
+            self._guest_calls.pop(call_sid, None)
+            await self._guest_event("ended", contact, "my end stumbled, so I wrapped up early")
+            return await self._speak_and_hangup(guest["farewell"])
+        if reply.startswith("[[bye]]"):
+            self._guest_calls.pop(call_sid, None)
+            await self._guest_event("ended", contact, "wound up naturally")
+            return await self._speak_and_hangup(reply[len("[[bye]]"):])
+        return await self._speak_and_listen(reply, farewell=guest["farewell"])
