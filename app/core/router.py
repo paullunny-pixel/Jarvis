@@ -86,6 +86,7 @@ class JarvisRouter:
         self.whatsapp = None             # WhatsAppClient — Part 1 1:1 chat (main.py wires it)
         self.group_intel = None          # GroupIntel — Part 2 group intelligence (main.py wires it)
         self.warroom = None              # WarRoom — three-vendor board of advisors (main.py wires it)
+        self.radar = None                 # TeamRadar — Harry/Adriana/Kiefer bird's-eye view (main.py wires it)
         self._speech_vocab: list[str] = []   # nova-3 keyterms, rebuilt hourly
         self._speech_vocab_ts: float = 0.0
 
@@ -3210,6 +3211,38 @@ class JarvisRouter:
                     "required": ["action"],
                 },
             })
+        if self.radar is not None:
+            tools.append({
+                "name": "team_radar",
+                "description": (
+                    "Bird's-eye view of Harry, Adriana, Kiefer and Paul's Trello "
+                    "work — CARD STATES ONLY, never a performance score, never "
+                    "'Harry is slow' or anything like it. Triggers: 'how's the "
+                    "team doing' → rollup. 'what's Harry/Adriana/Kiefer working "
+                    "on' → person (name required). 'what's slipping'/'what's "
+                    "overdue' → needs_you. 'what's taking too long' → "
+                    "taking_too_long. 'how's the [project] going' → project "
+                    "(needs the War Room session_id — use the war_room tool's "
+                    "search first if you don't already have it in context). "
+                    "'what boards can you see' → coverage. COVERAGE HONESTY: "
+                    "if a person shows no boards visible, say EXACTLY that — "
+                    "never let it read as 'nothing on'. If data is stale (over "
+                    "2h old), mention that too. READ-ONLY — cannot move, edit, "
+                    "reassign or delete a card; if Paul wants a card changed, "
+                    "that's the trello_card tool, not this one."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": [
+                            "rollup", "person", "needs_you", "taking_too_long", "project", "coverage",
+                        ]},
+                        "name": {"type": "string"},
+                        "session_id": {"type": "integer"},
+                    },
+                    "required": ["action"],
+                },
+            })
         if self.gcal is not None:
             tools.append({
                 "name": "calendar",
@@ -3372,6 +3405,8 @@ class JarvisRouter:
             return f"Ruled — '{alias}' files under {domain} from now on, every card."
         if name == "war_room" and self.warroom is not None:
             return await self._tool_war_room(tool_input)
+        if name == "team_radar" and self.radar is not None:
+            return await self._tool_team_radar(tool_input)
         if name == "schedule_call" and self.heartbeat is not None:
             import re as _sre
 
@@ -3554,6 +3589,32 @@ class JarvisRouter:
                 f"[{h['created_at'][:10]}] ({h['tier']}) {h['question']} → {h['verdict']}" for h in hits
             )
         return "WAR ROOM: unknown action."
+
+    async def _tool_team_radar(self, tool_input: dict) -> str:
+        action = str(tool_input.get("action") or "")
+        radar = self.radar
+        if action == "rollup":
+            return await radar.rollup_spoken()
+        if action == "person":
+            person = str(tool_input.get("name") or "").strip()
+            if not person:
+                return "Who do you want — Harry, Adriana or Kiefer?"
+            return await radar.person_cards_spoken(person)
+        if action == "needs_you":
+            return await radar.slipping_spoken()
+        if action == "taking_too_long":
+            return await radar.taking_too_long_spoken()
+        if action == "project":
+            session_id = tool_input.get("session_id")
+            if not isinstance(session_id, int):
+                return "Which session — I need the War Room session_id, look it up with the war_room tool's search first."
+            return await radar.project_status_spoken(session_id)
+        if action == "coverage":
+            cov = await radar.coverage()
+            boards = ", ".join(cov["boards"]) or "none"
+            stale_note = " Data's stale — over 2 hours since the last sync." if cov["stale"] else ""
+            return f"Reading {len(cov['boards'])} board(s): {boards}.{stale_note} {cov['coverage_note']}"
+        return "TEAM RADAR: unknown action."
 
     async def _tool_trello_card(self, tool_input: dict) -> str:
         """The brain's full-schema hands on the Phase 1 layer — same layer

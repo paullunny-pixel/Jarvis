@@ -401,6 +401,62 @@ TABLES: list[str] = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_warroom_watch_session ON warroom_watch (session_id)",
+    # --- Team Radar (Build Slice, 7 Aug): bird's-eye view of Harry, Adriana,
+    # Kiefer and Paul across every board the token can reach. Owns its own
+    # history (radar_snapshots per sync, radar_list_history per transition)
+    # rather than depending on Trello's action history (§3 — retention and
+    # paging are outside our control). radar_cards is the fast current-state
+    # table, upserted every sync. ---
+    """
+    CREATE TABLE IF NOT EXISTS radar_cards (
+        id {pk},
+        card_id TEXT NOT NULL,
+        board_id TEXT NOT NULL DEFAULT '',
+        board_name TEXT NOT NULL DEFAULT '',
+        list_id TEXT NOT NULL DEFAULT '',
+        list_name TEXT NOT NULL DEFAULT '',
+        list_entered_at TEXT NOT NULL DEFAULT '',
+        title TEXT NOT NULL DEFAULT '',
+        company_tag TEXT NOT NULL DEFAULT '',
+        owners TEXT NOT NULL DEFAULT '[]',
+        due TEXT NOT NULL DEFAULT '',
+        due_complete INTEGER NOT NULL DEFAULT 0,
+        due_change_count INTEGER NOT NULL DEFAULT 0,
+        last_activity TEXT NOT NULL DEFAULT '',
+        checklist_total INTEGER NOT NULL DEFAULT 0,
+        checklist_done INTEGER NOT NULL DEFAULT 0,
+        comment_count INTEGER NOT NULL DEFAULT 0,
+        warroom_session_id INTEGER NOT NULL DEFAULT 0,
+        short_url TEXT NOT NULL DEFAULT '',
+        first_seen TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL DEFAULT '',
+        archived INTEGER NOT NULL DEFAULT 0
+    )
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_radar_cards_id ON radar_cards (card_id)",
+    "CREATE INDEX IF NOT EXISTS idx_radar_cards_board ON radar_cards (board_id)",
+    """
+    CREATE TABLE IF NOT EXISTS radar_list_history (
+        id {pk},
+        card_id TEXT NOT NULL,
+        list_name TEXT NOT NULL DEFAULT '',
+        entered_at TEXT NOT NULL,
+        left_at TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_radar_list_history_card ON radar_list_history (card_id)",
+    """
+    CREATE TABLE IF NOT EXISTS radar_snapshots (
+        id {pk},
+        card_id TEXT NOT NULL,
+        ts TEXT NOT NULL,
+        list_name TEXT NOT NULL DEFAULT '',
+        due TEXT NOT NULL DEFAULT '',
+        owners TEXT NOT NULL DEFAULT '[]',
+        last_activity TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_radar_snapshots_card ON radar_snapshots (card_id, ts)",
 ]
 
 PK = {

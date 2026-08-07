@@ -101,6 +101,8 @@ class HeartbeatJobs:
         self.mail = mail
         self.notetaker = None   # MeetingNotetaker — main.py wires it once mail is up
         self.group_intel = None   # GroupIntel — Part 2 group intelligence (main.py wires it)
+        self.radar_sync = None    # RadarSync — Team Radar's Trello poll (main.py wires it)
+        self.radar = None         # TeamRadar — Team Radar's derivation layer (main.py wires it)
         self.store = SettingsStore(db)
         self.streaks = Streaks(db)
         self.log = MessageLog(db)
@@ -430,6 +432,15 @@ class HeartbeatJobs:
         message = opener + "\n\n" + skeleton
         if plan_text:
             message += "\n\n" + plan_text
+        # Team Radar (7 Aug): one line, once a day, alongside Today's Focus —
+        # silence when nothing's slipped (§7's own rule, not a bug).
+        if self.radar is not None:
+            try:
+                radar_line = await self.radar.daily_line(today.isoformat())
+                if radar_line:
+                    message += "\n\n" + radar_line
+            except Exception:
+                logger.exception("Team Radar daily line failed — brief goes out without it")
         # Eat the frog (§8): the most-avoided item goes first, every day.
         if self.daily12 is not None:
             try:
@@ -721,6 +732,27 @@ class HeartbeatJobs:
             await self.group_intel.refresh()
         except Exception:
             logger.exception("Group intel tick failed (next beat retries)")
+
+    async def radar_tick(self) -> None:
+        """Team Radar (7 Aug): poll every board the token can reach, snapshot
+        every card, then check the once-a-day interrupt (§7 — a War Room
+        card crossing into overdue). Sync failures never wipe yesterday's
+        picture; the panel just goes stale (and says so) until the next tick."""
+        if self.radar_sync is None:
+            return
+        try:
+            await self.radar_sync.sync()
+        except Exception:
+            logger.exception("Radar sync failed (next beat retries)")
+            return
+        if self.radar is None:
+            return
+        try:
+            line = await self.radar.check_interrupt((await self._today()).isoformat())
+            if line:
+                await self._send_text(line, essential=False)
+        except Exception:
+            logger.exception("Radar interrupt check failed")
 
     SCHEDULED_CALLS_KEY = "scheduled_calls"
 

@@ -105,6 +105,16 @@ class TrelloClient:
     async def board_members(self, board_id: str) -> list[dict]:
         return await self._call("GET", f"/boards/{board_id}/members", fields="fullName,username")
 
+    async def board_cards_full(self, board_id: str) -> list[dict]:
+        """Team Radar's poll (7 Aug): everything the four-state derivation
+        needs in ONE call per board — badges carry checklist/comment counts
+        so there's no per-card fan-out, customFieldItems carries Domain."""
+        return await self._call(
+            "GET", f"/boards/{board_id}/cards",
+            fields="name,due,dueComplete,idList,idBoard,idMembers,labels,dateLastActivity,badges,shortUrl",
+            customFieldItems="true",
+        )
+
     async def board_labels(self, board_id: str) -> list[dict]:
         return await self._call("GET", f"/boards/{board_id}/labels", fields="name,color")
 

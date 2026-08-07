@@ -291,6 +291,18 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
         monthly_ceiling_usd=settings.warroom_monthly_ceiling_usd,
         escalate_value_gbp=settings.warroom_escalate_value_gbp,
     )
+    # Team Radar (7 Aug brief): no new key — runs entirely on the Trello
+    # connection already live. It IS the War Room's watcher (reads
+    # warroom_watch); do not build a second one anywhere else.
+    if settings.trello_key and settings.trello_token:
+        from app.daily12.trello import TrelloClient as _RadarTrelloClient
+        from app.radar.service import TeamRadar
+        from app.radar.sync import RadarSync
+
+        radar_client = _RadarTrelloClient(settings.trello_key, settings.trello_token)
+        jobs.radar_sync = RadarSync(radar_client, db, jobs.store)
+        jobs.radar = TeamRadar(db, jobs.store)
+        router_obj.radar = jobs.radar
     router_obj.voice_tools = VoiceTools(
         db, memory=memory, living=living, daily12=daily12, mail=mail, jobs=jobs,
         timezone_default=settings.timezone_default,
@@ -1084,6 +1096,50 @@ async def warroom_undo(secret: str, request: Request) -> dict:
     router: JarvisRouter = request.app.state.router
     wr = _warroom_gate(router, secret)
     return {"message": await wr.undo()}
+
+
+# --- Team Radar (7 Aug) — same endpoint serves the Mac app AND the cockpit ---
+
+def _radar_gate(router: "JarvisRouter", secret: str):
+    _desktop_gate(router, secret)
+    if router.radar is None:
+        raise HTTPException(status_code=409, detail="Team Radar not wired up")
+    return router.radar
+
+
+@app.get("/desktop/{secret}/radar/needs-you")
+async def radar_needs_you(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    radar = _radar_gate(router, secret)
+    return {"coverage": await radar.coverage(), **await radar.needs_you()}
+
+
+@app.get("/desktop/{secret}/radar/columns")
+async def radar_columns(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    radar = _radar_gate(router, secret)
+    return {"coverage": await radar.coverage(), "columns": await radar.columns()}
+
+
+@app.get("/desktop/{secret}/radar/rollup")
+async def radar_rollup(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    radar = _radar_gate(router, secret)
+    return {"coverage": await radar.coverage(), "companies": await radar.company_rollup()}
+
+
+@app.get("/desktop/{secret}/radar/coverage")
+async def radar_coverage(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    radar = _radar_gate(router, secret)
+    return await radar.coverage()
+
+
+@app.get("/desktop/{secret}/radar/project/{session_id}")
+async def radar_project(secret: str, session_id: int, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    radar = _radar_gate(router, secret)
+    return await radar.project_status(session_id)
 
 
 async def merge_water_total(db, day_iso: str, water_ml: int) -> bool:

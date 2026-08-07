@@ -91,6 +91,8 @@ class Heartbeat:
             ("notetaker_tick", self.jobs.notetaker_tick, CronTrigger(minute="*/30", timezone=timezone), 600),
             # Group intelligence Part 2: gists, @-mention actions, missed-summary
             ("group_intel_tick", self.jobs.group_intel_tick, CronTrigger(minute="*/15", timezone=timezone), 600),
+            # Team Radar: poll every reachable board, snapshot, check the interrupt
+            ("radar_tick", self.jobs.radar_tick, CronTrigger(minute="*/15", timezone=timezone), 600),
             # §5: hourly move + water through the waking day
             ("move_water", self.jobs.move_water_nudge, CronTrigger(hour="8-20", minute=5, timezone=timezone), 900),
             # §6: meds/supplements/TRT (TRT job self-checks for Saturday)
