@@ -7,6 +7,7 @@ per the smart-mix policy. Errors degrade gracefully — Jarvis always answers.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -36,6 +37,20 @@ logger = logging.getLogger(__name__)
 
 OWNER_KEY = "owner_chat_id"
 TIMEZONE_KEY = "current_timezone"
+
+# Confirm/cancel a drafted Trello card (7 Aug: brainstorming out loud once
+# produced 3 near-duplicate cards with no chance to say no). Checked ONLY
+# when a draft is actually pending, so ordinary "yes"/"no" board talk
+# elsewhere is never misread as touching it.
+TRELLO_CONFIRM = re.compile(
+    r"\b(confirm|yes|yeah|yep|go ahead|do it|add it|create it|make it|"
+    r"book it|put it on|add that|add the card|board it)\b",
+    re.IGNORECASE,
+)
+TRELLO_CANCEL = re.compile(
+    r"\b(cancel|no|nah|never ?mind|scrap it|drop it|forget it|don'?t add)\b",
+    re.IGNORECASE,
+)
 
 STRANGER_REPLY = "This is a private assistant. If you're looking for Jarvis, he's taken."
 
@@ -79,10 +94,19 @@ class JarvisRouter:
         self.streaks = Streaks(db)
         self.pt = PortugueseCoach(db)    # Brazil Portuguese course (7 Aug)
         self._sprint_tasks: set = set()  # strong refs to running buzzer timers
+        self._guest_histories: dict[str, list] = {}  # per-CallSid guest-call turns
         self.web_transport = None        # httpx transport seam for link-fetch tests
         self.phone_channel = None        # PhoneChannel — Twilio calls (main.py wires it)
         self.meetings = None             # MeetingMaker — Zoom quick-start (main.py wires it)
         self.gcal = None                 # GoogleCalendar — live read+write (main.py wires it)
+        self.whatsapp = None             # WhatsAppClient — Part 1 1:1 chat (main.py wires it)
+        self.group_intel = None          # GroupIntel — Part 2 group intelligence (main.py wires it)
+        self.warroom = None              # WarRoom — three-vendor board of advisors (main.py wires it)
+        self.radar = None                 # TeamRadar — Harry/Adriana/Kiefer bird's-eye view (main.py wires it)
+        self.location = None              # LocationAwareness — GPS + daily working memory (main.py wires it)
+        self.deadlines = None             # DeadlineRadar — key-date countdowns (main.py wires it)
+        self.med_supply = None            # MedSupply — refill tracking (main.py wires it)
+        self.outbound_watch = None        # OutboundWatch — follow-up chaser (main.py wires it)
         self._speech_vocab: list[str] = []   # nova-3 keyterms, rebuilt hourly
         self._speech_vocab_ts: float = 0.0
 
@@ -604,7 +628,7 @@ class JarvisRouter:
                 and mentions_tasks(transcript)
             ):
                 try:
-                    summary = await intake.start_batch(transcript)
+                    summary, _unassigned = await intake.start_batch(transcript)
                 except Exception:
                     logger.exception("Board half of a mixed message failed")
                     summary = None
@@ -633,11 +657,26 @@ class JarvisRouter:
             and mentions_tasks(transcript)
         ):
             try:
-                summary = await intake.start_batch(transcript)
+                summary, unassigned = await intake.start_batch(transcript)
             except Exception:
                 logger.exception("Intake extraction failed — conversation carries on")
-                summary = None
+                summary, unassigned = None, []
             if summary:
+                # A genuinely unrelated fragment inside the same ramble (a
+                # dinner question, anything conversational) must never sit
+                # blocked behind the card confirmation (7 Aug: Paul had to
+                # say "No" to a card he never asked for just to get an
+                # actual answer). Answer it NOW, in this same turn — never
+                # just quote it as "couldn't place" and leave it hanging.
+                if unassigned:
+                    try:
+                        leftover = "\n".join(unassigned)
+                        leftover_reply = await self._brain_reply(leftover, message)
+                        await self._deliver_reply(message, leftover, leftover_reply)
+                    except Exception:
+                        logger.exception(
+                            "Answering the unassigned remarks failed — card summary still sent"
+                        )
                 await self.log.log("out", summary, chat_id=message.chat_id, meta={"intake": True})
                 await self.telegram.send_text(message.chat_id, summary)
                 return
@@ -697,6 +736,16 @@ class JarvisRouter:
                     "present it as still owed. If it genuinely matters, ask Paul or "
                     "offer to check, don't assert."
                 )
+                pending_creates = await self.daily12.pending_creates_preview()
+                if pending_creates:
+                    previews = "; ".join(self.daily12.preview_line(p) for p in pending_creates)
+                    system_status += (
+                        "\n\nDRAFTED CARD(S) AWAITING PAUL'S OKAY (not on the board yet): "
+                        + previews
+                        + ". If his reply confirms, call trello with 'confirm the pending "
+                        "card'; if he declines, use 'cancel the pending card'. Unaddressed "
+                        "is fine too — it never blocks anything and quietly expires."
+                    )
             except Exception:
                 logger.exception("Board truth injection failed — continuing without")
         # Links in the message → fetch the pages so the brain reads them NOW.
@@ -770,6 +819,18 @@ class JarvisRouter:
                 "or open replies with bedtime talk. 'goodnight' still closes the day "
                 "when HE says it. He can bring the 22:30 rule back any time."
             )
+        if self.location is not None:
+            try:
+                if await self.location.is_travel_day(now_local.date()):
+                    rhythm_lines.append(
+                        "TRAVEL DAY (GPS-confirmed): Paul confirmed he's flying today. Keep "
+                        "the day light — don't pile on tasks, be gentle about the schedule."
+                    )
+                pending_note = await self.location.pending_situation_note()
+                if pending_note:
+                    rhythm_lines.append(pending_note)
+            except Exception:
+                logger.exception("Location rhythm-state injection failed — continuing without")
         system_status += "\n\nRHYTHM STATE (switch truth beats memory):\n- " + "\n- ".join(rhythm_lines)
         # The Continuous Mind's nightly notes ride today's turns (Phase A3).
         try:
@@ -932,6 +993,66 @@ class JarvisRouter:
             task.add_done_callback(self._sprint_tasks.discard)
         return reply
 
+    async def contact_turn(self, contact_key: str, speech: str, call_sid: str) -> str:
+        """One turn of a WHITELISTED-contact call (7 Aug — 'call John'). A
+        third party is on the line: scoped persona, NO tools, NO memory
+        recall, hard privacy wall (app/voice/contacts.GUEST_RULES). Every
+        word both ways is logged so Paul can see exactly what was said."""
+        from app.voice.contacts import CONTACTS, guest_system_prompt
+
+        contact = next((c for c in CONTACTS if c["key"] == contact_key), None)
+        if contact is None:
+            return ""   # unknown key — the phone channel winds up warmly
+        stored = await self.store.get(OWNER_KEY)
+        chat_id = self.settings.telegram_owner_chat_id or (int(stored) if stored else 0)
+        history = self._guest_histories.setdefault(call_sid, [])
+        history.append({"role": "user", "content": speech})
+        await self.log.log(
+            "in", speech, chat_id=chat_id, kind="voice",
+            channel="phone_guest", meta={"contact": contact_key},
+        )
+        try:
+            reply = strip_for_speech(await self.claude.converse(
+                system=guest_system_prompt(contact),
+                messages=list(history),
+                max_tokens=300,
+                model=self.settings.phone_model or None,
+            )).strip()
+        except Exception:
+            logger.exception("Guest call brain turn failed")
+            return ""   # phone channel signs off warmly, then reports back
+        if reply:
+            history.append({"role": "assistant", "content": reply})
+            del history[:-16]   # phone-length bound, same as Paul's calls
+            await self.log.log(
+                "out", reply, chat_id=chat_id, kind="voice",
+                channel="phone_guest", meta={"contact": contact_key},
+            )
+        return reply
+
+    async def guest_call_event(self, event: str, contact: dict, detail: str = "") -> None:
+        """The honest outcome report to Paul's Telegram: answered, wrapped up,
+        no answer, busy or failed — never a claimed connection that didn't
+        happen."""
+        stored = await self.store.get(OWNER_KEY)
+        chat_id = self.settings.telegram_owner_chat_id or (int(stored) if stored else 0)
+        if not chat_id:
+            return
+        short = contact.get("short", contact.get("name", "them"))
+        lines = {
+            "answered": f"{short}'s picked up — having a natter now.",
+            "ended": f"Wrapped up the call with {short}" + (f" — {detail}." if detail else "."),
+            "no-answer": f"{short} didn't pick up — no answer. I'll leave it with you.",
+            "busy": f"{short}'s line was engaged — didn't get through.",
+            "failed": f"The call to {short} didn't connect — Twilio refused it. It did NOT go through.",
+            "canceled": f"The call to {short} was cancelled before it connected.",
+        }
+        line = lines.get(event, f"Call update on {short}: {event}.")
+        if event != "answered":
+            self._guest_histories.clear()   # call over — nothing lingers
+        await self.log.log("out", line, chat_id=chat_id, meta={"contact_call": True})
+        await self.telegram.send_text(chat_id, line)
+
     # --- The Mac desktop app (6 Aug) — another mouth on the same mind ---
 
     async def desktop_turn(self, transcript: str, spoken: bool = True) -> str:
@@ -978,6 +1099,53 @@ class JarvisRouter:
             task = _asyncio.create_task(
                 extract_and_file(
                     self.claude, self.memory, self.living, transcript, source="desktop"
+                )
+            )
+            self._sprint_tasks.add(task)
+            task.add_done_callback(self._sprint_tasks.discard)
+        return reply
+
+    # --- WhatsApp, Part 1 (7 Aug) — another mouth on the same mind ---
+
+    async def whatsapp_turn(self, transcript: str, is_voice: bool = False) -> str:
+        """One turn from WhatsApp: same brain, memory, tools and history as
+        Telegram. Full reply quality — WhatsApp has no phone-call latency
+        pressure. Owner-only gating happens in the webhook handler (main.py),
+        before this is ever called."""
+        transcript = (transcript or "").strip()
+        if not transcript:
+            return ""
+        from app.core.power import PHONE_OFF_LINE, POWER_KEY
+
+        if await self.store.get(POWER_KEY, "") == "off":
+            return PHONE_OFF_LINE
+        stored = await self.store.get(OWNER_KEY)
+        chat_id = self.settings.telegram_owner_chat_id or (int(stored) if stored else 0)
+        kind = "voice" if is_voice else "text"
+        if self.private_track is not None and (
+            self.private_track.is_sos(transcript) or self.private_track.is_private_topic(transcript)
+        ):
+            await self.log.log(
+                "in", "[private exchange]", chat_id=chat_id, kind=kind,
+                channel="whatsapp", meta={"private": True},
+            )
+            return (
+                "That's ours, not the board's — take it to our private room on "
+                "Telegram and I'm right there with you."
+            )
+        await self.log.log("in", transcript, chat_id=chat_id, kind=kind, channel="whatsapp")
+        message = IncomingMessage(
+            chat_id=chat_id, message_id=0, from_name="Paul", text=transcript,
+        )
+        reply = (await self._brain_reply(transcript, message, phone=False)).strip()
+        reply = reply or "I lost my train of thought there — go again."
+        await self.log.log("out", reply, chat_id=chat_id, kind=kind, channel="whatsapp")
+        if self.memory is not None and self.living is not None:
+            import asyncio as _asyncio
+
+            task = _asyncio.create_task(
+                extract_and_file(
+                    self.claude, self.memory, self.living, transcript, source="whatsapp"
                 )
             )
             self._sprint_tasks.add(task)
@@ -1487,12 +1655,26 @@ class JarvisRouter:
                 else "- Apple Health webhook: not configured yet"
             ),
             (
-                "- WhatsApp (Jarvis's own second number, official API): READ-ONLY — "
-                "messages arriving there are ingested and summarised in digests / "
-                "'catch me up'. You NEVER send on WhatsApp in this phase; if Paul asks "
-                "you to reply there, say sending is a later phase he'll switch on."
-                if s.whatsapp_verify_token
-                else "- WhatsApp: not connected yet (planned: read-only on the second number)"
+                (
+                    "- WhatsApp (Jarvis's own number, official API): CONNECTED — Paul's "
+                    "messages (text + voice) reach you exactly like Telegram, same brain/"
+                    "memory/tools/history. "
+                    + (
+                        "Replies send back on WhatsApp too."
+                        if s.whatsapp_sending_enabled
+                        else "Replies still go out on Telegram only — sending is built but "
+                        "Paul hasn't flipped it on yet."
+                    )
+                )
+                if (s.whatsapp_verify_token and s.whatsapp_owner_number)
+                else (
+                    "- WhatsApp (Jarvis's own second number, official API): READ-ONLY — "
+                    "messages arriving there are ingested and summarised in digests / "
+                    "'catch me up'. You NEVER send on WhatsApp in this phase; if Paul asks "
+                    "you to reply there, say sending is a later phase he'll switch on."
+                    if s.whatsapp_verify_token
+                    else "- WhatsApp: not connected yet (planned: read-only on the second number)"
+                )
             ),
             "- WAKE & HYDRATE v2 (5 Aug): 'set wake 05:00' (or 'wake me at 5') locks a "
             "gospel wake time — at that time Jarvis CALLS Paul's phone, talks him "
@@ -1560,7 +1742,11 @@ class JarvisRouter:
                 )
                 + "TIMED CALLS: 'call me in 40 minutes and "
                 "remind me to X' — use your schedule_call tool; the machinery rings "
-                "him on the minute."
+                "him on the minute. WHITELISTED CONTACTS: 'call John' rings John "
+                "Debono for a friendly catch-up on Paul's behalf — the machinery "
+                "handles it before you see the message; that call runs a scoped "
+                "guest persona (no tools, no private context). Only registered "
+                "contacts, never arbitrary numbers."
                 if (self.phone_channel is not None and self.phone_channel.configured)
                 else "- Phone calls: not connected yet (Twilio keys pending in Render)."
             ),
@@ -2044,6 +2230,77 @@ class JarvisRouter:
             await self.log.log("out", reply, chat_id=message.chat_id, meta={"phone_call": True})
             await self.telegram.send_text(message.chat_id, reply)
             return True
+
+        # 'Call John' → ring a WHITELISTED contact (7 Aug). The list is code,
+        # not chat — a garbled transcript can never dial a stranger. Any
+        # number Paul reads out must MATCH what we hold, or nothing dials.
+        from app.voice.contacts import (
+            CONTACTS, find_contact, number_matches, pick_greeting,
+        )
+
+        contact_verb = re.search(
+            r"^\s*(?:jarvis[,!.\s]+)?(?:please\s+|can\s+you\s+|could\s+you\s+)?"
+            r"(?:call|ring|phone)\s+(?!me\b)(?P<who>.{2,80})$",
+            lowered,
+        )
+        if contact_verb and len(transcript) <= 200:
+            who = contact_verb.group("who")
+            contact = find_contact(who)
+            if contact is not None:
+                spoken_number = re.search(r"\+?\d[\d\s]{8,14}\d", transcript)
+                phone = self.phone_channel
+                if spoken_number and not number_matches(contact, spoken_number.group(0)):
+                    reply = (
+                        f"That number doesn't match what I hold for {contact['short']} "
+                        f"({contact['number']}) — not dialling until that's squared. "
+                        "If the number's changed, the engineer updates the list."
+                    )
+                elif phone is None or not phone.configured:
+                    reply = (
+                        "No phone line wired up yet, sir — the Twilio keys need to "
+                        "land in Render before I can ring anyone."
+                    )
+                else:
+                    greeting = pick_greeting(contact)
+                    told = re.search(
+                        r"\b(?:and\s+)?(?:tell|ask)\s+(?:him|her|them)\s+(.{3,200})",
+                        transcript, re.IGNORECASE,
+                    )
+                    if told:
+                        greeting += (
+                            " Oh, and Paul wanted me to pass this on: "
+                            + told.group(1).strip().rstrip(".") + "."
+                        )
+                    if await phone.call_contact(contact, greeting):
+                        reply = (
+                            f"Ringing {contact['name']} on {contact['number']} now — "
+                            "I'll report back how it goes."
+                        )
+                    else:
+                        reply = (
+                            f"The call to {contact['short']} didn't go through — Twilio "
+                            "refused it. If the account's on trial it can only ring "
+                            "verified numbers. Nothing connected."
+                        )
+                await self.log.log("out", reply, chat_id=message.chat_id, meta={"contact_call": True})
+                await self.telegram.send_text(message.chat_id, reply)
+                return True
+            # A short, unambiguous 'call <name>' for someone NOT on the list
+            # gets an honest refusal; anything wordier ('call the dentist
+            # about…') stays conversation for the brain to handle.
+            bare_name = re.fullmatch(r"[a-z][a-z'.-]*(?:\s+[a-z][a-z'.-]*)?", who.strip(" .!?"))
+            if bare_name and who.split()[0] not in (
+                "the", "a", "an", "it", "that", "them", "off", "in", "back", "up",
+            ):
+                names = ", ".join(c["name"] for c in CONTACTS)
+                reply = (
+                    f"I can only ring registered contacts — right now that's {names}. "
+                    "Want someone added? Stick them on the build list and the "
+                    "engineer wires them in."
+                )
+                await self.log.log("out", reply, chat_id=message.chat_id, meta={"contact_call": True})
+                await self.telegram.send_text(message.chat_id, reply)
+                return True
 
         # THE UNIVERSAL OVERRIDE (Master Update §1). Unconditional failsafe:
         # nothing may suppress it. One confirm, reason logged, gates released
@@ -2926,10 +3183,18 @@ class JarvisRouter:
                     "tick things done, defer, queue for tomorrow, archive, comment, calendar "
                     "cards, or show the list. Pass ONE clear instruction in plain words with "
                     "Paul's meaning cleaned up — fix his typos, resolve 'those'/'the first one' "
-                    "from the conversation into explicit names. The result says exactly what "
-                    "happened: report THAT, never your intention. A NOTE about the run/meds "
-                    "still owed may ride along — mention it gently AFTER the board answer; "
-                    "it never blocks anything."
+                    "from the conversation into explicit names. "
+                    "NEW CARDS ARE DRAFTED, NOT WRITTEN (7 Aug — brainstorming out loud once "
+                    "produced 3 near-duplicate cards with no chance to say no): the result "
+                    "tells you what would be created and asks Paul to confirm — relay THAT, "
+                    "never say the card exists yet. When he confirms, call this tool again "
+                    "with an instruction like 'confirm the pending card'; if he declines, use "
+                    "'cancel the pending card'. Ticking done / deferring / queueing / "
+                    "archiving / commenting on EXISTING cards still happens immediately — "
+                    "only brand-new cards need his yes. "
+                    "The result says exactly what happened: report THAT, never your "
+                    "intention. A NOTE about the run/meds still owed may ride along — "
+                    "mention it gently AFTER the board answer; it never blocks anything."
                 ),
                 "input_schema": {
                     "type": "object",
@@ -2994,8 +3259,19 @@ class JarvisRouter:
                     "clocks look wrong, tell him that command, never act. "
                     "heat_day marks today as an outdoor/heat day so the "
                     "water pace steps up — set it when Paul says he's out in the sun. "
-                    "Saying any of it back without the tool changes "
-                    "nothing. Only claim a rhythm change the result confirms."
+                    "meeting_notetaker turns the Otter meeting-notes pipeline off/on "
+                    "('turn off the meeting notetaker', 'notetaker back on') — off "
+                    "means Otter's emails stop turning into Brain Dump cards until "
+                    "he flips it back. watch_standdown: use the MOMENT Paul explains "
+                    "he's briefly away from his watch/phone for an ordinary reason "
+                    "('I'm at dinner', 'in the shower', 'left it charging') WHILE the "
+                    "watch chaser is on him — his word stands it down completely (no "
+                    "calls) for about an hour, no argument, even if the data still "
+                    "looks like the watch is off. test_watch_chase/test_move_reminder "
+                    "drill those two features on demand ('test watch chase', 'test "
+                    "move reminder') without touching real reminder state. Saying any "
+                    "of it back without the tool changes nothing. Only claim a rhythm "
+                    "change the result confirms."
                 ),
                 "input_schema": {
                     "type": "object",
@@ -3011,6 +3287,10 @@ class JarvisRouter:
                         "skip_days": {"type": "integer"},
                         "skip_reason": {"type": "string"},
                         "heat_day": {"type": "boolean"},
+                        "meeting_notetaker": {"type": "boolean"},
+                        "watch_standdown": {"type": "boolean"},
+                        "test_watch_chase": {"type": "boolean"},
+                        "test_move_reminder": {"type": "boolean"},
                     },
                 },
             })
@@ -3097,6 +3377,198 @@ class JarvisRouter:
                 },
             },
         })
+        if self.warroom is not None:
+            tools.append({
+                "name": "war_room",
+                "description": (
+                    "The multi-vendor board of advisors — three AI models from three "
+                    "different vendors debate a business question blind and "
+                    "independent, then cross-examine each other and hand Paul a "
+                    "decision-ready report. Triggers: 'war room this' / 'take this "
+                    "to the war room' (you pick the tier), 'full board this' / "
+                    "'quick board this' (forces the tier), 'what did the board say "
+                    "about X' (search), 'escalate that to the full board'. "
+                    "ALWAYS call action='frame' FIRST and read the result back to "
+                    "Paul verbatim (question, tier, why, cost estimate) — NEVER "
+                    "call action='confirm' in the same turn as 'frame'; wait for "
+                    "Paul's actual next message giving the go-ahead, same as any "
+                    "other spend-gated tool. 'confirm' runs the debate and returns "
+                    "the report. 'escalate' carries a Quick Board session forward "
+                    "into a Full Board (session_id required) — ask before doing "
+                    "this, never silently upgrade. 'approve'/'reject' act on one "
+                    "Full Board action point (session_id + action_id); owner is "
+                    "optional, default is Paul. 'preview_project' shows the Quick "
+                    "Board's card set (session_id); 'create_project' files the "
+                    "whole thing at once — undo works for 60 seconds after. "
+                    "'search' finds a past session by question or company. Only "
+                    "claim an outcome the tool result confirms."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": [
+                            "frame", "confirm", "escalate", "approve", "reject",
+                            "preview_project", "create_project", "undo", "search",
+                        ]},
+                        "question": {"type": "string"},
+                        "tier": {"type": "string", "enum": ["full", "quick"]},
+                        "session_id": {"type": "integer"},
+                        "action_id": {"type": "integer"},
+                        "owner": {"type": "string"},
+                        "reason": {"type": "string"},
+                        "query": {"type": "string"},
+                        "unredacted": {"type": "boolean"},
+                    },
+                    "required": ["action"],
+                },
+            })
+        if self.radar is not None:
+            tools.append({
+                "name": "team_radar",
+                "description": (
+                    "Bird's-eye view of Harry, Adriana, Kiefer and Paul's Trello "
+                    "work — CARD STATES ONLY, never a performance score, never "
+                    "'Harry is slow' or anything like it. Triggers: 'how's the "
+                    "team doing' → rollup. 'what's Harry/Adriana/Kiefer working "
+                    "on' → person (name required). 'what's slipping'/'what's "
+                    "overdue' → needs_you. 'what's taking too long' → "
+                    "taking_too_long. 'how's the [project] going' → project "
+                    "(needs the War Room session_id — use the war_room tool's "
+                    "search first if you don't already have it in context). "
+                    "'what boards can you see' → coverage. COVERAGE HONESTY: "
+                    "if a person shows no boards visible, say EXACTLY that — "
+                    "never let it read as 'nothing on'. If data is stale (over "
+                    "2h old), mention that too. READ-ONLY — cannot move, edit, "
+                    "reassign or delete a card; if Paul wants a card changed, "
+                    "that's the trello_card tool, not this one."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": [
+                            "rollup", "person", "needs_you", "taking_too_long", "project", "coverage",
+                        ]},
+                        "name": {"type": "string"},
+                        "session_id": {"type": "integer"},
+                    },
+                    "required": ["action"],
+                },
+            })
+        if self.location is not None:
+            tools.append({
+                "name": "location",
+                "description": (
+                    "GPS awareness + daily working memory. teach_place: 'this is home' / "
+                    "'mark this as the warehouse' — needs name + kind (home/warehouse/office/"
+                    "gym/other), uses Paul's LAST known GPS fix as the anchor (don't ask him "
+                    "for coordinates). forget_place / list_places manage the taught places. "
+                    "add_geofence_task: 'remind me about the Harry stuff when I get to the "
+                    "warehouse' — needs place_name + text; the place must already be taught, "
+                    "if not, tell him to teach it first. remove_geofence_task clears one. "
+                    "confirm_travel: call this the MOMENT Paul answers a pending "
+                    "'flying today?' question you see in your context (GPS ARRIVAL note) — "
+                    "flying=true/false. This is the ONLY thing that declares a travel day; "
+                    "never say 'travel day noted' without calling it. daily_memory: today's "
+                    "assembled plan (focus tasks, events with location/attendees/resources, "
+                    "meds) — use this to answer 'what's my day look like' with the full "
+                    "picture, not just Trello. Only claim what the tool result confirms."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": [
+                            "teach_place", "forget_place", "list_places",
+                            "add_geofence_task", "remove_geofence_task",
+                            "confirm_travel", "daily_memory",
+                        ]},
+                        "name": {"type": "string"},
+                        "kind": {"type": "string", "enum": ["home", "warehouse", "office", "gym", "other"]},
+                        "place_name": {"type": "string"},
+                        "text": {"type": "string"},
+                        "flying": {"type": "boolean"},
+                    },
+                    "required": ["action"],
+                },
+            })
+        if self.deadlines is not None:
+            tools.append({
+                "name": "deadline_radar",
+                "description": (
+                    "Key dates Paul cares about — birthdays, the villa demand, move-out "
+                    "day, visa/passport/insurance renewals, anything with a real date "
+                    "attached. add: whenever Paul tells you a date worth tracking ('Eva's "
+                    "birthday is 28 Sept', 'the villa demand is due around 7 Jan') — needs "
+                    "label + date (YYYY-MM-DD; work out the year if he didn't say it), "
+                    "recurring_yearly=true for birthdays/anniversaries. remove: he says to "
+                    "stop tracking one. list: 'what's coming up' / 'what deadlines have I "
+                    "got' — shows everything on the radar (key dates + Trello due dates), "
+                    "nearest first. Countdown reminders (4 weeks/1 week/3 days/day-of) fire "
+                    "on their own — this tool is only for adding/removing/listing."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["add", "remove", "list"]},
+                        "label": {"type": "string"},
+                        "date": {"type": "string"},
+                        "recurring_yearly": {"type": "boolean"},
+                    },
+                    "required": ["action"],
+                },
+            })
+        if self.med_supply is not None:
+            tools.append({
+                "name": "meds_supply",
+                "description": (
+                    "Meds refill tracking — TRT and ADHD meds only. set_by_date: Paul "
+                    "gives a run-out/refill date directly ('ADHD meds run out on the "
+                    "20th') — needs item (adhd/trt/supplements) + date (YYYY-MM-DD). "
+                    "set_by_quantity: he gives a count instead ('I've got 30 ADHD "
+                    "tablets, started today, one a day') — needs item + quantity + "
+                    "doses_per_day; start_date defaults to today. status: 'how am I "
+                    "doing on meds' — shows run-out dates for everything tracked. "
+                    "warn_days_before defaults to 5 if he doesn't say. Only claim it's "
+                    "tracked when the result confirms."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["set_by_date", "set_by_quantity", "status"]},
+                        "item": {"type": "string", "enum": ["adhd", "trt", "supplements"]},
+                        "date": {"type": "string"},
+                        "quantity": {"type": "number"},
+                        "doses_per_day": {"type": "number"},
+                        "start_date": {"type": "string"},
+                        "warn_days_before": {"type": "integer"},
+                    },
+                    "required": ["action"],
+                },
+            })
+        if self.outbound_watch is not None:
+            tools.append({
+                "name": "follow_up",
+                "description": (
+                    "Track outbound items awaiting a reply so they don't vanish. "
+                    "chase: the MOMENT Paul says 'chase this' / 'keep an eye on this' "
+                    "about something he sent — resolve WHO it went to and WHAT it was "
+                    "about from the conversation into recipient + subject (never vague "
+                    "— 'chase the BMI thing' means recipient BMI, subject the actual "
+                    "topic). resolved: he says he got a reply / sort it / drop it — "
+                    "match by subject or recipient. list: 'what am I still waiting on' "
+                    "— shows everything open. Auto-detection from his Sent folder runs "
+                    "on its own; this tool is only for the explicit ask and for status."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["chase", "resolved", "list"]},
+                        "recipient": {"type": "string"},
+                        "subject": {"type": "string"},
+                        "note": {"type": "string"},
+                    },
+                    "required": ["action"],
+                },
+            })
         if self.gcal is not None:
             tools.append({
                 "name": "calendar",
@@ -3216,6 +3688,16 @@ class JarvisRouter:
                     "quiet day ON (meds still fire; 'notifications back on' reverses it)"
                     if tool_input["quiet_today"] else "nudges back ON"
                 )
+            if tool_input.get("meeting_notetaker") is not None and getattr(
+                self.heartbeat, "notetaker", None
+            ) is not None:
+                on = bool(tool_input["meeting_notetaker"])
+                await self.heartbeat.notetaker.set_enabled(on)
+                done.append(
+                    "meeting notetaker ON — Otter's notes will turn into Brain Dump cards again"
+                    if on else
+                    "meeting notetaker OFF — Otter's emails won't be filed until you flip it back"
+                )
             if tool_input.get("wake_skip_tomorrow"):
                 await self.heartbeat.skip_next_wake(wake_date)
                 done.append(f"the {wake_date.strftime('%d %b')} wake-up skipped")
@@ -3223,6 +3705,16 @@ class JarvisRouter:
             if isinstance(hour, int) and 4 <= hour <= 11:
                 await self.heartbeat.delay_wake(wake_date, hour)
                 done.append(f"the {wake_date.strftime('%d %b')} wake-up moved to {hour:02d}:00")
+            if tool_input.get("watch_standdown"):
+                await self.heartbeat.stand_down_watch_chase()
+                done.append(
+                    f"watch chase stood down for {self.settings.watch_standdown_minutes} "
+                    "minutes — no calls until then"
+                )
+            if tool_input.get("test_watch_chase"):
+                done.append(await self.heartbeat.test_watch_chase())
+            if tool_input.get("test_move_reminder"):
+                done.append(await self.heartbeat.test_move_reminder())
             return ("Confirmed: " + ", ".join(done) + ".") if done else "NO CHANGE — no valid switch given."
         if name == "trello_card":
             return await self._tool_trello_card(tool_input)
@@ -3247,6 +3739,53 @@ class JarvisRouter:
             rulings[alias.lower()] = domain
             await self.store.set(key, _json.dumps(rulings))
             return f"Ruled — '{alias}' files under {domain} from now on, every card."
+        if name == "war_room" and self.warroom is not None:
+            return await self._tool_war_room(tool_input)
+        if name == "team_radar" and self.radar is not None:
+            return await self._tool_team_radar(tool_input)
+        if name == "location" and self.location is not None:
+            return await self._tool_location(tool_input)
+        if name == "deadline_radar" and self.deadlines is not None:
+            return await self._tool_deadline_radar(tool_input)
+        if name == "follow_up" and self.outbound_watch is not None:
+            action = str(tool_input.get("action") or "")
+            watch = self.outbound_watch
+            if action == "chase":
+                return await watch.flag(
+                    str(tool_input.get("recipient") or ""), str(tool_input.get("subject") or ""),
+                    str(tool_input.get("note") or ""),
+                )
+            if action == "resolved":
+                term = str(tool_input.get("recipient") or tool_input.get("subject") or "")
+                return await watch.resolve(term)
+            if action == "list":
+                items = await watch.list_open()
+                if not items:
+                    return "Nothing waiting on a reply right now."
+                return "; ".join(f"{i['subject']} → {i['recipient']}" for i in items)
+            return f"UNKNOWN ACTION '{action}'."
+        if name == "meds_supply" and self.med_supply is not None:
+            action = str(tool_input.get("action") or "")
+            supply = self.med_supply
+            if action == "set_by_date":
+                return await supply.set_by_date(
+                    str(tool_input.get("item") or ""), str(tool_input.get("date") or ""),
+                    int(tool_input.get("warn_days_before") or 5),
+                )
+            if action == "set_by_quantity":
+                return await supply.set_by_quantity(
+                    str(tool_input.get("item") or ""),
+                    float(tool_input.get("quantity") or 0),
+                    float(tool_input.get("doses_per_day") or 0),
+                    str(tool_input.get("start_date") or ""),
+                    int(tool_input.get("warn_days_before") or 5),
+                )
+            if action == "status":
+                rows = await supply.status()
+                if not rows:
+                    return "Nothing tracked yet."
+                return "; ".join(f"{r['item'].upper()} runs out {r['run_out_date']}" for r in rows)
+            return f"UNKNOWN ACTION '{action}'."
         if name == "schedule_call" and self.heartbeat is not None:
             import re as _sre
 
@@ -3302,6 +3841,230 @@ class JarvisRouter:
                 wishes = []
             return self._build_list_show(wishes)
         return f"UNKNOWN TOOL '{name}' — tell Paul honestly that this isn't wired in."
+
+    def _format_warroom_result(self, result: dict) -> str:
+        report = result["report"]
+        lines = [
+            f"SESSION #{result['session_id']} ({result['tier'].upper()} board, "
+            f"~${result['cost_usd']:.2f})",
+            f"Verdict: {report.get('verdict', '')}",
+            f"Recommendation: {report.get('recommendation', '')}",
+        ]
+        aps = report.get("action_points") or []
+        if aps:
+            lines.append("Action points:")
+            lines.extend(
+                f"  {i + 1}. {ap.get('title', '')} (suggest: {ap.get('owner_suggestion') or 'Paul'})"
+                for i, ap in enumerate(aps)
+            )
+        disagreement = report.get("disagreement", "")
+        lines.append(f"Where they disagreed: {disagreement}")
+        discarded = report.get("discarded", "")
+        discarded_text = discarded if isinstance(discarded, str) else "; ".join(discarded) or "nothing discarded"
+        lines.append(f"Discarded: {discarded_text}")
+        lines.append(f"Gaps: {report.get('gaps', '')}")
+        confidence = report.get("confidence") or {}
+        lines.append(
+            f"Confidence: {confidence.get('level', '')} — would change if: {confidence.get('would_change', '')}"
+        )
+        if report.get("jarvis_note"):
+            lines.append(f"Jarvis's note: {report['jarvis_note']}")
+        if report.get("measurable"):
+            lines.append(f"Measurable: {report['measurable']}")
+        if result.get("consensus_weak"):
+            lines.append(
+                "NOTE: the board converged with no real dissent — treat this as weak evidence, not strong."
+            )
+        if result.get("wall_clock_hit") or result.get("budget_hit"):
+            lines.append("NOTE: the session hit its time/budget cap and delivered from what existed at that point.")
+        return "\n".join(lines)
+
+    async def _tool_war_room(self, tool_input: dict) -> str:
+        action = str(tool_input.get("action") or "")
+        wr = self.warroom
+        if action == "frame":
+            question = str(tool_input.get("question") or "").strip()
+            if not question:
+                return "FRAME FAILED — no question given."
+            if not wr.configured:
+                return (
+                    "The War Room needs two more keys before it can run — "
+                    "OPENAI_API_KEY and GOOGLE_AI_API_KEY aren't set in Render yet. "
+                    "Tell Paul that's what's missing."
+                )
+            framed = await wr.frame(question, forced_tier=str(tool_input.get("tier") or ""))
+            lines = [
+                f"Question: {framed['question']}",
+                f"Tier: {framed['tier'].upper()} — {framed['tier_reason']}",
+                f"Estimated cost: ~${framed['cost_estimate_usd']:.2f} "
+                f"(this month so far: ${framed['month_spent_usd']:.2f})",
+            ]
+            if framed["over_monthly_ceiling"]:
+                lines.append("NOTE: this would push the month over the ceiling — flag that to Paul before running.")
+            if framed["trivial_hint"]:
+                lines.append("This looks answerable directly — check Paul still wants the board before running.")
+            return (
+                "FRAMED (read this back to Paul verbatim, then WAIT for his go-ahead "
+                "before calling action='confirm'):\n" + "\n".join(lines)
+            )
+        if action == "confirm":
+            result = await wr.confirm_and_run(unredacted=bool(tool_input.get("unredacted")))
+            if result.get("error"):
+                return f"CONFIRM FAILED — {result['error']}"
+            return self._format_warroom_result(result)
+        if action == "escalate":
+            session_id = tool_input.get("session_id")
+            if not isinstance(session_id, int):
+                return "ESCALATE FAILED — need the session_id."
+            result = await wr.escalate(session_id)
+            if result.get("error"):
+                return f"ESCALATE FAILED — {result['error']}"
+            return self._format_warroom_result(result)
+        if action == "approve":
+            session_id, action_id = tool_input.get("session_id"), tool_input.get("action_id")
+            if not isinstance(session_id, int) or not isinstance(action_id, int):
+                return "APPROVE FAILED — need session_id and action_id."
+            return await wr.approve_action(
+                session_id, action_id, owner_override=str(tool_input.get("owner") or "")
+            )
+        if action == "reject":
+            session_id, action_id = tool_input.get("session_id"), tool_input.get("action_id")
+            if not isinstance(session_id, int) or not isinstance(action_id, int):
+                return "REJECT FAILED — need session_id and action_id."
+            return await wr.reject_action(session_id, action_id, reason=str(tool_input.get("reason") or ""))
+        if action == "preview_project":
+            session_id = tool_input.get("session_id")
+            if not isinstance(session_id, int):
+                return "PREVIEW FAILED — need the session_id."
+            cards = await wr.preview_project(session_id)
+            if not cards:
+                return "Nothing pending to preview."
+            lines = [
+                f"{c['list_name']}: {c['title']} — {c['owner']}" + (f" [{c['warning']}]" if c["warning"] else "")
+                for c in cards
+            ]
+            return "PREVIEW (say 'create the project' to file the lot):\n" + "\n".join(lines)
+        if action == "create_project":
+            session_id = tool_input.get("session_id")
+            if not isinstance(session_id, int):
+                return "CREATE FAILED — need the session_id."
+            result = await wr.create_project(session_id)
+            if not result["created"]:
+                return "CREATE FAILED — " + ("; ".join(result["warnings"]) or "nothing to create")
+            lines = [f"Created: {c['title']} ({c['list_name']})" for c in result["created"]]
+            if result["warnings"]:
+                lines.append("Warnings: " + "; ".join(result["warnings"]))
+            return "\n".join(lines)
+        if action == "undo":
+            return await wr.undo()
+        if action == "search":
+            query = str(tool_input.get("query") or "").strip()
+            if not query:
+                return "Give me something to search for."
+            hits = await wr.search_archive(query)
+            if not hits:
+                return f"Nothing in the War Room archive about '{query}'."
+            return "\n".join(
+                f"[{h['created_at'][:10]}] ({h['tier']}) {h['question']} → {h['verdict']}" for h in hits
+            )
+        return "WAR ROOM: unknown action."
+
+    async def _tool_team_radar(self, tool_input: dict) -> str:
+        action = str(tool_input.get("action") or "")
+        radar = self.radar
+        if action == "rollup":
+            return await radar.rollup_spoken()
+        if action == "person":
+            person = str(tool_input.get("name") or "").strip()
+            if not person:
+                return "Who do you want — Harry, Adriana or Kiefer?"
+            return await radar.person_cards_spoken(person)
+        if action == "needs_you":
+            return await radar.slipping_spoken()
+        if action == "taking_too_long":
+            return await radar.taking_too_long_spoken()
+        if action == "project":
+            session_id = tool_input.get("session_id")
+            if not isinstance(session_id, int):
+                return "Which session — I need the War Room session_id, look it up with the war_room tool's search first."
+            return await radar.project_status_spoken(session_id)
+        if action == "coverage":
+            cov = await radar.coverage()
+            boards = ", ".join(cov["boards"]) or "none"
+            stale_note = " Data's stale — over 2 hours since the last sync." if cov["stale"] else ""
+            return f"Reading {len(cov['boards'])} board(s): {boards}.{stale_note} {cov['coverage_note']}"
+        return "TEAM RADAR: unknown action."
+
+    async def _tool_deadline_radar(self, tool_input: dict) -> str:
+        action = str(tool_input.get("action") or "")
+        radar = self.deadlines
+        tz_name = await self.store.get(TIMEZONE_KEY, self.settings.timezone_default)
+        today = datetime.now(ZoneInfo(tz_name)).date()
+        if action == "add":
+            label = str(tool_input.get("label") or "")
+            date_str = str(tool_input.get("date") or "")
+            return await radar.add_date(label, date_str, bool(tool_input.get("recurring_yearly")))
+        if action == "remove":
+            return await radar.remove_date(str(tool_input.get("label") or ""))
+        if action == "list":
+            items = await radar.upcoming(today)
+            if not items:
+                return "Nothing on the deadline radar yet."
+            return "; ".join(radar.countdown_line(i) for i in items[:15])
+        return f"UNKNOWN ACTION '{action}'."
+
+    async def _tool_location(self, tool_input: dict) -> str:
+        action = str(tool_input.get("action") or "")
+        loc = self.location
+        if action == "teach_place":
+            place_name = str(tool_input.get("name") or "").strip()
+            if not place_name:
+                return "TEACH FAILED — need a name for this place."
+            fix = await loc.latest_fix()
+            if fix is None:
+                return "TEACH FAILED — no GPS fix on file yet, so there's nowhere to anchor this."
+            return await loc.teach_place(
+                place_name, str(tool_input.get("kind") or "other"), fix["lat"], fix["lon"]
+            )
+        if action == "forget_place":
+            place_name = str(tool_input.get("name") or "").strip()
+            if not place_name:
+                return "Which place?"
+            return await loc.forget_place(place_name)
+        if action == "list_places":
+            places = await loc.list_places()
+            if not places:
+                return "No places taught yet."
+            return "; ".join(f"{p['name']} ({p['kind']})" for p in places)
+        if action == "add_geofence_task":
+            place_name = str(tool_input.get("place_name") or "").strip()
+            text = str(tool_input.get("text") or "").strip()
+            if not place_name or not text:
+                return "ADD FAILED — need both place_name and text."
+            return await loc.add_geofence_task(place_name, text)
+        if action == "remove_geofence_task":
+            place_name = str(tool_input.get("place_name") or "").strip()
+            text = str(tool_input.get("text") or "").strip()
+            if not place_name or not text:
+                return "REMOVE FAILED — need both place_name and text."
+            return await loc.remove_geofence_task(place_name, text)
+        if action == "confirm_travel":
+            flying = tool_input.get("flying")
+            if not isinstance(flying, bool):
+                return "CONFIRM FAILED — need flying=true or flying=false."
+            return await loc.confirm_travel(flying)
+        if action == "daily_memory":
+            memory = await loc.get_daily_memory()
+            focus_n = len(memory.get("focus", []))
+            events = memory.get("events", [])
+            lines = [f"{focus_n} focus task(s), {len(events)} calendar event(s) today."]
+            for ev in events[:6]:
+                bit = ev["title"]
+                if ev.get("location"):
+                    bit += f" @ {ev['location']}"
+                lines.append(bit)
+            return " | ".join(lines)
+        return "LOCATION: unknown action."
 
     async def _tool_trello_card(self, tool_input: dict) -> str:
         """The brain's full-schema hands on the Phase 1 layer — same layer
@@ -3424,7 +4187,8 @@ class JarvisRouter:
 
     async def _tool_trello(self, instruction: str) -> str:
         """The brain's hands on the board — same parser, same executor, same
-        gates as the deterministic lane."""
+        gates as the deterministic lane. New cards from THIS conversational
+        lane are drafted, not written — see Daily12Service.stage_create."""
         if not instruction.strip():
             return "NO ACTION — empty instruction."
         owed = ""
@@ -3437,6 +4201,11 @@ class JarvisRouter:
                     "answer; it never blocks anything): "
                     + " and ".join(g["label"] for g in outstanding)
                 )
+        if await self.daily12.pending_creates_preview():
+            if TRELLO_CONFIRM.search(instruction):
+                return await self.daily12.confirm_pending_creates() + owed
+            if TRELLO_CANCEL.search(instruction):
+                return await self.daily12.cancel_pending_creates() + owed
         plan_date = await self.daily12.paul_today()
         if wants_plan(instruction):
             await self.daily12.generate(plan_date)
@@ -3445,7 +4214,7 @@ class JarvisRouter:
         actions = await parse_actions(self.claude, instruction, plan_text)
         if not actions:
             return "NO ACTION RECOGNISED — nothing was changed on the board." + owed
-        results, show = await execute_actions(self.daily12, actions)
+        results, show = await execute_actions(self.daily12, actions, stage_creates=True)
         out = " ".join(results) if results else ""
         if show or not results:
             await self.daily12.generate(plan_date)

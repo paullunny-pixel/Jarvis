@@ -86,6 +86,10 @@ class Settings(BaseSettings):
     focus_personal_max: int = 3
     google_oauth_client_id: str = ""
     google_oauth_client_secret: str = ""
+    # Withings smart scale (7 Aug build slice) — same OAuth2 shape as Google
+    # Calendar above; dormant (.client.configured False) until both are set.
+    withings_client_id: str = ""
+    withings_client_secret: str = ""
     r2_access_key: str = ""
     r2_secret_key: str = ""
     r2_bucket: str = ""
@@ -101,6 +105,11 @@ class Settings(BaseSettings):
     whatsapp_access_token: str = ""      # Graph API token (send seam, unused in Phase 1)
     whatsapp_phone_number_id: str = ""   # the number's id on Meta (send seam)
     whatsapp_sending_enabled: bool = False
+    # Part 1 (7 Aug): Paul's OWN WhatsApp number (digits only, e.g. 447700900123).
+    # Jarvis's number receives messages from anyone; only this one routes to
+    # the brain and gets a reply — everyone else is silently ignored. Unset =
+    # the old Phase 1 read-only ingest behaviour holds (nothing routes, nothing sends).
+    whatsapp_owner_number: str = ""
 
     # --- Live voice (Build Slice: Voice Access) — rides on the ElevenLabs key ---
     # Phone-call surface: the Twilio number registered in ElevenLabs (its
@@ -115,6 +124,19 @@ class Settings(BaseSettings):
     # waking day ≈ 3L — right for indoor Dubai; run/heat days drink harder.
     water_pace_ml_per_hour: int = 200
     water_heat_pace_ml: int = 275         # run days + declared heat days
+    # Smart move reminder (7 Aug build slice): pace-vs-goal exactly like
+    # water — the Move ring's kcal goal spread across a waking day, silent
+    # when on track. Apple doesn't export the GOAL itself (only what he's
+    # burned), so it's a tunable here, not read from Health.
+    move_goal_kcal: int = 500
+    move_active_hours: float = 14.0
+
+    # Watch-wearing chaser (7 Aug build slice): no heart-rate sample for
+    # this many minutes during the waking day = watch off wrist. Standing
+    # down (Paul's word, e.g. "I'm at dinner") pauses calls for this long.
+    watch_gap_minutes: int = 60
+    watch_standdown_minutes: int = 60
+
     # The custom Twilio voice channel (built 4 Aug): 'call me', inbound calls
     # and the wake-up escalation all ride these + paul_phone_number.
     twilio_account_sid: str = ""
@@ -167,6 +189,32 @@ class Settings(BaseSettings):
     max_escalation_min: int = 90          # welfare backstop: total silence limit
     welfare_contact: str = ""             # optional email to notify on backstop
     wake_code_refresh_min: int = 5        # cockpit anti-cheat code rotation
+
+    # --- The War Room (7 Aug brief): three seats, three vendors, two tiers.
+    # Dormant until BOTH new keys exist — Anthropic's is already in place
+    # for Seat A and the chair. Model ids are config, never hard-coded, so
+    # the lineup can move without a release; the model-availability guard
+    # in app/warroom/ falls back and flags rather than failing silently.
+    openai_api_key: str = ""
+    google_ai_api_key: str = ""
+    warroom_full_model_a: str = "claude-fable-5"
+    warroom_full_model_b: str = "gpt-5.6-sol"
+    warroom_full_model_c: str = "gemini-3.1-pro-preview"
+    warroom_quick_model_a: str = "claude-sonnet-5"
+    warroom_quick_model_b: str = "gpt-5.6-terra"
+    warroom_quick_model_c: str = "gemini-3.6-flash"
+    warroom_full_effort_b: str = "ultra"   # Seat B (OpenAI) is the only seat with a effort knob
+    warroom_full_budget_usd: float = 5.0
+    warroom_quick_budget_usd: float = 0.50
+    warroom_monthly_ceiling_usd: float = 100.0
+    warroom_escalate_value_gbp: float = 10000.0
+
+    # --- GPS awareness + daily working memory (7 Aug brief) §3's leave-now
+    # alerts need a maps/traffic key — flagged as needed, not yet supplied.
+    # Everything else in the brief (location history, named places,
+    # situational confirm, geofenced tasks, daily working memory) needs no
+    # new key and runs on the existing GPS pipe.
+    google_maps_api_key: str = ""
 
     def email_accounts(self) -> list[tuple[str, str]]:
         """(address, app_password) for every configured inbox slot."""

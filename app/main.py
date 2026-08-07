@@ -57,6 +57,12 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
     settings = get_settings()
     db = get_database(settings.database_url, settings.sqlite_path)
 
+    claude = ClaudeClient(
+        settings.anthropic_api_key,
+        brain_model=settings.brain_model,
+        fast_model=settings.fast_model,
+    )
+
     # Second brain (Milestone 2). Voyage embeds in production; the local
     # embedder keeps everything working before that key exists.
     memory = living = library = None
@@ -77,14 +83,10 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
                 settings.r2_access_key, settings.r2_secret_key,
                 settings.r2_bucket, settings.r2_endpoint,
             ),
+            claude=claude,
         )
 
     # Trello + the Daily 12 (Milestone 3) — activates when the keys exist.
-    claude = ClaudeClient(
-        settings.anthropic_api_key,
-        brain_model=settings.brain_model,
-        fast_model=settings.fast_model,
-    )
     daily12 = None
     if settings.trello_key and settings.trello_token:
         daily12 = Daily12Service(
@@ -208,6 +210,10 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
     router_obj.phone_channel = phone_channel
     if phone_channel is not None:
         phone_channel.brain = router_obj.phone_turn
+        # Whitelisted-contact calls (7 Aug): a third party on the line gets
+        # the scoped guest persona, never Paul's brain/tools/memory.
+        phone_channel.guest_brain = router_obj.contact_turn
+        phone_channel.on_guest_event = router_obj.guest_call_event
         # Realtime upgrade (7 Aug): with the live engine up, inbound calls
         # stream to the agent (interruptible); Gather stays the fallback.
         phone_channel.realtime_available = (
@@ -226,8 +232,25 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
             db, SettingsStore(db),
         )
         jobs.gcal = router_obj.gcal
+    # Meetings Layer B (build order §6): Otter's meeting notes → Brain Dump
+    # actions + remembered meeting. Rides the mail accounts already wired for
+    # Phase 2 — no new keys, no bot for Jarvis to dispatch (Otter auto-joins
+    # on its own). Dormant if no email account is configured.
+    if mail is not None:
+        from app.meetings_notetaker import MeetingNotetaker
+
+        jobs.notetaker = MeetingNotetaker(
+            mail, claude, jobs._chase_layer, memory, jobs.store, jobs._send_text
+        )
+    # Group intelligence Part 2 (7 Aug): channel-agnostic, rides the
+    # Telegram org ingest that's already live — no new keys needed. Trello
+    # filing rides the same shared layer as everything else (one watcher).
+    from app.groups_intel import GroupIntel
+
+    jobs.group_intel = GroupIntel(db, claude, jobs.store, layer_factory=jobs._chase_layer)
+    router_obj.group_intel = jobs.group_intel
     # Zoom quick-start (Layer A, 6 Aug): 'start a new Zoom meeting' → both
-    # links on Telegram + a Brain Dump backup card. Layer B (Otter) later.
+    # links on Telegram + a Brain Dump backup card.
     if settings.zoom_account_id and settings.zoom_client_id and settings.zoom_client_secret:
         from app.clients.zoom_client import ZoomClient
         from app.meetings import MeetingMaker
@@ -238,11 +261,100 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
                 settings.zoom_client_secret, user_email=settings.zoom_user_email,
             ),
             layer_factory=jobs._chase_layer,
+            notetaker=jobs.notetaker,
         )
+    # WhatsApp Part 1 (7 Aug): Paul ↔ Jarvis 1:1, same brain as Telegram.
+    # Dormant on the send side (WHATSAPP_SENDING_ENABLED) and on routing
+    # (WHATSAPP_OWNER_NUMBER) until Paul supplies both — the webhook handler
+    # falls back to the old read-only ingest until then.
+    if settings.whatsapp_access_token and settings.whatsapp_phone_number_id:
+        from app.clients.whatsapp_client import WhatsAppClient
+
+        router_obj.whatsapp = WhatsAppClient(
+            settings.whatsapp_access_token,
+            settings.whatsapp_phone_number_id,
+            sending_enabled=settings.whatsapp_sending_enabled,
+        )
+    # The War Room (7 Aug brief): three vendors, two tiers. Built now per
+    # Paul's ask — dormant on the two seats that need new keys until both
+    # OPENAI_API_KEY and GOOGLE_AI_API_KEY exist; .configured gates every
+    # real run so a half-configured board never fires with a silent gap.
+    # Trello filing rides the SAME shared layer as everything else — no
+    # second watcher; card-watching is a registration seam for Team Radar's
+    # (not-yet-built) detection engine, per the brief's own instruction.
+    from app.clients.gemini_client import GeminiClient
+    from app.clients.openai_client import OpenAIClient
+    from app.daily12.scoring import COMPANY_NAMES
+    from app.warroom.service import WarRoom
+
+    router_obj.warroom = WarRoom(
+        db, claude, jobs.store, memory, living, jobs._chase_layer, settings,
+        openai_client=OpenAIClient(settings.openai_api_key) if settings.openai_api_key else None,
+        gemini_client=GeminiClient(settings.google_ai_api_key) if settings.google_ai_api_key else None,
+        company_names=list(COMPANY_NAMES.values()),
+        full_budget_usd=settings.warroom_full_budget_usd,
+        quick_budget_usd=settings.warroom_quick_budget_usd,
+        monthly_ceiling_usd=settings.warroom_monthly_ceiling_usd,
+        escalate_value_gbp=settings.warroom_escalate_value_gbp,
+    )
+    # Team Radar (7 Aug brief): no new key — runs entirely on the Trello
+    # connection already live. It IS the War Room's watcher (reads
+    # warroom_watch); do not build a second one anywhere else.
+    if settings.trello_key and settings.trello_token:
+        from app.daily12.trello import TrelloClient as _RadarTrelloClient
+        from app.radar.service import TeamRadar
+        from app.radar.sync import RadarSync
+
+        radar_client = _RadarTrelloClient(settings.trello_key, settings.trello_token)
+        jobs.radar_sync = RadarSync(radar_client, db, jobs.store)
+        jobs.radar = TeamRadar(db, jobs.store)
+        router_obj.radar = jobs.radar
+    # GPS awareness + daily working memory (7 Aug brief): extends the
+    # existing timezone-following pipe (app/heartbeat/location.py), never
+    # replaces it. No new key needed for §1/§2/§4/§5 — only §3's
+    # traffic-aware leave-now alerts need GOOGLE_MAPS_API_KEY, which is
+    # flagged as needed and hasn't been supplied; that client stays
+    # dormant (.configured gates it) until it is.
+    from app.clients.maps_client import MapsClient
+    from app.location.service import LocationAwareness
+
+    jobs.maps = MapsClient(settings.google_maps_api_key)
+    jobs.location = LocationAwareness(
+        db, jobs.store, living, jobs._send_text,
+        gcal=router_obj.gcal, daily12=daily12, memory=memory, private_track=private_track,
+        timezone_default=settings.timezone_default,
+    )
+    router_obj.location = jobs.location
     router_obj.voice_tools = VoiceTools(
         db, memory=memory, living=living, daily12=daily12, mail=mail, jobs=jobs,
         timezone_default=settings.timezone_default,
     )
+    # Quick ADHD wins (7 Aug brief): deadline radar and meds-refill tracking
+    # need no external key — pure DB + existing Trello connection. The
+    # Withings client is dormant until keyed (see below); the follow-up
+    # chaser rides the existing mail connection when one exists.
+    from app.deadlines import DeadlineRadar
+    from app.meds_supply import MedSupply
+
+    jobs.deadlines = DeadlineRadar(db)
+    router_obj.deadlines = jobs.deadlines
+    jobs.med_supply = MedSupply(db)
+    router_obj.med_supply = jobs.med_supply
+
+    from app.clients.withings_client import WithingsClient
+    from app.withings_service import Withings
+
+    jobs.withings = Withings(
+        WithingsClient(settings.withings_client_id, settings.withings_client_secret),
+        db, jobs.store,
+    )
+    router_obj.withings = jobs.withings
+
+    if mail is not None:
+        from app.followup import OutboundWatch
+
+        jobs.outbound_watch = OutboundWatch(db, mail)
+        router_obj.outbound_watch = jobs.outbound_watch
     return router_obj, heartbeat
 
 
@@ -614,6 +726,29 @@ async def twilio_turn(secret: str, request: Request):
     return Response(content=twiml, media_type="text/xml")
 
 
+@app.post("/twilio/voice/{secret}/status")
+async def twilio_status(secret: str, request: Request):
+    """Final CallStatus for outbound guest calls — how 'John didn't pick up'
+    reaches Paul honestly instead of silence."""
+    from fastapi.responses import Response
+
+    router: JarvisRouter = request.app.state.router
+    phone = _phone_gate(router, secret)
+    params = await _twilio_form(request)
+    logger.info(
+        "Twilio status webhook: CallSid=%s status=%s",
+        params.get("CallSid", "?"), params.get("CallStatus", "?"),
+    )
+    if not _twilio_signed(router, request, params):
+        logger.warning("Twilio signature check FAILED on %s — ignoring", request.url.path)
+        return Response(status_code=204)
+    try:
+        await phone.handle_status(params)
+    except Exception:
+        logger.exception("Twilio status handler failed (nothing to speak — logged only)")
+    return Response(status_code=204)
+
+
 @app.get("/twilio/audio/{secret}/{audio_id}.mp3")
 async def twilio_audio(secret: str, audio_id: str, request: Request):
     """Short-lived reply audio (Jarvis's ElevenLabs voice) for <Play>."""
@@ -817,6 +952,46 @@ async def google_callback(request: Request):
     )
 
 
+@app.get("/withings/connect/{secret}")
+async def withings_connect(secret: str, request: Request):
+    from fastapi.responses import RedirectResponse
+
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    withings = getattr(router, "withings", None)
+    if withings is None or not withings.client.configured:
+        raise HTTPException(status_code=409, detail="Withings OAuth keys not configured")
+    redirect_uri = f"{router.settings.public_url.rstrip('/')}/withings/callback"
+    return RedirectResponse(url=withings.client.auth_url(redirect_uri, state=secret))
+
+
+@app.get("/withings/callback")
+async def withings_callback(request: Request):
+    from fastapi.responses import HTMLResponse
+
+    router: JarvisRouter = request.app.state.router
+    state = request.query_params.get("state", "")
+    code = request.query_params.get("code", "")
+    _desktop_gate(router, state)
+    withings = getattr(router, "withings", None)
+    if withings is None or not code:
+        return HTMLResponse("<h3>Something's missing — ask Jarvis to connect again.</h3>", status_code=400)
+    try:
+        redirect_uri = f"{router.settings.public_url.rstrip('/')}/withings/callback"
+        refresh = await withings.client.exchange_code(code, redirect_uri)
+        await withings.store_token(refresh)
+    except Exception as exc:
+        logger.exception("Withings code exchange failed")
+        return HTMLResponse(
+            f"<h3>Withings said no: {str(exc)[:200]}</h3><p>Tell Jarvis and he'll sort it.</p>",
+            status_code=502,
+        )
+    return HTMLResponse(
+        "<h3>✅ Withings connected.</h3>"
+        "<p>You can close this tab — Jarvis logs weight and body-fat every morning now.</p>"
+    )
+
+
 @app.get("/desktop/{secret}/card-grammar")
 async def desktop_card_grammar(secret: str, request: Request) -> dict:
     """The Card Script panel's data (6 Aug brief): the dictation grammar,
@@ -853,6 +1028,441 @@ async def desktop_calendar(secret: str, request: Request) -> dict:
         return {"connected": True, "next_up": await gcal.next_up(tz)}
     except ReauthNeeded:
         return {"connected": False, "reason": "Google token expired — say 'connect google calendar' to Jarvis"}
+
+
+@app.get("/desktop/{secret}/today-focus")
+async def desktop_today_focus(secret: str, request: Request) -> dict:
+    """Today's Focus panel (Mac app v2, 4a) — the SAME data the cockpit
+    shows, grouped by company. `position` is the reference to tick a task."""
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    if router.daily12 is None:
+        return {"connected": False, "reason": "Trello isn't connected yet"}
+    service = CockpitService(router.db, timezone_default=router.settings.timezone_default)
+    return {"connected": True, **await service.today_focus()}
+
+
+@app.post("/desktop/{secret}/today-focus/{position}/done")
+async def desktop_today_focus_done(secret: str, position: str, request: Request) -> dict:
+    """Tickable-in-app (4a): writes straight back to Trello via the SAME
+    mark_done() every other surface uses — one source of truth."""
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    if router.daily12 is None:
+        raise HTTPException(status_code=409, detail="Trello isn't connected")
+    try:
+        message = await router.daily12.mark_done(position)
+    except Exception:
+        logger.exception("Desktop today-focus tick failed")
+        raise HTTPException(status_code=500, detail="couldn't mark that done — try again")
+    return {"ok": not message.startswith("Couldn't find"), "message": message}
+
+
+@app.post("/desktop/{secret}/documents/upload")
+async def desktop_document_upload(secret: str, request: Request) -> dict:
+    """Drag-a-file-to-brain (4d): raw bytes in the body — no python-multipart
+    in this project, so filename/mime ride as query params (same pattern as
+    the health webhook's raw-body ingests). Files it into the second brain
+    with a Claude-suggested room + tags Paul can correct in one click."""
+    from app.documents.extract import extract_text
+
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    if router.library is None:
+        raise HTTPException(status_code=409, detail="Second brain isn't enabled")
+    filename = request.query_params.get("filename", "").strip()
+    mime = request.query_params.get("mime", "").strip()
+    if not filename:
+        raise HTTPException(status_code=400, detail="filename required")
+    data = await request.body()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty upload")
+    text = extract_text(data, filename, mime)
+    suggestion = await router.library.suggest_filing(text, filename)
+    result = await router.library.ingest(
+        data, filename, mime=mime, room=suggestion["room"], tags=suggestion["tags"]
+    )
+    return {**result, "suggestion": suggestion}
+
+
+@app.get("/desktop/{secret}/documents/recent")
+async def desktop_documents_recent(secret: str, request: Request) -> dict:
+    """The 'recently filed' list (4d) — last 5, newest first."""
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    if router.library is None:
+        return {"connected": False, "reason": "Second brain isn't enabled"}
+    return {"connected": True, "documents": await router.library.recent(5)}
+
+
+@app.post("/desktop/{secret}/documents/{doc_id}/room")
+async def desktop_document_set_room(secret: str, doc_id: int, request: Request) -> dict:
+    """'Wrong? change it' — one click correction on the filing suggestion (4d)."""
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    if router.library is None:
+        raise HTTPException(status_code=409, detail="Second brain isn't enabled")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    room = str(body.get("room", "")).strip()
+    ok = await router.library.set_room(doc_id, room)
+    if not ok:
+        raise HTTPException(status_code=400, detail="unknown document or room")
+    return {"ok": True, "room": room}
+
+
+@app.post("/desktop/{secret}/documents/{doc_id}/trello")
+async def desktop_document_to_trello(secret: str, doc_id: int, request: Request) -> dict:
+    """The 'clearly actionable — create a card?' offer (4d)."""
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    if router.library is None or router.daily12 is None:
+        raise HTTPException(status_code=409, detail="not connected")
+    row = await router.db.fetch_one("SELECT filename FROM documents WHERE id = ?", (doc_id,))
+    if row is None:
+        raise HTTPException(status_code=404, detail="document not found")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    title = str(body.get("title") or f"Review {row['filename']}").strip()
+    message = await router.daily12.create(
+        title, description=f"From uploaded document: {row['filename']}"
+    )
+    return {"message": message}
+
+
+@app.get("/desktop/{secret}/notifications")
+async def desktop_notifications_list(secret: str, request: Request) -> dict:
+    """The notifications queue (§2) — recent, uncleared by default."""
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    if router.heartbeat is None:
+        return {"notifications": []}
+    include_dismissed = request.query_params.get("all") == "1"
+    notes = await router.heartbeat.desktop_notifications.recent(20, include_dismissed=include_dismissed)
+    return {"notifications": notes}
+
+
+@app.post("/desktop/{secret}/notifications/{notification_id}/dismiss")
+async def desktop_notifications_dismiss(secret: str, notification_id: int, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    if router.heartbeat is None:
+        raise HTTPException(status_code=409, detail="not connected")
+    ok = await router.heartbeat.desktop_notifications.dismiss(notification_id)
+    return {"ok": ok}
+
+
+@app.post("/desktop/{secret}/speak")
+async def desktop_speak(secret: str, request: Request) -> dict:
+    """Ad-hoc TTS for a spoken announcement (§2) — Jarvis's ElevenLabs voice
+    for the text of a notification; the app can fall back to macOS `say`
+    itself if this errors."""
+    from app.core.reply_policy import strip_for_speech
+
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    try:
+        body = await request.json()
+        text = str(body.get("text", "")).strip()
+    except Exception:
+        text = ""
+    if not text:
+        raise HTTPException(status_code=400, detail="text required")
+    if router.elevenlabs is None:
+        return {"audio_b64": None}
+    import base64 as _base64
+
+    try:
+        audio = await router.elevenlabs.synthesize(strip_for_speech(text))
+        return {"audio_b64": _base64.b64encode(audio).decode()}
+    except Exception:
+        logger.exception("Desktop speak failed — client falls back to `say`")
+        return {"audio_b64": None}
+
+
+@app.get("/desktop/{secret}/commands")
+async def desktop_commands(secret: str, request: Request) -> dict:
+    """The sidebar Commands tab's data (§3) — one registry, every surface
+    stays in sync automatically as commands are added."""
+    from app.core.commands_registry import commands_by_category
+
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    return {"categories": commands_by_category()}
+
+
+@app.get("/desktop/{secret}/portuguese")
+async def desktop_portuguese(secret: str, request: Request) -> dict:
+    """Portuguese lessons panel (4c): Brazil countdown + readiness gauge +
+    today's status + the current streak — same source PortugueseCoach and
+    the cockpit already use."""
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo as _Z
+
+    from app.core.router import TIMEZONE_KEY
+    from app.lessons.portuguese import PortugueseCoach
+
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    tz = _Z(await router.store.get(TIMEZONE_KEY, router.settings.timezone_default))
+    today = _dt.now(tz).date()
+    coach = PortugueseCoach(router.db)
+    readiness = await coach.readiness(today)
+    streak = (await Streaks(router.db).snapshot(today)).get("portuguese", {"current": 0, "done_today": False})
+    return {
+        "readiness": readiness,
+        "steph_phrase": await coach.steph_phrase(today),
+        "streak": streak,
+        "done_today": streak.get("done_today", False),
+    }
+
+
+# --- Group intelligence, Part 2 (7 Aug) — thin endpoints, GroupIntel does the work ---
+
+@app.get("/desktop/{secret}/groups/summaries")
+async def desktop_groups_summaries(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    gi = router.group_intel
+    if gi is None or await gi.status() == "not_connected":
+        return {"connected": False, "reason": "No group ingest connected yet"}
+    return {"connected": True, "groups": await gi.group_summaries()}
+
+
+@app.get("/desktop/{secret}/groups/actions")
+async def desktop_groups_actions(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    gi = router.group_intel
+    if gi is None or await gi.status() == "not_connected":
+        return {"connected": False, "reason": "No group ingest connected yet"}
+    return {"connected": True, "actions": await gi.open_actions()}
+
+
+@app.get("/desktop/{secret}/groups/missed-summary")
+async def desktop_groups_missed_summary(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    gi = router.group_intel
+    if gi is None or await gi.status() == "not_connected":
+        return {"connected": False, "reason": "No group ingest connected yet"}
+    return {"connected": True, **await gi.missed_summary()}
+
+
+@app.get("/desktop/{secret}/groups/uncleared-count")
+async def desktop_groups_uncleared_count(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    gi = router.group_intel
+    if gi is None or await gi.status() == "not_connected":
+        return {"connected": False, "count": 0}
+    return {"connected": True, "count": await gi.uncleared_count()}
+
+
+@app.post("/desktop/{secret}/groups/dismiss-summary")
+async def desktop_groups_dismiss_summary(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    gi = router.group_intel
+    if gi is None:
+        raise HTTPException(status_code=409, detail="group intelligence not wired up")
+    await gi.dismiss_summary()
+    return {"ok": True}
+
+
+@app.post("/desktop/{secret}/groups/actions/{action_id}/trello")
+async def desktop_groups_action_to_trello(secret: str, action_id: int, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    gi = router.group_intel
+    if gi is None:
+        raise HTTPException(status_code=409, detail="group intelligence not wired up")
+    return {"ok": True, "message": await gi.action_to_trello(action_id)}
+
+
+@app.post("/desktop/{secret}/groups/actions/{action_id}/ignore")
+async def desktop_groups_action_ignore(secret: str, action_id: int, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    gi = router.group_intel
+    if gi is None:
+        raise HTTPException(status_code=409, detail="group intelligence not wired up")
+    return {"ok": True, "message": await gi.action_ignore(action_id)}
+
+
+@app.get("/desktop/{secret}/groups/fixtures")
+async def desktop_groups_fixtures(secret: str, request: Request) -> dict:
+    """Sample payloads (§7) so every surface can be built and tested before
+    real group traffic exists — never mistaken for live data by a caller
+    that checks the endpoint path, not a flag inside the body."""
+    router: JarvisRouter = request.app.state.router
+    _desktop_gate(router, secret)
+    from app.groups_intel import GroupIntel
+
+    return GroupIntel.fixtures()
+
+
+# --- The War Room (7 Aug) — thin endpoints, WarRoom does the work ---
+
+def _warroom_gate(router: "JarvisRouter", secret: str):
+    _desktop_gate(router, secret)
+    if router.warroom is None:
+        raise HTTPException(status_code=409, detail="War Room not wired up")
+    return router.warroom
+
+
+@app.post("/desktop/{secret}/warroom/frame")
+async def warroom_frame(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    wr = _warroom_gate(router, secret)
+    if not wr.configured:
+        return {"configured": False, "reason": "OPENAI_API_KEY / GOOGLE_AI_API_KEY not set"}
+    body = await request.json()
+    question = str(body.get("question", "")).strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question required")
+    framed = await wr.frame(question, forced_tier=str(body.get("tier", "")))
+    return {"configured": True, **framed}
+
+
+@app.post("/desktop/{secret}/warroom/confirm")
+async def warroom_confirm(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    wr = _warroom_gate(router, secret)
+    body = await request.json() if await request.body() else {}
+    return await wr.confirm_and_run(unredacted=bool(body.get("unredacted")))
+
+
+@app.post("/desktop/{secret}/warroom/escalate/{session_id}")
+async def warroom_escalate(secret: str, session_id: int, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    wr = _warroom_gate(router, secret)
+    return await wr.escalate(session_id)
+
+
+@app.get("/desktop/{secret}/warroom/session/{session_id}")
+async def warroom_session(secret: str, session_id: int, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    wr = _warroom_gate(router, secret)
+    session = await wr.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    return session
+
+
+@app.get("/desktop/{secret}/warroom/archive")
+async def warroom_archive(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    wr = _warroom_gate(router, secret)
+    query = request.query_params.get("q", "")
+    return {"sessions": await wr.search_archive(query)}
+
+
+@app.post("/desktop/{secret}/warroom/actions/{session_id}/{action_id}/approve")
+async def warroom_approve(secret: str, session_id: int, action_id: int, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    wr = _warroom_gate(router, secret)
+    body = await request.json() if await request.body() else {}
+    return {"message": await wr.approve_action(session_id, action_id, owner_override=str(body.get("owner", "")))}
+
+
+@app.post("/desktop/{secret}/warroom/actions/{session_id}/{action_id}/reject")
+async def warroom_reject(secret: str, session_id: int, action_id: int, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    wr = _warroom_gate(router, secret)
+    body = await request.json() if await request.body() else {}
+    return {"message": await wr.reject_action(session_id, action_id, reason=str(body.get("reason", "")))}
+
+
+@app.get("/desktop/{secret}/warroom/preview/{session_id}")
+async def warroom_preview(secret: str, session_id: int, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    wr = _warroom_gate(router, secret)
+    return {"cards": await wr.preview_project(session_id)}
+
+
+@app.post("/desktop/{secret}/warroom/create/{session_id}")
+async def warroom_create(secret: str, session_id: int, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    wr = _warroom_gate(router, secret)
+    body = await request.json() if await request.body() else {}
+    return await wr.create_project(session_id, edited_cards=body.get("cards"))
+
+
+@app.post("/desktop/{secret}/warroom/undo")
+async def warroom_undo(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    wr = _warroom_gate(router, secret)
+    return {"message": await wr.undo()}
+
+
+# --- Team Radar (7 Aug) — same endpoint serves the Mac app AND the cockpit ---
+
+def _radar_gate(router: "JarvisRouter", secret: str):
+    _desktop_gate(router, secret)
+    if router.radar is None:
+        raise HTTPException(status_code=409, detail="Team Radar not wired up")
+    return router.radar
+
+
+@app.get("/desktop/{secret}/radar/needs-you")
+async def radar_needs_you(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    radar = _radar_gate(router, secret)
+    return {"coverage": await radar.coverage(), **await radar.needs_you()}
+
+
+@app.get("/desktop/{secret}/radar/columns")
+async def radar_columns(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    radar = _radar_gate(router, secret)
+    return {"coverage": await radar.coverage(), "columns": await radar.columns()}
+
+
+@app.get("/desktop/{secret}/radar/rollup")
+async def radar_rollup(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    radar = _radar_gate(router, secret)
+    return {"coverage": await radar.coverage(), "companies": await radar.company_rollup()}
+
+
+@app.get("/desktop/{secret}/radar/coverage")
+async def radar_coverage(secret: str, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    radar = _radar_gate(router, secret)
+    return await radar.coverage()
+
+
+@app.get("/desktop/{secret}/radar/project/{session_id}")
+async def radar_project(secret: str, session_id: int, request: Request) -> dict:
+    router: JarvisRouter = request.app.state.router
+    radar = _radar_gate(router, secret)
+    return await radar.project_status(session_id)
+
+
+async def merge_active_kcal_total(db, day_iso: str, active_kcal: float) -> bool:
+    """Same max-merge shape as merge_water_total — Health Auto Export resends
+    the day's whole running total on every 'Today'-range post."""
+    if active_kcal <= 0:
+        return False
+    row = await db.fetch_one("SELECT active_kcal FROM move_energy_log WHERE day = ?", (day_iso,))
+    total = max(float(row["active_kcal"]) if row else 0.0, active_kcal)
+    if db.dialect == "postgres":
+        await db.execute(
+            "INSERT INTO move_energy_log (day, active_kcal) VALUES (?, ?)"
+            " ON CONFLICT (day) DO UPDATE SET active_kcal = EXCLUDED.active_kcal",
+            (day_iso, total),
+        )
+    else:
+        await db.execute(
+            "INSERT OR REPLACE INTO move_energy_log (day, active_kcal) VALUES (?, ?)",
+            (day_iso, total),
+        )
+    return True
 
 
 async def merge_water_total(db, day_iso: str, water_ml: int) -> bool:
@@ -908,6 +1518,14 @@ async def phone_location(request: Request) -> dict:
                 )
             except Exception:
                 logger.exception("Timezone-change note failed — clocks moved anyway")
+    # GPS awareness (7 Aug): history + place classification + arrival
+    # consumers, layered on TOP of the timezone-following above, never
+    # replacing it.
+    if router.location is not None:
+        try:
+            await router.location.record_fix(lat, lon)
+        except Exception:
+            logger.exception("Location awareness record_fix failed — timezone handling still succeeded")
     return {"ok": True, **result}
 
 
@@ -932,19 +1550,25 @@ async def whatsapp_verify(request: Request):
 
 @app.post("/webhook/whatsapp")
 async def whatsapp_inbound(request: Request) -> dict:
-    """READ-ONLY Phase 1 (Paul, 4 Aug): messages arriving on Jarvis's second
-    number are ingested for digests and recall. Nothing is ever sent back."""
+    """Part 1 (7 Aug): Paul's own WhatsApp number reaches the same brain as
+    Telegram — text and voice notes in, text or voice replies out, once
+    WHATSAPP_OWNER_NUMBER + WHATSAPP_SENDING_ENABLED are set. Any other
+    sender is silently ignored (Jarvis's number is a business number
+    anyone can message). Until the owner number is set, the original
+    Phase 1 read-only ingest holds unchanged — nothing routes, nothing sends."""
     import json as _json
     from datetime import datetime, timezone as _tz
 
     from app.clients.whatsapp_client import parse_webhook, valid_signature
+    from app.core.reply_policy import decide_reply, strip_for_speech
 
     router: JarvisRouter = request.app.state.router
-    if not router.settings.whatsapp_verify_token:
+    settings = router.settings
+    if not settings.whatsapp_verify_token:
         raise HTTPException(status_code=403, detail="nope")
     body = await request.body()
     if not valid_signature(
-        router.settings.whatsapp_app_secret, body,
+        settings.whatsapp_app_secret, body,
         request.headers.get("X-Hub-Signature-256", ""),
     ):
         raise HTTPException(status_code=403, detail="nope")
@@ -954,13 +1578,46 @@ async def whatsapp_inbound(request: Request) -> dict:
         return {"ok": True, "ingested": 0}
     messages = parse_webhook(payload)
     now_iso = datetime.now(_tz.utc).isoformat(timespec="seconds")
+    owner_digits = "".join(c for c in settings.whatsapp_owner_number if c.isdigit())
+    handled = 0
     for m in messages:
-        await router.db.execute(
-            "INSERT INTO wa_direct_ingest (ts, wa_id, sender, company_tag, kind, message)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (now_iso, m.wa_id, m.name[:120], "", m.kind, m.text),
-        )
-    return {"ok": True, "ingested": len(messages)}
+        if not owner_digits:
+            # Owner not set yet — the original read-only ingest, unchanged.
+            await router.db.execute(
+                "INSERT INTO wa_direct_ingest (ts, wa_id, sender, company_tag, kind, message)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (now_iso, m.wa_id, m.name[:120], "", m.kind, m.text or f"[{m.kind}]"),
+            )
+            continue
+        if m.wa_id != owner_digits:
+            continue   # not Paul — silently ignored (Part 1's hard rule)
+        transcript, is_voice = m.text, False
+        if m.kind == "voice":
+            is_voice = True
+            transcript = ""
+            if m.media_id and router.whatsapp is not None:
+                try:
+                    audio, mime = await router.whatsapp.download_media(m.media_id)
+                    transcript = await router.deepgram.transcribe(audio, mime)
+                except Exception:
+                    logger.exception("WhatsApp voice transcription failed")
+        if not transcript:
+            continue
+        handled += 1
+        reply = await router.whatsapp_turn(transcript, is_voice=is_voice)
+        if not reply or router.whatsapp is None:
+            continue
+        channel, reply_text = decide_reply(reply, incoming_was_voice=is_voice)
+        sent = False
+        if channel == "voice" and router.elevenlabs is not None:
+            try:
+                audio_mp3 = await router.elevenlabs.synthesize(strip_for_speech(reply_text))
+                sent = await router.whatsapp.send_voice(m.wa_id, audio_mp3)
+            except Exception:
+                logger.exception("WhatsApp TTS failed — falling back to text")
+        if not sent:
+            await router.whatsapp.send_text(m.wa_id, reply_text)
+    return {"ok": True, "ingested": handled}
 
 
 @app.post("/webhook/apple-health")
@@ -1029,6 +1686,11 @@ async def apple_health(request: Request) -> dict:
     water_recorded = await merge_water_total(
         router.db, stat_date, int(payload.get("water_ml") or 0)
     )
+    await merge_active_kcal_total(router.db, stat_date, float(payload.get("active_kcal") or 0))
+    # Watch-wearing chaser (7 Aug): the freshest heart-rate sample timestamp
+    # we've ever seen — a gap here is the whole detection signal.
+    if payload.get("last_hr_at"):
+        await router.store.set("last_hr_sample_at", str(payload["last_hr_at"]))
     # The parsed picture rides the response so the export app's log shows
     # exactly what landed — no more blind debugging (the 750ml bug, 5 Aug).
     parsed = {

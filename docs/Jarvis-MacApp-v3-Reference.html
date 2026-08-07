@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Jarvis — Mac app mockup</title>
+<style>
+  :root{
+    --bg:#0b0e13;
+    --win:#111620;
+    --panel:#161d29;
+    --panel2:#1b2431;
+    --line:#232e3d;
+    --ink:#e8eef6;
+    --mute:#8ea0b5;
+    --dim:#65788e;
+    --accent:#5ec8f2;
+    --accent2:#2f9fd0;
+    --gold:#f0b429;
+    --green:#3fd08a;
+    --red:#ff5f57;
+    --purple:#a78bfa;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:
+      radial-gradient(1200px 700px at 20% -10%, #16283a 0%, transparent 60%),
+      radial-gradient(900px 600px at 110% 110%, #1a1830 0%, transparent 55%),
+      var(--bg);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Inter,sans-serif;
+    color:var(--ink);
+    display:flex;align-items:center;justify-content:center;
+    min-height:100vh;padding:52px 40px 40px;
+  }
+
+  /* ---------- window ---------- */
+  .window{
+    width:1400px;height:924px;
+    background:var(--win);
+    border-radius:14px;
+    border:1px solid #2a3546;
+    box-shadow:0 40px 90px rgba(0,0,0,.65), 0 0 0 1px rgba(255,255,255,.03) inset;
+    display:flex;flex-direction:column;overflow:hidden;position:relative;
+  }
+  .titlebar{
+    height:44px;flex:0 0 44px;
+    background:linear-gradient(#1a2231,#151c28);
+    border-bottom:1px solid var(--line);
+    display:flex;align-items:center;padding:0 14px;gap:14px;
+  }
+  .lights{display:flex;gap:8px}
+  .light{width:12px;height:12px;border-radius:50%}
+  .l1{background:#ff5f57}.l2{background:#febc2e}.l3{background:#28c840}
+  .title{font-size:13px;font-weight:600;letter-spacing:.3px;color:var(--mute)}
+  .title b{color:var(--ink)}
+  .tb-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+  .pill{
+    display:flex;align-items:center;gap:7px;
+    background:rgba(94,200,242,.12);border:1px solid rgba(94,200,242,.35);
+    color:var(--accent);font-size:11.5px;font-weight:600;
+    padding:5px 11px;border-radius:999px;letter-spacing:.2px;
+  }
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px rgba(94,200,242,.15)}
+  .icon-btn{
+    width:28px;height:28px;border-radius:7px;border:1px solid var(--line);
+    background:var(--panel);display:flex;align-items:center;justify-content:center;
+    color:var(--mute);font-size:13px;
+  }
+
+  .body{flex:1;display:flex;min-height:0}
+
+  /* ---------- sidebar ---------- */
+  .sidebar{
+    width:250px;flex:0 0 250px;background:#0f141d;border-right:1px solid var(--line);
+    display:flex;flex-direction:column;padding:14px 10px;
+  }
+  .side-label{font-size:9.5px;letter-spacing:1.4px;text-transform:uppercase;color:var(--dim);
+    font-weight:700;padding:0 8px;margin:14px 0 7px}
+  .side-label:first-child{margin-top:2px}
+  .nav{display:flex;align-items:center;gap:10px;padding:8px 9px;border-radius:8px;
+    font-size:13px;color:var(--mute);font-weight:500;margin-bottom:2px}
+  .nav .ic{width:17px;text-align:center;font-size:13px;opacity:.85}
+  .nav.on{background:linear-gradient(90deg,rgba(94,200,242,.16),rgba(94,200,242,.04));
+    color:var(--ink);font-weight:600;box-shadow:inset 2px 0 0 var(--accent)}
+  .badge{margin-left:auto;background:var(--gold);color:#1a1204;font-size:10px;font-weight:800;
+    padding:1px 6px;border-radius:999px}
+  .badge.blue{background:var(--accent);color:#052131}
+  /* ---------- always-on card script (fills the sidebar's dead space) ---------- */
+  .script{
+    margin-top:12px;background:linear-gradient(180deg,#18212f,#131a25);
+    border:1px solid #2b3a4e;border-radius:10px;overflow:hidden;
+  }
+  .script-head{
+    display:flex;align-items:center;gap:6px;padding:8px 10px;
+    border-bottom:1px solid #223044;background:rgba(94,200,242,.06);
+  }
+  .script-head b{font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--ink);font-weight:800}
+  .script-head i{margin-left:auto;font-style:normal;font-size:8.5px;letter-spacing:.6px;
+    text-transform:uppercase;color:var(--dim);font-weight:700}
+  .script-body{padding:9px 10px 10px}
+  .say{
+    background:#0c121a;border:1px solid #26344a;border-radius:7px;padding:7px 9px;
+    font-size:11px;line-height:1.55;color:#9db0c6;
+  }
+  .say .t{color:#ffffff;font-weight:700}
+  .say .c{color:var(--gold);font-weight:700}
+  .say .l{color:var(--green);font-weight:700}
+  .say .p{color:var(--purple);font-weight:700}
+  .say .d{color:var(--accent);font-weight:700}
+  .say .o{color:#ff9ec4;font-weight:700}
+
+  .legend{margin-top:7px;display:flex;flex-direction:column;gap:0}
+  .lrow{display:flex;gap:7px;align-items:flex-start;padding:3.5px 0;border-bottom:1px solid #1b2431}
+  .lrow:last-child{border-bottom:none}
+  .sw{width:6px;height:6px;border-radius:2px;flex:none;margin-top:5px}
+  .lk{font-size:10px;font-weight:700;color:var(--ink);width:48px;flex:none;line-height:1.4}
+  .lv{font-size:9.5px;line-height:1.4;color:var(--dim);flex:1}
+  .lv b{color:var(--mute);font-weight:700}
+
+  .script-note{
+    margin-top:8px;background:rgba(240,180,41,.07);border:1px solid rgba(240,180,41,.2);
+    border-radius:7px;padding:7px 9px;font-size:9.5px;line-height:1.5;color:#d8bd85;
+  }
+  .script-note b{color:var(--gold);font-weight:800}
+  .script-more{
+    margin-top:7px;text-align:center;font-size:9.5px;color:var(--accent);font-weight:700;
+    padding:5px;border:1px dashed #2a4a5e;border-radius:6px;
+  }
+
+  .side-foot{margin-top:auto;border-top:1px solid var(--line);padding:11px 8px 2px}
+  .conn{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--dim)}
+  .conn .dot{background:var(--green);box-shadow:0 0 0 3px rgba(63,208,138,.14)}
+  .whoami{display:flex;align-items:center;gap:9px;margin-top:11px}
+  .av{width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,#2f9fd0,#5ec8f2);
+    display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:#06202e}
+  .whoami div{font-size:11.5px;color:var(--mute);font-weight:600}
+  .whoami span{display:block;font-size:9.5px;color:var(--dim);font-weight:500}
+
+  /* ---------- centre: live feed ---------- */
+  .centre{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--win)}
+  .centre-head{
+    padding:13px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;
+  }
+  .ch-title{font-size:13.5px;font-weight:700;letter-spacing:.2px}
+  .ch-sub{font-size:11px;color:var(--dim);margin-top:2px}
+  .rec{
+    margin-left:auto;display:flex;align-items:center;gap:7px;font-size:11px;font-weight:700;
+    color:#ff8a84;background:rgba(255,95,87,.1);border:1px solid rgba(255,95,87,.3);
+    padding:5px 10px;border-radius:999px;letter-spacing:.3px;
+  }
+  .rec .dot{background:#ff5f57;box-shadow:0 0 0 4px rgba(255,95,87,.18)}
+
+  .feed{flex:1;overflow:hidden;padding:18px 20px;display:flex;flex-direction:column;gap:13px}
+  .daysep{display:flex;align-items:center;gap:10px;color:var(--dim);font-size:10px;
+    letter-spacing:1.2px;text-transform:uppercase;font-weight:700;margin:1px 0}
+  .daysep:before,.daysep:after{content:"";height:1px;background:var(--line);flex:1}
+  .msg{max-width:78%;display:flex;flex-direction:column;gap:4px}
+  .msg.me{align-self:flex-end;align-items:flex-end}
+  .bub{
+    padding:10px 13px;border-radius:13px;font-size:13px;line-height:1.5;
+    background:var(--panel);border:1px solid var(--line);color:#dbe6f2;
+  }
+  .msg.me .bub{background:linear-gradient(135deg,#2b6f92,#245f81);border-color:#3781a6;color:#eef7fd}
+  .meta{font-size:10px;color:var(--dim);display:flex;align-items:center;gap:6px;padding:0 3px}
+  .meta .who{font-weight:700;color:var(--mute)}
+  .voice{
+    display:inline-flex;align-items:center;gap:2px;height:14px;vertical-align:middle;margin-right:7px
+  }
+  .voice i{display:block;width:2px;border-radius:2px;background:rgba(255,255,255,.55)}
+  .tick{color:var(--green);font-weight:700}
+
+  .composer{
+    border-top:1px solid var(--line);padding:15px 20px 17px;display:flex;align-items:center;gap:14px;
+    background:linear-gradient(#131a25,#101620);
+  }
+  .talk{
+    display:flex;align-items:center;gap:10px;
+    background:linear-gradient(135deg,var(--accent),var(--accent2));
+    color:#04202e;font-weight:800;font-size:13.5px;letter-spacing:.2px;
+    padding:12px 22px;border-radius:11px;border:none;
+    box-shadow:0 6px 18px rgba(94,200,242,.28);
+  }
+  .hint{font-size:12px;color:var(--dim)}
+  .hint b{color:var(--mute);font-weight:700}
+  .drop{
+    margin-left:auto;display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--dim);
+    border:1.5px dashed #2f3d4f;border-radius:10px;padding:9px 14px;
+  }
+
+  /* ---------- right: panels ---------- */
+  .right{
+    width:372px;flex:0 0 372px;border-left:1px solid var(--line);background:#0f141d;
+    padding:13px;display:flex;flex-direction:column;gap:11px;overflow:hidden;
+  }
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:11px 13px}
+  .card-h{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+  .card-h h3{font-size:11.5px;font-weight:800;letter-spacing:.7px;text-transform:uppercase;color:var(--mute)}
+  .card-h .count{margin-left:auto;font-size:10.5px;color:var(--dim);font-weight:700}
+  .cmp{font-size:9.5px;letter-spacing:.9px;text-transform:uppercase;color:var(--accent);
+    font-weight:800;margin:7px 0 4px;opacity:.85}
+  .cmp:first-of-type{margin-top:0}
+  .task{display:flex;align-items:flex-start;gap:9px;padding:3px 0;font-size:12.1px;line-height:1.32}
+  .box{width:14px;height:14px;border-radius:4px;border:1.5px solid #3d4d61;flex:0 0 14px;margin-top:1px}
+  .box.done{background:var(--green);border-color:var(--green);position:relative}
+  .box.done:after{content:"✓";position:absolute;inset:0;color:#053b23;font-size:10px;font-weight:900;
+    display:flex;align-items:center;justify-content:center}
+  .task.done span{color:var(--dim);text-decoration:line-through}
+  .p1{font-size:8.5px;font-weight:900;color:var(--gold);border:1px solid rgba(240,180,41,.4);
+    background:rgba(240,180,41,.1);padding:0 4px;border-radius:3px;margin-left:5px;vertical-align:1px}
+
+  .next{display:flex;align-items:center;gap:11px}
+  .when{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
+    padding:7px 10px;text-align:center;flex:0 0 auto}
+  .when b{display:block;font-size:15px;font-weight:800;letter-spacing:-.3px}
+  .when span{font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:.8px;font-weight:700}
+  .next-t{font-size:13px;font-weight:700}
+  .next-s{font-size:11px;color:var(--gold);margin-top:3px;font-weight:600}
+  .join{margin-left:auto;background:rgba(94,200,242,.14);border:1px solid rgba(94,200,242,.4);
+    color:var(--accent);font-size:11px;font-weight:800;padding:6px 12px;border-radius:8px}
+  .later{margin-top:9px;padding-top:9px;border-top:1px solid var(--line);
+    font-size:11.5px;color:var(--dim);display:flex;flex-direction:column;gap:5px}
+  .later i{font-style:normal;color:var(--mute);font-weight:700;margin-right:7px}
+
+  .pt-top{display:flex;align-items:center;gap:10px;margin-bottom:9px}
+  .cd{font-size:20px;font-weight:800;letter-spacing:-.5px;color:var(--gold)}
+  .cd span{font-size:11px;color:var(--dim);font-weight:600;letter-spacing:0}
+  .gauge{margin-left:auto;text-align:right;font-size:10px;color:var(--dim);font-weight:700}
+  .bar{height:5px;border-radius:99px;background:#243040;margin-top:5px;overflow:hidden;width:118px}
+  .bar i{display:block;height:100%;background:linear-gradient(90deg,var(--accent2),var(--accent))}
+  .bar.g i{background:linear-gradient(90deg,#2c9e6b,var(--green))}
+  .lesson{width:100%;background:rgba(240,180,41,.12);border:1px solid rgba(240,180,41,.38);
+    color:var(--gold);font-weight:800;font-size:12.5px;padding:9px;border-radius:9px;text-align:center}
+  .streak{font-size:10.5px;color:var(--dim);text-align:center;margin-top:7px;font-weight:600}
+
+  .grp{display:flex;align-items:flex-start;gap:8px;font-size:11.6px;line-height:1.38;padding:4px 0}
+  .grp .gn{font-weight:700;color:var(--ink)}
+  .grp .gs{color:var(--dim)}
+  .tag{background:rgba(240,180,41,.13);border:1px solid rgba(240,180,41,.35);border-radius:8px;
+    padding:8px 10px;margin-top:8px;font-size:11.8px;line-height:1.45}
+  .tag .lbl{font-size:8.5px;font-weight:900;letter-spacing:.9px;color:var(--gold);
+    text-transform:uppercase;display:block;margin-bottom:3px}
+  .tag .who{color:var(--mute);font-size:10px;margin-top:4px;display:block}
+  .acts{display:flex;gap:6px;margin-top:7px}
+  .btn-s{font-size:10px;font-weight:800;padding:4px 9px;border-radius:6px;
+    background:rgba(94,200,242,.13);border:1px solid rgba(94,200,242,.35);color:var(--accent)}
+  .btn-s.ghost{background:transparent;border-color:#33415400;color:var(--dim);border:1px solid var(--line)}
+  .dismiss{width:100%;margin-top:9px;background:transparent;border:1px solid var(--line);
+    color:var(--mute);font-size:11px;font-weight:700;padding:7px;border-radius:8px;text-align:center}
+
+  /* ---------- macOS notification ---------- */
+  .notif{
+    position:fixed;top:26px;right:26px;width:346px;z-index:50;
+    background:rgba(38,45,58,.94);
+    border:1px solid rgba(255,255,255,.11);
+    border-radius:14px;padding:11px 13px;display:flex;gap:11px;align-items:flex-start;
+    box-shadow:0 18px 40px rgba(0,0,0,.55);
+  }
+  .notif .app{width:34px;height:34px;border-radius:9px;flex:0 0 34px;
+    background:linear-gradient(135deg,#2f9fd0,#5ec8f2);display:flex;align-items:center;
+    justify-content:center;font-size:15px;font-weight:900;color:#052131}
+  .notif .t{font-size:12.5px;font-weight:800}
+  .notif .t span{float:right;font-size:10.5px;color:#a9b6c6;font-weight:600}
+  .notif .m{font-size:12px;color:#d6dfea;margin-top:3px;line-height:1.4}
+  .notif .spk{font-size:10px;color:var(--accent);margin-top:6px;font-weight:700;display:flex;
+    align-items:center;gap:5px}
+</style>
+</head>
+<body>
+<div class="window">
+
+  <!-- title bar -->
+  <div class="titlebar">
+    <div class="lights"><div class="light l1"></div><div class="light l2"></div><div class="light l3"></div></div>
+    <div class="title"><b>Jarvis</b> &nbsp;·&nbsp; Desktop Hub</div>
+    <div class="tb-right">
+      <div class="pill"><span class="dot"></span> Listening for “Hey Jarvis”</div>
+      <div class="icon-btn">🔊</div>
+      <div class="icon-btn">📌</div>
+    </div>
+  </div>
+
+  <div class="body">
+
+    <!-- sidebar -->
+    <div class="sidebar">
+      <div class="side-label">Jarvis</div>
+      <div class="nav on"><span class="ic">💬</span> Live feed</div>
+      <div class="nav"><span class="ic">🎯</span> Today's Focus <span class="badge blue">8</span></div>
+      <div class="nav"><span class="ic">📅</span> Next up</div>
+      <div class="nav"><span class="ic">🇧🇷</span> Portuguese</div>
+      <div class="nav"><span class="ic">👥</span> WhatsApp groups <span class="badge">4</span></div>
+      <div class="nav"><span class="ic">📥</span> Filed documents</div>
+
+      <div class="side-label">Reference</div>
+      <div class="nav"><span class="ic">📇</span> Trello card script</div>
+      <div class="nav"><span class="ic">⌨️</span> Commands</div>
+      <div class="nav"><span class="ic">🔔</span> Notifications <span class="badge">2</span></div>
+
+      <!-- always-on card script -->
+      <div class="script">
+        <div class="script-head"><span>📇</span><b>Card script</b><i>always here</i></div>
+        <div class="script-body">
+
+          <div class="say">
+            “Hey Jarvis — add a card,<br>
+            <span class="t">email BMI the full sales plan</span>,<br>
+            <span class="c">Prodermis</span>, <span class="l">Paul Today</span>,<br>
+            <span class="p">P1</span>, <span class="d">due Friday</span>, <span class="o">Harry</span>”
+          </div>
+
+          <div class="legend">
+            <div class="lrow"><i class="sw" style="background:#fff"></i><div class="lk">What</div><div class="lv">Plain English. <b>The only must.</b></div></div>
+            <div class="lrow"><i class="sw" style="background:var(--gold)"></i><div class="lk">Company</div><div class="lv"><b>Derma UK/EU · Prodermis · Aesthetics · Personal</b></div></div>
+            <div class="lrow"><i class="sw" style="background:var(--green)"></i><div class="lk">List</div><div class="lv"><b>Paul Today · This Week · Backlog</b></div></div>
+            <div class="lrow"><i class="sw" style="background:var(--purple)"></i><div class="lk">Priority</div><div class="lv"><b>P1–P5</b> · P1/P2 auto-tag Urgent</div></div>
+            <div class="lrow"><i class="sw" style="background:var(--accent)"></i><div class="lk">Due</div><div class="lv"><b>“Friday” · “28 Aug” · “end of month”</b></div></div>
+            <div class="lrow"><i class="sw" style="background:#ff9ec4"></i><div class="lk">Who</div><div class="lv"><b>Harry · Arianna · Kiefer</b> — or nobody = you</div></div>
+            <div class="lrow"><i class="sw" style="background:#4a5a70"></i><div class="lk">Steps</div><div class="lv">“<b>with a checklist:</b> quote, compare, order”</div></div>
+          </div>
+
+          <div class="script-note">
+            <b>Say nothing?</b> Master Board · Backlog · P3 · yours. He reads it back first — “no, This Week” fixes it.
+          </div>
+
+
+        </div>
+      </div>
+
+      <div class="side-foot">
+        <div class="conn"><span class="dot"></span> Connected · brain online</div>
+        <div class="whoami">
+          <div class="av">PL</div>
+          <div>Paul Lunny<span>Dubai · 21:14 GST</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- centre -->
+    <div class="centre">
+      <div class="centre-head">
+        <div>
+          <div class="ch-title">Live conversation</div>
+          <div class="ch-sub">Same brain as Telegram — everything here is remembered</div>
+        </div>
+        <div class="rec"><span class="dot"></span> RECORDING</div>
+      </div>
+
+      <div class="feed">
+        <div class="daysep">Today · Thursday 6 August</div>
+
+        <div class="msg">
+          <div class="bub">Morning, Paul. Run's logged — 5.2km, that's 19 this month. Three things I'd put in front of you today: the BMI doctor surveys, Harry's stock count, and the Dutch company paperwork. The surveys are the frog.</div>
+          <div class="meta"><span class="who">Jarvis</span> · 07:00 · spoken</div>
+        </div>
+
+        <div class="msg me">
+          <div class="bub"><span class="voice"><i style="height:5px"></i><i style="height:10px"></i><i style="height:14px"></i><i style="height:8px"></i><i style="height:12px"></i><i style="height:6px"></i><i style="height:11px"></i><i style="height:4px"></i></span>Hey Jarvis — add a card, email BMI the full sales plan, Prodermis, Paul Today, P1, due Friday.</div>
+          <div class="meta">09:42 · voice note · <span class="tick">transcribed</span></div>
+        </div>
+
+        <div class="msg">
+          <div class="bub">Filed it. <b>“Email BMI full sales plan”</b> → Prodermis · Paul Today · P1 (auto-flagged Urgent) · due Fri 8 Aug · owner you. It's now item 3 in Today's Focus.</div>
+          <div class="meta"><span class="who">Jarvis</span> · 09:42</div>
+        </div>
+
+        <div class="msg me">
+          <div class="bub"><span class="voice"><i style="height:7px"></i><i style="height:13px"></i><i style="height:5px"></i><i style="height:11px"></i><i style="height:14px"></i><i style="height:6px"></i></span>What did I miss in the Derma warehouse group?</div>
+          <div class="meta">13:20 · voice note</div>
+        </div>
+
+        <div class="msg">
+          <div class="bub">Harry tagged you twice — he needs a decision on the Revolax reorder before Friday, and the courier quote went up 12%. Both are sat in your groups panel as actions. Nothing else needs you.</div>
+          <div class="meta"><span class="who">Jarvis</span> · 13:20 · spoken</div>
+        </div>
+
+        <div class="msg">
+          <div class="bub">Water's at 1,400ml against 1,800 by now — you're 400 behind. Glass now and you're level.</div>
+          <div class="meta"><span class="who">Jarvis</span> · 14:05 · announced aloud</div>
+        </div>
+      </div>
+
+      <div class="composer">
+        <button class="talk">🎙 Start conversation</button>
+        <div class="hint">or just say <b>“Hey Jarvis”</b> — always listening</div>
+        <div class="drop">⬇︎ Drop a file here → straight into your brain</div>
+      </div>
+    </div>
+
+    <!-- right panels -->
+    <div class="right">
+
+      <!-- Today's Focus -->
+      <div class="card">
+        <div class="card-h"><h3>🎯 Today's Focus</h3><div class="count">4 of 11 done</div></div>
+        <div class="cmp">Derma Direct UK</div>
+        <div class="task done"><div class="box done"></div><span>Sign off August Revolax pricing</span></div>
+        <div class="task"><div class="box"></div><span>Call Harry — warehouse stock count<span class="p1">P1</span></span></div>
+        <div class="cmp">Prodermis</div>
+        <div class="task"><div class="box"></div><span>Email BMI full sales plan<span class="p1">P1</span></span></div>
+        <div class="cmp">Aesthetics Supply UK</div>
+        <div class="task done"><div class="box done"></div><span>Approve the LPG invoice</span></div>
+        <div class="cmp">Personal</div>
+        <div class="task done"><div class="box done"></div><span>5km run</span></div>
+        <div class="task"><div class="box"></div><span>Book Nottingham move — out by 20 Oct</span></div>
+      </div>
+
+      <!-- Next up -->
+      <div class="card">
+        <div class="card-h"><h3>📅 Next up</h3><div class="count">Google Calendar</div></div>
+        <div class="next">
+          <div class="when"><b>14:30</b><span>today</span></div>
+          <div>
+            <div class="next-t">Harry — warehouse review</div>
+            <div class="next-s">in 42 minutes · Zoom</div>
+          </div>
+          <div class="join">Join</div>
+        </div>
+        <div class="later">
+          <div><i>16:00</i> Adriana — EU invoicing call</div>
+          <div><i>18:30</i> Gym — push day</div>
+        </div>
+      </div>
+
+      <!-- Portuguese -->
+      <div class="card">
+        <div class="card-h"><h3>🇧🇷 Portuguese</h3><div class="count">day 11</div></div>
+        <div class="pt-top">
+          <div class="cd">22 <span>days to Brazil</span></div>
+          <div class="gauge">
+            Speech <div class="bar"><i style="width:68%"></i></div>
+            <div style="margin-top:6px">Basics <div class="bar g"><i style="width:41%"></i></div></div>
+          </div>
+        </div>
+        <div class="lesson">▶︎ Start today's lesson — 8 min</div>
+        <div class="streak">Seu Ednei speech · lines 1–3 solid, line 4 needs work</div>
+      </div>
+
+      <!-- WhatsApp groups -->
+      <div class="card">
+        <div class="card-h"><h3>👥 WhatsApp groups</h3><div class="count">4 need you</div></div>
+        <div class="grp"><span class="gn">Derma Warehouse</span><span class="gs">· 47 msgs — stock counts + a courier price rise</span></div>
+        <div class="grp"><span class="gn">Prodermis / BMI</span><span class="gs">· 12 msgs — waiting on your sales plan</span></div>
+
+        <div class="tag">
+          <span class="lbl">⚑ You were tagged</span>
+          “@Paul can you confirm the Revolax reorder before Friday? We'll miss the slot otherwise.”
+          <span class="who">Harry · Derma Warehouse · 11:04</span>
+          <div class="acts"><div class="btn-s">+ Add to Trello</div><div class="btn-s ghost">Ignore</div></div>
+        </div>
+
+        <div class="dismiss">Read the AI catch-up on everything I've missed — then dismiss</div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- macOS notification -->
+  <div class="notif">
+    <div class="app">J</div>
+    <div style="flex:1">
+      <div class="t">Jarvis <span>now</span></div>
+      <div class="m">Paul, it's time to call Harry — warehouse review in 5 minutes.</div>
+      <div class="spk">🔊 Announced aloud in Jarvis's voice</div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

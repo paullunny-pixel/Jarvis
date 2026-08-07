@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -54,6 +54,10 @@ For each card, also name its project — a short recurring workstream name (e.g.
 
 
 class Daily12Service:
+    PENDING_CREATES_KEY = "trello_pending_creates"
+    PENDING_CREATES_CAP = 5
+    PENDING_TTL_MIN = 30  # a "yes" long after the conversation moved on needs a fresh draft
+
     def __init__(
         self,
         db: Database,
@@ -817,6 +821,83 @@ class Daily12Service:
         except Exception:
             logger.exception("Trello create failed")
             return f"Couldn't reach Trello to create '{title}' — I'll keep it noted; try again shortly."
+
+    # ------------------------------------------------------- staged creates
+    # BRAIN-FIRST card creation is drafted, not written straight to the
+    # board (Paul, 7 Aug: a travel-planning conversation produced three
+    # near-duplicate cards with no chance to say no — brainstorming out
+    # loud isn't the same as asking for a card). ONLY this implicit,
+    # conversational path stages; the explicit 'Jarvis add to Trello' lane
+    # and voice-command ticks/defers/etc. are untouched — they're already a
+    # direct ask, nothing to confirm.
+
+    async def stage_create(
+        self, title: str, assignee: str = "", due_iso: str = "", human_when: str = "",
+        list_name: str = "", domain: str = "", flags: list[str] | None = None, description: str = "",
+    ) -> str:
+        pending = (await self._pending_creates())[-(self.PENDING_CREATES_CAP - 1):]
+        pending.append({
+            "title": title, "assignee": assignee, "due_iso": due_iso, "human_when": human_when,
+            "list_name": list_name, "domain": domain, "flags": flags or [], "description": description,
+            "staged_at": utc_now_iso(),
+        })
+        await self._settings.set(self.PENDING_CREATES_KEY, json.dumps(pending))
+        return f"Drafted (not on the board yet): {self.preview_line(pending[-1])}. Say the word and I'll add it."
+
+    def preview_line(self, p: dict) -> str:
+        bits = [f"'{p.get('title', '')}'"]
+        if p.get("assignee"):
+            bits.append(f"for {p['assignee'].title()}")
+        if p.get("list_name"):
+            bits.append(f"in {p['list_name']}")
+        if p.get("human_when"):
+            bits.append(f"due {p['human_when']}")
+        return " ".join(bits)
+
+    async def _pending_creates(self) -> list[dict]:
+        try:
+            raw = json.loads(await self._settings.get(self.PENDING_CREATES_KEY, "[]"))
+        except Exception:
+            raw = []
+        if not raw:
+            return []
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=self.PENDING_TTL_MIN)
+        fresh = []
+        for p in raw:
+            try:
+                if datetime.fromisoformat(p.get("staged_at", "")) > cutoff:
+                    fresh.append(p)
+            except Exception:
+                pass
+        if len(fresh) != len(raw):  # stale drafts silently expire — a "yes"
+            await self._settings.set(self.PENDING_CREATES_KEY, json.dumps(fresh))  # long after loses the thread, not the board
+        return fresh
+
+    async def pending_creates_preview(self) -> list[dict]:
+        return await self._pending_creates()
+
+    async def confirm_pending_creates(self) -> str:
+        pending = await self._pending_creates()
+        if not pending:
+            return "Nothing drafted waiting to confirm."
+        await self._settings.set(self.PENDING_CREATES_KEY, "[]")
+        results = [
+            await self.create(
+                p.get("title") or "New task", assignee=p.get("assignee", ""),
+                due_iso=p.get("due_iso", ""), list_name=p.get("list_name", ""),
+                domain=p.get("domain", ""), flags=p.get("flags") or [],
+                description=p.get("description", ""),
+            )
+            for p in pending
+        ]
+        return " ".join(results)
+
+    async def cancel_pending_creates(self) -> str:
+        pending = await self._pending_creates()
+        if not pending:
+            return "Nothing drafted to drop."
+        await self._settings.set(self.PENDING_CREATES_KEY, "[]")
+        return "Dropped — " + ("that draft" if len(pending) == 1 else f"those {len(pending)} drafts") + " never touched the board."
 
     async def _member_id(self, name: str) -> str:
         board_id = await self.resolve_board()

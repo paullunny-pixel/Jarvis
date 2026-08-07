@@ -118,9 +118,15 @@ async def parse_actions(
 
 
 async def execute_actions(
-    service: Daily12Service, actions: list[dict[str, Any]]
+    service: Daily12Service, actions: list[dict[str, Any]], stage_creates: bool = False
 ) -> tuple[list[str], bool]:
-    """Run the actions; returns (result lines, whether to show the plan)."""
+    """Run the actions; returns (result lines, whether to show the plan).
+
+    stage_creates=True drafts new cards instead of writing them (the
+    brain-first conversational lane, which never asked Paul first — see
+    Daily12Service.stage_create). Every other caller — the explicit 'Jarvis
+    add to Trello' lane and voice-command actions — leaves it False and
+    creates immediately, unchanged."""
     results: list[str] = []
     show = False
     today = await service.paul_today()
@@ -133,23 +139,21 @@ async def execute_actions(
                 due_iso, human = relative_due(today, str(action.get("when", "tomorrow")))
                 results.append(await service.defer(str(action.get("target", "")), due_iso, human))
             elif kind == "create":
-                due_iso = ""
+                due_iso, human_when = "", ""
                 if action.get("when"):
-                    due_iso, _ = relative_due(today, str(action["when"]))
-                results.append(
-                    await service.create(
-                        str(action.get("title", "New task")),
-                        assignee=str(action.get("assignee", "") or ""),
-                        due_iso=due_iso,
-                        list_name=str(action.get("list", "") or ""),
-                        domain=str(action.get("domain", "") or ""),
-                        flags=[
-                            f for f in (action.get("flags") or [])
-                            if isinstance(f, str) and f
-                        ],
-                        description=str(action.get("description", "") or ""),
-                    )
-                )
+                    due_iso, human_when = relative_due(today, str(action["when"]))
+                creator = service.stage_create if stage_creates else service.create
+                kwargs = {
+                    "assignee": str(action.get("assignee", "") or ""),
+                    "due_iso": due_iso,
+                    "list_name": str(action.get("list", "") or ""),
+                    "domain": str(action.get("domain", "") or ""),
+                    "flags": [f for f in (action.get("flags") or []) if isinstance(f, str) and f],
+                    "description": str(action.get("description", "") or ""),
+                }
+                if stage_creates:
+                    kwargs["human_when"] = human_when
+                results.append(await creator(str(action.get("title", "New task")), **kwargs))
             elif kind == "comment":
                 results.append(
                     await service.comment(str(action.get("target", "")), str(action.get("text", "")))
@@ -164,6 +168,8 @@ async def execute_actions(
                 # Honesty over silence: calendar write-back isn't wired yet
                 # (needs the Google OAuth upgrade), so the event is parked as a
                 # card rather than quietly dropped. Never claim it's booked.
+                # Always immediate, even from the brain-first lane: Paul
+                # explicitly asked for this one — it's not an inferred task.
                 title = str(action.get("title", "") or "Untitled event")
                 due_iso = ""
                 if action.get("when"):

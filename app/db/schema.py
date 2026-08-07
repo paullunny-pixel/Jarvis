@@ -313,6 +313,257 @@ TABLES: list[str] = [
         day_count INTEGER NOT NULL DEFAULT 0
     )
     """,
+    # --- WhatsApp/Telegram group intelligence (Build Slice Part 2, 7 Aug):
+    # channel-agnostic on purpose — 'channel' is 'telegram' today, 'whatsapp'
+    # the day group ingest exists there too, same table either way. Actions
+    # persist independently of the missed-summary's dismiss/clear watermark
+    # (settings keys group_intel_cleared_at / group_intel_last_action_id). ---
+    """
+    CREATE TABLE IF NOT EXISTS group_actions (
+        id {pk},
+        created_at TEXT NOT NULL,
+        channel TEXT NOT NULL DEFAULT 'telegram',
+        chat_id BIGINT NOT NULL DEFAULT 0,
+        chat_title TEXT NOT NULL DEFAULT '',
+        company_tag TEXT NOT NULL DEFAULT '',
+        asked_by TEXT NOT NULL DEFAULT '',
+        ask TEXT NOT NULL,
+        source_message TEXT NOT NULL DEFAULT '',
+        msg_ts TEXT NOT NULL DEFAULT '',
+        tagged INTEGER NOT NULL DEFAULT 0,      -- 1 = an @-mention, auto-promoted, never judged
+        status TEXT NOT NULL DEFAULT 'open',    -- open | trello | ignored
+        trello_card_id TEXT NOT NULL DEFAULT '',
+        dedupe_key TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_group_actions_status ON group_actions (status, created_at)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_group_actions_dedupe ON group_actions (dedupe_key)",
+    """
+    CREATE TABLE IF NOT EXISTS group_summaries (
+        id {pk},
+        channel TEXT NOT NULL DEFAULT 'telegram',
+        chat_id BIGINT NOT NULL DEFAULT 0,
+        chat_title TEXT NOT NULL DEFAULT '',
+        company_tag TEXT NOT NULL DEFAULT '',
+        gist TEXT NOT NULL DEFAULT '',
+        message_count INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_group_summaries_chat ON group_summaries (channel, chat_id)",
+    # --- The War Room (Build Slice, 7 Aug): three-vendor board of advisors.
+    # Sessions archived permanently (§8); action points live separately so
+    # Full Board's per-point approve/reject/discuss has somewhere to hang
+    # its state. warroom_watch is a REGISTRATION SEAM ONLY — Team Radar's
+    # detection engine (not built here, per the brief's own instruction)
+    # reads this table; this module never runs its own watcher. ---
+    """
+    CREATE TABLE IF NOT EXISTS warroom_sessions (
+        id {pk},
+        created_at TEXT NOT NULL,
+        tier TEXT NOT NULL,
+        session_type TEXT NOT NULL DEFAULT '',
+        company TEXT NOT NULL DEFAULT '',
+        question TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'framed',
+        report TEXT NOT NULL DEFAULT '{{}}',
+        transcript TEXT NOT NULL DEFAULT '[]',
+        seats TEXT NOT NULL DEFAULT '[]',
+        cost_usd REAL NOT NULL DEFAULT 0,
+        consensus_weak INTEGER NOT NULL DEFAULT 0,
+        escalated_from INTEGER NOT NULL DEFAULT 0,
+        verdict TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_warroom_sessions_created ON warroom_sessions (created_at)",
+    """
+    CREATE TABLE IF NOT EXISTS warroom_action_points (
+        id {pk},
+        session_id INTEGER NOT NULL,
+        idx INTEGER NOT NULL DEFAULT 0,
+        title TEXT NOT NULL,
+        why TEXT NOT NULL DEFAULT '',
+        owner_suggestion TEXT NOT NULL DEFAULT '',
+        due TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'pending',
+        reject_reason TEXT NOT NULL DEFAULT '',
+        card_id TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_warroom_action_points_session ON warroom_action_points (session_id)",
+    """
+    CREATE TABLE IF NOT EXISTS warroom_watch (
+        id {pk},
+        session_id INTEGER NOT NULL,
+        card_id TEXT NOT NULL,
+        board_key TEXT NOT NULL DEFAULT 'master',
+        created_at TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_warroom_watch_session ON warroom_watch (session_id)",
+    # --- Team Radar (Build Slice, 7 Aug): bird's-eye view of Harry, Adriana,
+    # Kiefer and Paul across every board the token can reach. Owns its own
+    # history (radar_snapshots per sync, radar_list_history per transition)
+    # rather than depending on Trello's action history (§3 — retention and
+    # paging are outside our control). radar_cards is the fast current-state
+    # table, upserted every sync. ---
+    """
+    CREATE TABLE IF NOT EXISTS radar_cards (
+        id {pk},
+        card_id TEXT NOT NULL,
+        board_id TEXT NOT NULL DEFAULT '',
+        board_name TEXT NOT NULL DEFAULT '',
+        list_id TEXT NOT NULL DEFAULT '',
+        list_name TEXT NOT NULL DEFAULT '',
+        list_entered_at TEXT NOT NULL DEFAULT '',
+        title TEXT NOT NULL DEFAULT '',
+        company_tag TEXT NOT NULL DEFAULT '',
+        owners TEXT NOT NULL DEFAULT '[]',
+        due TEXT NOT NULL DEFAULT '',
+        due_complete INTEGER NOT NULL DEFAULT 0,
+        due_change_count INTEGER NOT NULL DEFAULT 0,
+        last_activity TEXT NOT NULL DEFAULT '',
+        checklist_total INTEGER NOT NULL DEFAULT 0,
+        checklist_done INTEGER NOT NULL DEFAULT 0,
+        comment_count INTEGER NOT NULL DEFAULT 0,
+        warroom_session_id INTEGER NOT NULL DEFAULT 0,
+        short_url TEXT NOT NULL DEFAULT '',
+        first_seen TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL DEFAULT '',
+        archived INTEGER NOT NULL DEFAULT 0
+    )
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_radar_cards_id ON radar_cards (card_id)",
+    "CREATE INDEX IF NOT EXISTS idx_radar_cards_board ON radar_cards (board_id)",
+    """
+    CREATE TABLE IF NOT EXISTS radar_list_history (
+        id {pk},
+        card_id TEXT NOT NULL,
+        list_name TEXT NOT NULL DEFAULT '',
+        entered_at TEXT NOT NULL,
+        left_at TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_radar_list_history_card ON radar_list_history (card_id)",
+    """
+    CREATE TABLE IF NOT EXISTS radar_snapshots (
+        id {pk},
+        card_id TEXT NOT NULL,
+        ts TEXT NOT NULL,
+        list_name TEXT NOT NULL DEFAULT '',
+        due TEXT NOT NULL DEFAULT '',
+        owners TEXT NOT NULL DEFAULT '[]',
+        last_activity TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_radar_snapshots_card ON radar_snapshots (card_id, ts)",
+    # --- GPS awareness + daily working memory (Build Slice, 7 Aug). Extends
+    # the existing timezone-following pipe (app/heartbeat/location.py) —
+    # doesn't replace it. Named places are Paul's own, taught by voice
+    # ('this is home'), never assumed; only 'airport' has a curated seed
+    # (app/location/geo.py), and even that is confirmed before acted on. ---
+    """
+    CREATE TABLE IF NOT EXISTS location_history (
+        id {pk},
+        ts TEXT NOT NULL,
+        lat REAL NOT NULL,
+        lon REAL NOT NULL,
+        place_name TEXT NOT NULL DEFAULT '',
+        place_kind TEXT NOT NULL DEFAULT '',
+        tz TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_location_history_ts ON location_history (ts)",
+    """
+    CREATE TABLE IF NOT EXISTS named_places (
+        id {pk},
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'other',
+        lat REAL NOT NULL,
+        lon REAL NOT NULL,
+        radius_m INTEGER NOT NULL DEFAULT 200,
+        created_at TEXT NOT NULL
+    )
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_named_places_name ON named_places (name)",
+    """
+    CREATE TABLE IF NOT EXISTS geofence_tasks (
+        id {pk},
+        place_name TEXT NOT NULL,
+        text TEXT NOT NULL,
+        trello_card_id TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        fired_at TEXT NOT NULL DEFAULT '',
+        active INTEGER NOT NULL DEFAULT 1
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_geofence_tasks_place ON geofence_tasks (place_name, active)",
+    # --- Mac app v2 hub, §2 (7 Aug): every proactive send (Telegram's
+    # existing funnel, unchanged) also lands here so the desktop app can show
+    # a native banner and — for the ones Jarvis judged worth speaking aloud
+    # on Telegram (voice sends) — a spoken announcement. Dismiss is
+    # server-side and shared across surfaces.
+    """
+    CREATE TABLE IF NOT EXISTS desktop_notifications (
+        id {pk},
+        text TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'text',
+        announce INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        dismissed INTEGER NOT NULL DEFAULT 0,
+        dismissed_at TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_desktop_notifications_dismissed"
+    " ON desktop_notifications (dismissed, created_at)",
+    # --- Smart move reminder (7 Aug build slice): active-energy running
+    # total per day, max-merged exactly like water_log — Apple Health's
+    # 'Today' export range resends the whole day's figure on every post. ---
+    """
+    CREATE TABLE IF NOT EXISTS move_energy_log (
+        day TEXT PRIMARY KEY,
+        active_kcal REAL NOT NULL DEFAULT 0
+    )
+    """,
+    # --- Deadline radar (7 Aug build slice): dates Paul just tells Jarvis
+    # about (birthdays, the villa demand, move-out, renewals) — Trello due
+    # dates and calendar events already live elsewhere and don't need a
+    # table of their own. ---
+    """
+    CREATE TABLE IF NOT EXISTS key_dates (
+        id {pk},
+        label TEXT NOT NULL,
+        date TEXT NOT NULL,
+        recurring_yearly INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+    )
+    """,
+    # --- Meds refill tracking (7 Aug build slice): the run-out date is
+    # computed ONCE when Paul sets it (from quantity + dosing, or given
+    # directly) — simpler and cheaper than re-deriving it every tick. ---
+    """
+    CREATE TABLE IF NOT EXISTS med_supply (
+        item TEXT PRIMARY KEY,
+        run_out_date TEXT NOT NULL,
+        warn_days_before INTEGER NOT NULL DEFAULT 5,
+        updated_at TEXT NOT NULL
+    )
+    """,
+    # --- Follow-up chaser (7 Aug build slice): outbound items awaiting a
+    # reply — Paul-flagged or auto-detected, chased after a tunable gap. ---
+    """
+    CREATE TABLE IF NOT EXISTS outbound_watch (
+        id {pk},
+        subject TEXT NOT NULL DEFAULT '',
+        recipient TEXT NOT NULL DEFAULT '',
+        note TEXT NOT NULL DEFAULT '',
+        sent_at TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'paul_flagged',
+        status TEXT NOT NULL DEFAULT 'open',
+        last_chased_at TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_outbound_watch_status ON outbound_watch (status)",
 ]
 
 PK = {
@@ -326,6 +577,9 @@ PK = {
 MIGRATIONS: list[str] = [
     "ALTER TABLE tasks ADD COLUMN board_id TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE tasks ADD COLUMN board_name TEXT NOT NULL DEFAULT ''",
+    # Withings smart-scale auto-logging (7 Aug): body-fat % has nowhere to
+    # land in the Apple-Health-shaped health_stats row until now.
+    "ALTER TABLE health_stats ADD COLUMN body_fat_pct REAL NOT NULL DEFAULT 0",
 ]
 
 

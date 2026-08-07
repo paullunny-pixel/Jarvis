@@ -24,7 +24,7 @@ class FakeIntake:
 
     async def start_batch(self, transcript):
         self.batches.append(transcript)
-        return self.summary
+        return self.summary, []
 
     async def handle_reply(self, transcript):
         return None   # no pending confirmation

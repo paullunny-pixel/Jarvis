@@ -662,6 +662,96 @@ class TestMasterBoardSystem(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Genuinely unsure → empty, never guess", PARSER_SYSTEM)
 
 
+class TestStagedCreates(unittest.IsolatedAsyncioTestCase):
+    """Brain-first conversational creates are drafted, not written (7 Aug:
+    a travel-planning conversation produced 3 near-duplicate cards with no
+    chance to say no). The explicit create() path stays direct-write —
+    only stage_create()/execute_actions(stage_creates=True) change."""
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = SqliteDatabase(os.path.join(self._dir.name, "t.db"))
+        await self.db.init()
+        self.h = MasterBoardHarness(self.db)
+        self.service = self.h.service
+
+    async def asyncTearDown(self):
+        await self.db.close()
+        self._dir.cleanup()
+
+    async def test_stage_create_writes_nothing_to_trello(self):
+        reply = await self.service.stage_create(
+            "Book travel", assignee="paul", list_name="Paul Today", human_when="7 Sept"
+        )
+        self.assertIn("Drafted", reply)
+        self.assertIn("Book travel", reply)
+        self.assertIn("Say the word", reply)
+        self.assertEqual([w for w in self.h.trello_writes if w[1] == "/1/cards"], [])
+        pending = await self.service.pending_creates_preview()
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["title"], "Book travel")
+
+    async def test_confirm_writes_every_staged_draft_exactly_once(self):
+        await self.service.stage_create("Book travel")
+        await self.service.stage_create("Chase BMI stock")
+        reply = await self.service.confirm_pending_creates()
+        self.assertIn("Book travel", reply)
+        self.assertIn("Chase BMI stock", reply)
+        creates = [w for w in self.h.trello_writes if w[1] == "/1/cards"]
+        self.assertEqual(len(creates), 2)
+        self.assertEqual(await self.service.pending_creates_preview(), [])
+
+    async def test_confirm_with_nothing_pending_is_a_no_op(self):
+        reply = await self.service.confirm_pending_creates()
+        self.assertIn("Nothing drafted", reply)
+        self.assertEqual([w for w in self.h.trello_writes if w[1] == "/1/cards"], [])
+
+    async def test_cancel_drops_the_draft_without_writing(self):
+        await self.service.stage_create("Book travel")
+        reply = await self.service.cancel_pending_creates()
+        self.assertIn("Dropped", reply)
+        self.assertEqual([w for w in self.h.trello_writes if w[1] == "/1/cards"], [])
+        self.assertEqual(await self.service.pending_creates_preview(), [])
+
+    async def test_repeated_staging_never_touches_trello_until_confirmed(self):
+        # The actual bug: an evolving conversation restaged the same plan
+        # three times with slightly different wording.
+        await self.service.stage_create("Book 7 Sept travel: chauffeur")
+        await self.service.stage_create("Book 7 Sept travel: chauffeur, revised")
+        await self.service.stage_create("Book 7 Sept travel: chauffeur, final")
+        self.assertEqual([w for w in self.h.trello_writes if w[1] == "/1/cards"], [])
+        self.assertEqual(len(await self.service.pending_creates_preview()), 3)
+
+    async def test_stale_draft_expires_and_cannot_be_confirmed(self):
+        await self.service.stage_create("Book travel")
+        pending = json.loads(await self.service._settings.get(self.service.PENDING_CREATES_KEY))
+        from datetime import datetime, timedelta, timezone
+        pending[0]["staged_at"] = (
+            datetime.now(timezone.utc) - timedelta(minutes=self.service.PENDING_TTL_MIN + 1)
+        ).isoformat()
+        await self.service._settings.set(self.service.PENDING_CREATES_KEY, json.dumps(pending))
+        self.assertEqual(await self.service.pending_creates_preview(), [])
+        reply = await self.service.confirm_pending_creates()
+        self.assertIn("Nothing drafted", reply)
+        self.assertEqual([w for w in self.h.trello_writes if w[1] == "/1/cards"], [])
+
+    async def test_execute_actions_stages_creates_when_asked(self):
+        results, _ = await execute_actions(
+            self.service, [{"action": "create", "title": "Book travel"}], stage_creates=True
+        )
+        self.assertIn("Drafted", results[0])
+        self.assertEqual([w for w in self.h.trello_writes if w[1] == "/1/cards"], [])
+
+    async def test_execute_actions_still_writes_immediately_by_default(self):
+        # The explicit 'Jarvis add to Trello' lane and voice commands never
+        # pass stage_creates — unaffected by this change.
+        results, _ = await execute_actions(
+            self.service, [{"action": "create", "title": "Book travel"}]
+        )
+        self.assertIn("Created", results[0])
+        self.assertEqual(len([w for w in self.h.trello_writes if w[1] == "/1/cards"]), 1)
+
+
 class TestCommands(unittest.IsolatedAsyncioTestCase):
     def test_task_hint_gate(self):
         self.assertTrue(mentions_tasks("number three is done"))

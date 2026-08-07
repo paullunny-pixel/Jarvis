@@ -47,13 +47,18 @@ class TwilioClient:
     async def close(self) -> None:
         await self._client.aclose()
 
-    async def place_call(self, to: str, from_: str, twiml_url: str) -> str:
+    async def place_call(
+        self, to: str, from_: str, twiml_url: str, status_callback: str = ""
+    ) -> str:
         """Ring `to` and, when answered, fetch call instructions from
-        `twiml_url`. Returns the Call SID, or "" on failure."""
-        response = await self._client.post(
-            f"{self._base}/Calls.json",
-            data={"To": to, "From": from_, "Url": twiml_url, "Method": "POST"},
-        )
+        `twiml_url`. Returns the Call SID, or "" on failure. With
+        `status_callback`, Twilio POSTs the final CallStatus there — how a
+        third-party call honestly reports no-answer/busy/failed back to Paul."""
+        data = {"To": to, "From": from_, "Url": twiml_url, "Method": "POST"}
+        if status_callback:
+            data["StatusCallback"] = status_callback
+            data["StatusCallbackMethod"] = "POST"
+        response = await self._client.post(f"{self._base}/Calls.json", data=data)
         if response.status_code in (200, 201):
             return response.json().get("sid", "")
         logger.warning("Twilio call failed: %s %s", response.status_code, response.text[:300])

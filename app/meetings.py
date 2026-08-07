@@ -4,9 +4,14 @@ nobody waits on Paul), sends BOTH links on Telegram (host start link for him,
 join link to paste to anyone), and drops them on a Trello card as backup.
 'Set up a Zoom for tomorrow at 2' schedules one the same way.
 
-Layer B (OtterPilot attend/transcribe → actions into Brain Dump) comes later,
-riding Paul's existing Otter.ai — this module is where it will plug in.
-No Google Calendar write yet (calendar is still read-only ICS).
+Layer B (OtterPilot attend/transcribe → actions into Brain Dump) lives in
+app/meetings_notetaker.py, riding Paul's existing Otter.ai; this module
+only carries the confirmation + consent line on the quick-start reply when
+it's switched on. Paul confirmed (7 Aug) OtterPilot for Zoom is CONNECTED
+at the Zoom-account level — every meeting Jarvis creates here (instant or
+scheduled) is on that same Zoom account, so Otter auto-joins it without
+Jarvis dispatching anything: there's no per-meeting 'add Otter' API to
+call, and none is needed.
 """
 from __future__ import annotations
 
@@ -92,9 +97,10 @@ class MeetingMaker:
     """Layer A service: create the meeting, compose the reply, back the
     links up onto Trello (best-effort — the reply never waits on Trello)."""
 
-    def __init__(self, zoom, layer_factory=None) -> None:
+    def __init__(self, zoom, layer_factory=None, notetaker=None) -> None:
         self.zoom = zoom
         self._layer_factory = layer_factory   # async () -> TrelloLayer | None
+        self.notetaker = notetaker            # MeetingNotetaker | None (Layer B)
 
     async def quick_start(self, text: str, now: datetime, tz_name: str) -> str:
         when = parse_when(text, now)
@@ -118,6 +124,11 @@ class MeetingMaker:
         if meeting.get("password"):
             lines.append(f"Passcode if asked: {meeting['password']}")
         lines.append("Links are on a Brain Dump card too, as backup.")
+        if self.notetaker is not None and await self.notetaker.enabled():
+            lines.append(
+                "Otter's already joining to record — I'll turn its notes into Brain "
+                "Dump cards once it's done. Worth telling the room it's being recorded."
+            )
         return "\n\n".join(lines)
 
     async def _backup_card(self, meeting: dict, when: datetime | None) -> None:

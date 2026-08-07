@@ -49,7 +49,8 @@ class TestParseWebhook(unittest.TestCase):
         self.assertEqual(messages[0].name, "Kiefer Brindle")
         self.assertIn("invoices signed", messages[0].text)
         self.assertEqual(messages[1].kind, "voice")
-        self.assertIn("voice note", messages[1].text)
+        self.assertEqual(messages[1].text, "")
+        self.assertEqual(messages[1].media_id, "MEDIA1")
         self.assertEqual(messages[2].kind, "image")
         self.assertEqual(messages[2].name, "")     # unknown sender, no profile
         self.assertEqual(messages[2].text, "[image]")

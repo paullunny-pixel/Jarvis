@@ -16,6 +16,7 @@ import imaplib
 import logging
 import smtplib
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 
 logger = logging.getLogger(__name__)
@@ -251,6 +252,91 @@ class MailClient:
                 if text:
                     samples.append(text[:1500])
             return samples
+
+    async def recent_sent(self, days: int = 7) -> list[dict]:
+        """Paul's own recent sent items with STRUCTURED metadata (to/subject/
+        date) — for the follow-up chaser's auto-detect sweep. Distinct from
+        sent_samples(), which returns raw bodies for style-learning only."""
+        return await asyncio.to_thread(self._recent_sent_sync, days)
+
+    def _recent_sent_sync(self, days: int) -> list[dict]:
+        with self._imap() as imap:
+            imap.login(self.account.address, self.account.app_password)
+            selected = False
+            for folder in self.SENT_FOLDERS:
+                status, _ = imap.select(folder, readonly=True)
+                if status == "OK":
+                    selected = True
+                    break
+            if not selected:
+                return []
+            _, data = imap.search(None, "ALL")
+            ids = data[0].split() if data and data[0] else []
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+            out = []
+            for msg_id in ids:
+                _, fetched = imap.fetch(msg_id, "(BODY.PEEK[HEADER])")
+                raw = next((part[1] for part in fetched if isinstance(part, tuple)), None)
+                if not raw:
+                    continue
+                msg = email.message_from_bytes(raw)
+                _, to_addr = email.utils.parseaddr(_decode(msg.get("To")))
+                if not to_addr:
+                    continue
+                try:
+                    sent_dt = email.utils.parsedate_to_datetime(msg.get("Date", ""))
+                    if sent_dt.tzinfo is None:
+                        sent_dt = sent_dt.replace(tzinfo=timezone.utc)
+                except Exception:
+                    continue
+                if sent_dt < cutoff:
+                    continue
+                out.append({
+                    "to_address": to_addr,
+                    "subject": _decode(msg.get("Subject")) or "(no subject)",
+                    "sent_at": sent_dt.isoformat(),
+                })
+            return out
+
+    async def has_reply_since(self, from_address: str, since_iso: str) -> bool:
+        """Any message FROM this address landed after `since_iso`? The
+        follow-up chaser's 'did he actually get an answer' check."""
+        return await asyncio.to_thread(self._has_reply_since_sync, from_address, since_iso)
+
+    def _has_reply_since_sync(self, from_address: str, since_iso: str) -> bool:
+        with self._imap() as imap:
+            imap.login(self.account.address, self.account.app_password)
+            selected = False
+            for folder in ('"[Gmail]/All Mail"', "INBOX"):
+                status, _ = imap.select(folder, readonly=True)
+                if status == "OK":
+                    selected = True
+                    break
+            if not selected:
+                return False
+            try:
+                _, data = imap.search(None, f'FROM "{from_address}"')
+                ids = data[0].split() if data and data[0] else []
+            except Exception:
+                return False
+            since_dt = datetime.fromisoformat(since_iso)
+            if since_dt.tzinfo is None:
+                since_dt = since_dt.replace(tzinfo=timezone.utc)
+            for msg_id in ids:
+                _, fetched = imap.fetch(msg_id, "(BODY.PEEK[HEADER])")
+                raw = next((part[1] for part in fetched if isinstance(part, tuple)), None)
+                if not raw:
+                    continue
+                msg = email.message_from_bytes(raw)
+                try:
+                    msg_dt = email.utils.parsedate_to_datetime(msg.get("Date", ""))
+                    if msg_dt.tzinfo is None:
+                        msg_dt = msg_dt.replace(tzinfo=timezone.utc)
+                except Exception:
+                    continue
+                if msg_dt > since_dt:
+                    return True
+            return False
 
     async def send(self, to: str, subject: str, body: str) -> None:
         def _send() -> None:
