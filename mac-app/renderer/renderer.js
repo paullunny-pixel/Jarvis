@@ -1245,6 +1245,91 @@ async function loadWhatsappPanel() {
 // --- boot ---
 (async function boot() {
   addMsg("system", "Jarvis desktop — say “Hey Jarvis”, press the button, or type.");
+// --- Bia, the live EN⇄PT interpreter (8 Aug): Gemini native speech in the
+// Aoede voice, bridged through the backend so no keys live on this Mac.
+// Mic up as 16kHz PCM, Bia's voice back at 24kHz; she opens the session
+// herself with the scripted pt-BR intro. NO barge-in by design — Bia asks
+// not to be interrupted, so playback always runs to the end of her turn.
+let biaLive = null;
+const biaBtn = document.getElementById("bia-btn");
+biaBtn.addEventListener("click", async () => {
+  if (biaLive) { biaLive.stop(); return; }
+  const { url, secret } = cfg();
+  if (!url || !secret) {
+    addMsg("system", "Connect first — open Settings (⚙️) and fill in the backend URL + secret.");
+    return;
+  }
+  biaBtn.textContent = "Connecting…";
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true },
+    });
+    const wsUrl = url.replace(/^http/, "ws") + `/desktop/${secret}/bia-live`;
+    const ws = new WebSocket(wsUrl);
+    const ctx = new AudioContext();
+    const src = ctx.createMediaStreamSource(stream);
+    const proc = ctx.createScriptProcessor(4096, 1, 1);
+    const playCtx = new AudioContext({ sampleRate: 24000 });
+    let nextAt = 0;
+
+    proc.onaudioprocess = (e) => {
+      if (ws.readyState !== 1) return;
+      const inp = e.inputBuffer.getChannelData(0);
+      const ratio = ctx.sampleRate / 16000;
+      const out = new Int16Array(Math.floor(inp.length / ratio));
+      for (let i = 0; i < out.length; i++) {
+        const s = Math.max(-1, Math.min(1, inp[Math.floor(i * ratio)]));
+        out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+      }
+      let bin = "";
+      const bytes = new Uint8Array(out.buffer);
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      ws.send(JSON.stringify({ audio: btoa(bin) }));
+    };
+
+    const playChunk = (b64) => {
+      const raw = atob(b64);
+      const pcm = new Int16Array(new Uint8Array([...raw].map((c) => c.charCodeAt(0))).buffer);
+      const buf = playCtx.createBuffer(1, pcm.length, 24000);
+      const ch = buf.getChannelData(0);
+      for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 0x8000;
+      const s = playCtx.createBufferSource();
+      s.buffer = buf;
+      s.connect(playCtx.destination);
+      const at = Math.max(playCtx.currentTime, nextAt);
+      s.start(at);
+      nextAt = at + buf.duration;
+    };
+
+    ws.onmessage = (ev) => {
+      const m = JSON.parse(ev.data);
+      if (m.error) { addMsg("system", m.error); biaLive.stop(); return; }
+      if (m.ready) {
+        biaBtn.textContent = "🔴 Bia live — tap to end";
+        src.connect(proc);
+        proc.connect(ctx.destination);
+        addMsg("system", "Bia is on — she'll open in Portuguese, then translate both ways. One voice at a time, don't talk over her.");
+      }
+      if (m.audio) playChunk(m.audio);
+    };
+    ws.onclose = () => { if (biaLive) biaLive.stop(); };
+
+    biaLive = {
+      stop: () => {
+        biaLive = null;
+        try { ws.close(); } catch (e) {}
+        try { proc.disconnect(); src.disconnect(); } catch (e) {}
+        stream.getTracks().forEach((t) => t.stop());
+        try { ctx.close(); playCtx.close(); } catch (e) {}
+        biaBtn.textContent = "🌐 Bia · translator";
+      },
+    };
+  } catch (err) {
+    biaBtn.textContent = "🌐 Bia · translator";
+    addMsg("system", "Couldn't start Bia — check the mic permission and try again.");
+  }
+});
+
   notifMuteBtn.textContent = notifyMuted ? "🔇" : "🔊";
   notifMuteBtn.classList.toggle("active", notifyMuted);
   renderNotifList([]);

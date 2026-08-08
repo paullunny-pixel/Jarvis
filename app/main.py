@@ -926,6 +926,60 @@ async def _desktop_reply_payload(router: "JarvisRouter", transcript: str, spoken
     return {"transcript": transcript, "reply": reply_text, "audio_b64": audio_b64}
 
 
+@app.websocket("/desktop/{secret}/bia-live")
+async def desktop_bia_live(websocket: WebSocket, secret: str):
+    """Bia — the desktop's live EN⇄PT interpreter (8 Aug), Gemini native
+    speech in the Aoede voice. Scripted pt-BR opening (full script the first
+    session, a lighter reminder after), then faithful interpretation both
+    ways. Same separate-AI wall as every Gemini surface: no memory, no
+    private data — the socket's audio is all she ever hears."""
+    import json as _json
+
+    from app.voice.gemini_live import LIVE_WS_URL, GeminiLiveBridge, BIA_KICKOFF, bia_system
+
+    router: JarvisRouter = websocket.app.state.router
+    if not hmac.compare_digest(secret, router.settings.effective_desktop_secret):
+        await websocket.close(code=4403)
+        return
+    await websocket.accept()
+    if not router.settings.google_ai_api_key:
+        await websocket.send_text(_json.dumps({"error": (
+            "Bia needs a GOOGLE_AI_API_KEY in Render's Environment tab first."
+        )}))
+        await websocket.close()
+        return
+    sessions = int(await router.store.get("bia_sessions", "0") or 0)
+    await router.store.set("bia_sessions", str(sessions + 1))
+    try:
+        import websockets as _ws
+
+        google = await _ws.connect(
+            f"{LIVE_WS_URL}?key={router.settings.google_ai_api_key}",
+            max_size=2 ** 22,
+        )
+    except Exception:
+        logger.exception("Bia's Gemini Live socket failed")
+        await websocket.send_text(_json.dumps({"error": (
+            "Couldn't reach Gemini Live — try again in a moment."
+        )}))
+        await websocket.close()
+        return
+    try:
+        await GeminiLiveBridge(websocket, google).run(
+            router.settings.gemini_live_model,
+            system=bia_system(first_time=(sessions == 0)),
+            voice="Aoede",
+            kickoff=BIA_KICKOFF,
+        )
+    except Exception:
+        logger.exception("Bia bridge ended with an error")
+    finally:
+        try:
+            await websocket.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 @app.get("/desktop/{secret}/ping")
 async def desktop_ping(secret: str, request: Request) -> dict:
     """The app's 'Connected ✓' check."""

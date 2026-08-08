@@ -36,15 +36,67 @@ VOICE_SYSTEM = (
 )
 
 
-def setup_message(model: str) -> str:
-    """The first frame Google expects on a Live session."""
+def setup_message(model: str, system: str = VOICE_SYSTEM, voice: str = "") -> str:
+    """The first frame Google expects on a Live session. `voice` picks one of
+    the prebuilt Live voices (Bia speaks as Aoede); empty keeps the default."""
+    config: dict = {"responseModalities": ["AUDIO"]}
+    if voice:
+        config["speechConfig"] = {
+            "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}
+        }
     return json.dumps({
         "setup": {
             "model": f"models/{model}",
-            "generationConfig": {"responseModalities": ["AUDIO"]},
-            "systemInstruction": {"parts": [{"text": VOICE_SYSTEM}]},
+            "generationConfig": config,
+            "systemInstruction": {"parts": [{"text": system}]},
         }
     })
+
+
+# --- Bia, the live EN⇄PT interpreter on Paul's desktop (8 Aug brief) ---
+
+BIA_INTRO_FULL = (
+    "Oi Stef! Eu sou a Bia, e vou ser a tradutora de vocês. Vou repetir essa "
+    "introdução algumas vezes até ela virar costume — depois disso as "
+    "traduções vão começar direto, tipo 'oi gente, vamos conversar'. Lembra: "
+    "por favor, não me interrompe, porque posso perder o que a outra pessoa "
+    "disse. Você fala, eu escuto; depois eu falo com o Paul em inglês; ele "
+    "fala, eu escuto; e aí eu falo com você. Vamos lá!"
+)
+
+BIA_INTRO_LIGHT = (
+    "Oi Stef, Bia aqui de novo — só lembrando as regras: uma pessoa fala de "
+    "cada vez e ninguém me interrompe. Você fala, eu traduzo pro Paul; ele "
+    "fala, eu traduzo pra você. Vamos lá!"
+)
+
+BIA_KICKOFF = "[A sessão começou — faça sua abertura agora.]"
+
+
+def bia_system(first_time: bool) -> str:
+    """Bia's whole world: a live interpreter between Paul (English) and Stef
+    (Brazilian Portuguese). Scripted opening (full the first session, lighter
+    after), then pure faithful interpretation both ways."""
+    intro = BIA_INTRO_FULL if first_time else BIA_INTRO_LIGHT
+    return (
+        "You are Bia, a warm Brazilian interpreter running live between two "
+        "people: Paul, who speaks English, and Stef, who speaks Brazilian "
+        "Portuguese.\n\n"
+        "OPENING: the moment the session starts, say EXACTLY this, in "
+        f"Brazilian Portuguese, before anything else: \"{intro}\"\n\n"
+        "AFTER THE OPENING, you are a pure interpreter:\n"
+        "- Hear Portuguese → render it for Paul in natural English.\n"
+        "- Hear English → render it for Stef in natural Brazilian Portuguese.\n"
+        "- Faithful both ways: meaning, tone and warmth — first person, "
+        "never 'she said'. Complete but tight; no summarising away detail.\n"
+        "- You NEVER add your own opinions, answers or side conversation. "
+        "If someone asks you something directly, one short friendly line, "
+        "then back to interpreting.\n"
+        "- People misspeak and mix words — read for meaning, never comment "
+        "on it.\n"
+        "- Short spoken turns, no lists, no markdown — this is a live "
+        "conversation."
+    )
 
 
 class GeminiLiveBridge:
@@ -56,10 +108,15 @@ class GeminiLiveBridge:
         self.browser_ws = browser_ws
         self.google = google
         self._closed = asyncio.Event()
+        self._kickoff = ""
 
-    async def run(self, model: str) -> None:
+    async def run(
+        self, model: str, system: str = VOICE_SYSTEM, voice: str = "",
+        kickoff: str = "",
+    ) -> None:
+        self._kickoff = kickoff
         try:
-            await self.google.send(setup_message(model))
+            await self.google.send(setup_message(model, system=system, voice=voice))
         except Exception:
             logger.exception("Gemini Live setup send failed")
             await self._tell_browser({"error": "Couldn't reach Gemini Live — try again in a moment."})
@@ -118,6 +175,16 @@ class GeminiLiveBridge:
                     continue
                 if "setupComplete" in frame:
                     await self._tell_browser({"ready": True})
+                    if self._kickoff:
+                        # Bia opens the session herself — the scripted intro
+                        # plays before anyone has said a word.
+                        await self.google.send(json.dumps({
+                            "clientContent": {
+                                "turns": [{"role": "user",
+                                           "parts": [{"text": self._kickoff}]}],
+                                "turnComplete": True,
+                            }
+                        }))
                     continue
                 content = frame.get("serverContent") or {}
                 if content.get("interrupted"):

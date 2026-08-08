@@ -5,7 +5,10 @@ import asyncio
 import json
 import unittest
 
-from app.voice.gemini_live import VOICE_SYSTEM, GeminiLiveBridge, setup_message
+from app.voice.gemini_live import (
+    BIA_INTRO_FULL, BIA_INTRO_LIGHT, BIA_KICKOFF, VOICE_SYSTEM,
+    GeminiLiveBridge, bia_system, setup_message,
+)
 
 
 class FakeBrowser:
@@ -62,6 +65,36 @@ class TestSetup(unittest.TestCase):
         self.assertIn("not replacing", system)   # honest arrangement, spoken too
 
 
+class TestBiaPersona(unittest.TestCase):
+    def test_voice_rides_the_setup_frame(self):
+        frame = json.loads(setup_message("m", voice="Aoede"))
+        voice = frame["setup"]["generationConfig"]["speechConfig"]["voiceConfig"]
+        self.assertEqual(voice["prebuiltVoiceConfig"]["voiceName"], "Aoede")
+        # No voice → no speechConfig at all (the cockpit's plain Talk button).
+        plain = json.loads(setup_message("m"))
+        self.assertNotIn("speechConfig", plain["setup"]["generationConfig"])
+
+    def test_first_session_carries_the_full_scripted_intro(self):
+        system = bia_system(first_time=True)
+        self.assertIn(BIA_INTRO_FULL, system)
+        self.assertIn("Oi Stef! Eu sou a Bia", system)
+        self.assertIn("não me interrompe", system)     # the golden rule, in the script
+        self.assertIn("eu falo com o Paul em inglês", system)
+
+    def test_later_sessions_get_the_lighter_reminder(self):
+        system = bia_system(first_time=False)
+        self.assertIn(BIA_INTRO_LIGHT, system)
+        self.assertNotIn(BIA_INTRO_FULL, system)
+        self.assertIn("só lembrando as regras", system)
+
+    def test_interpreter_rules_ride_both_versions(self):
+        for first in (True, False):
+            system = bia_system(first_time=first)
+            self.assertIn("natural English", system)
+            self.assertIn("Brazilian Portuguese", system)
+            self.assertIn("never 'she said'", system)
+
+
 class TestBridge(unittest.IsolatedAsyncioTestCase):
     async def test_setup_goes_first_and_ready_reaches_browser(self):
         browser = FakeBrowser([])
@@ -70,6 +103,36 @@ class TestBridge(unittest.IsolatedAsyncioTestCase):
         self.assertIn("setup", google.sent[0])
         self.assertIn({"ready": True}, browser.sent)
         self.assertTrue(google.closed)
+
+    async def test_kickoff_makes_bia_speak_first(self):
+        browser = FakeBrowser([])
+        google = FakeGoogle([json.dumps({"setupComplete": {}})])
+        bridge = GeminiLiveBridge(browser, google)
+        task = asyncio.create_task(bridge.run(
+            "test-model", system=bia_system(True), voice="Aoede", kickoff=BIA_KICKOFF,
+        ))
+        await asyncio.sleep(0.2)
+        bridge._closed.set()
+        await task
+        kickoffs = [f for f in google.sent if "clientContent" in f]
+        self.assertEqual(len(kickoffs), 1)
+        self.assertEqual(
+            kickoffs[0]["clientContent"]["turns"][0]["parts"][0]["text"], BIA_KICKOFF
+        )
+        self.assertTrue(kickoffs[0]["clientContent"]["turnComplete"])
+        # And the setup frame carried her voice.
+        setup = google.sent[0]["setup"]
+        self.assertEqual(
+            setup["generationConfig"]["speechConfig"]["voiceConfig"]
+            ["prebuiltVoiceConfig"]["voiceName"],
+            "Aoede",
+        )
+
+    async def test_no_kickoff_means_silence_until_spoken_to(self):
+        browser = FakeBrowser([])
+        google = FakeGoogle([json.dumps({"setupComplete": {}})])
+        await run_bridge(browser, google)
+        self.assertEqual([f for f in google.sent if "clientContent" in f], [])
 
     async def test_mic_audio_is_forwarded_as_realtime_input(self):
         browser = FakeBrowser([json.dumps({"audio": "UEND"})])
