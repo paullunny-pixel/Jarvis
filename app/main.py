@@ -232,6 +232,16 @@ def build_components() -> tuple[JarvisRouter, Heartbeat]:
             db, SettingsStore(db),
         )
         jobs.gcal = router_obj.gcal
+    # Ask Gemini (8 Aug): the cockpit's SECOND AI chat box. Jarvis's brain
+    # stays Claude — this is dashboard furniture, walled off from memory and
+    # private data. Rides the War Room's GOOGLE_AI_API_KEY; dormant without
+    # it (honest line in the box).
+    if settings.google_ai_api_key:
+        from app.clients.gemini_client import GeminiClient
+
+        router_obj.gemini = GeminiClient(
+            settings.google_ai_api_key, model=settings.gemini_model
+        )
     # Meetings Layer B (build order §6): Otter's meeting notes → Brain Dump
     # actions + remembered meeting. Rides the mail accounts already wired for
     # Phase 2 — no new keys, no bot for Jarvis to dispatch (Otter auto-joins
@@ -442,6 +452,8 @@ async def lifespan(app: FastAPI):
         closables.append(router.phone_channel.twilio)
     if getattr(router, "meetings", None) is not None:
         closables.append(router.meetings.zoom)
+    if getattr(router, "gemini", None) is not None:
+        closables.append(router.gemini)
     for client in closables:
         try:
             await client.close()
@@ -579,6 +591,33 @@ async def cockpit_data(secret: str, request: Request) -> dict:
         timezone_default=router.settings.timezone_default,
     )
     return await service.gather()
+
+
+@app.post("/cockpit/{secret}/gemini")
+async def cockpit_gemini(secret: str, request: Request) -> dict:
+    """The cockpit's 'Ask Gemini' box (8 Aug): a SECOND, separate AI chat.
+    Same lock as every cockpit surface; stateless — the browser sends the
+    whole conversation each time. No memory, no private data, no tools:
+    what's typed in the box is all Gemini ever sees."""
+    router: JarvisRouter = request.app.state.router
+    _check_cockpit_secret(router, secret)
+    if await _cockpit_gate(router, request) != "ok":
+        raise HTTPException(status_code=401, detail="cockpit locked")
+    gemini = getattr(router, "gemini", None)
+    if gemini is None or not gemini.configured:
+        return {"error": (
+            "Gemini isn't wired up yet — a GOOGLE_AI_API_KEY (from Google AI "
+            "Studio) needs to land in Render's Environment tab first."
+        )}
+    try:
+        body = await request.json()
+        messages = body.get("messages") or []
+        if not isinstance(messages, list) or not messages:
+            return {"error": "Nothing to send — type a message first."}
+        return {"reply": await gemini.chat(messages)}
+    except Exception:
+        logger.exception("Ask Gemini failed")
+        return {"error": "Gemini didn't answer that one — try again in a moment."}
 
 
 @app.post("/cockpit/{secret}/voice-url")

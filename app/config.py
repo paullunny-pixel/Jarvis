@@ -146,6 +146,13 @@ class Settings(BaseSettings):
     # agent (interruptible). Off switches every call back to turn-based.
     phone_realtime_enabled: bool = True
 
+    # --- Ask Gemini (8 Aug): a SECOND, separate AI chat box on the cockpit.
+    # Jarvis's own brain stays Claude (§15 locked stack) — this is dashboard
+    # furniture, walled off from memory and private data. Rides the SAME
+    # GOOGLE_AI_API_KEY as the War Room's Seat C; only the model string is
+    # its own (env-tunable so new Gemini releases need no code change).
+    gemini_model: str = "gemini-flash-latest"
+
     # --- Zoom meetings, Layer A (6 Aug): Server-to-Server OAuth app on
     # Paul's Zoom account (scopes meeting:write, user:read). All three set →
     # 'start a new Zoom meeting' works.
