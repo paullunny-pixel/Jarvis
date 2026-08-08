@@ -99,6 +99,7 @@ class JarvisRouter:
         self.phone_channel = None        # PhoneChannel — Twilio calls (main.py wires it)
         self.meetings = None             # MeetingMaker — Zoom quick-start (main.py wires it)
         self.gcal = None                 # GoogleCalendar — live read+write (main.py wires it)
+        self.gemini = None               # GeminiClient — cockpit's second AI box (main.py wires it)
         self.whatsapp = None             # WhatsAppClient — Part 1 1:1 chat (main.py wires it)
         self.group_intel = None          # GroupIntel — Part 2 group intelligence (main.py wires it)
         self.warroom = None              # WarRoom — three-vendor board of advisors (main.py wires it)

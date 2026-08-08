@@ -183,6 +183,19 @@ COCKPIT_HTML = """<!DOCTYPE html>
     </div>
   </div>
 
+  <div class="sec">Ask Gemini · a second opinion</div>
+  <div class="card" id="gemini-card">
+    <p class="ch">✨ Gemini <span style="margin-left:auto;font-size:10px;color:var(--ink-3);text-transform:none;letter-spacing:0">separate AI — knows nothing about your data</span></p>
+    <div id="gem-log" style="display:flex;flex-direction:column;gap:8px;max-height:340px;overflow-y:auto;margin-bottom:10px"></div>
+    <form id="gem-form" style="display:flex;gap:8px">
+      <input id="gem-input" type="text" placeholder="Ask Gemini anything…" autocomplete="off"
+        style="flex:1;background:var(--surface-2);border:1px solid var(--line);border-radius:10px;
+        padding:11px 13px;color:var(--ink);font:inherit;font-size:13.5px;outline:none">
+      <button id="gem-send" type="submit" style="background:var(--accent-2);border:none;border-radius:10px;
+        padding:11px 18px;color:#fff;font:inherit;font-size:13.5px;font-weight:600;cursor:pointer">Send</button>
+    </form>
+  </div>
+
   <div class="foot">JARVIS · Progress Cockpit — <b>everything in one glance.</b> Live from your backend · refreshed <span id="gen">–</span></div>
 </div>
 <script>
@@ -404,6 +417,47 @@ async function openInterpreter() {
   }
 }
 document.getElementById('interpret-btn').addEventListener('click', openInterpreter);
+
+// Ask Gemini (8 Aug): a second, separate AI — stateless on the server, the
+// whole conversation rides each request. It knows nothing about the
+// dashboard's data, and that's by design.
+const gemHistory = [];
+function gemBubble(role, text){
+  const log = document.getElementById('gem-log');
+  const div = document.createElement('div');
+  div.style.cssText = role === 'user'
+    ? 'align-self:flex-end;background:var(--accent-2);color:#fff;border-radius:12px 12px 4px 12px;padding:9px 13px;max-width:82%;font-size:13.5px;line-height:1.45;white-space:pre-wrap'
+    : 'align-self:flex-start;background:var(--surface-2);border:1px solid var(--line);border-radius:12px 12px 12px 4px;padding:9px 13px;max-width:82%;font-size:13.5px;line-height:1.45;white-space:pre-wrap';
+  div.textContent = text;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+  return div;
+}
+document.getElementById('gem-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const input = document.getElementById('gem-input');
+  const btn = document.getElementById('gem-send');
+  const text = input.value.trim();
+  if (!text || btn.disabled) return;
+  input.value = '';
+  gemBubble('user', text);
+  gemHistory.push({role:'user', text});
+  btn.disabled = true; btn.textContent = '…';
+  const thinking = gemBubble('model', 'Thinking…');
+  try {
+    const res = await fetch('DATA_URL'.replace(/\/data$/, '/gemini'), {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({messages: gemHistory}),
+    });
+    const body = await res.json();
+    if (body.error) { thinking.textContent = body.error; gemHistory.pop(); }
+    else { thinking.textContent = body.reply; gemHistory.push({role:'model', text: body.reply}); }
+  } catch (err) {
+    thinking.textContent = 'Could not reach Gemini — try again in a moment.';
+    gemHistory.pop();
+  }
+  btn.disabled = false; btn.textContent = 'Send';
+});
 </script>
 </body>
 </html>"""
