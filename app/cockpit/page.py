@@ -185,7 +185,10 @@ COCKPIT_HTML = """<!DOCTYPE html>
 
   <div class="sec">Ask Gemini · a second opinion</div>
   <div class="card" id="gemini-card">
-    <p class="ch">✨ Gemini <span style="margin-left:auto;font-size:10px;color:var(--ink-3);text-transform:none;letter-spacing:0">separate AI — knows nothing about your data</span></p>
+    <p class="ch">✨ Gemini
+      <button id="gem-talk" style="margin-left:10px;background:var(--surface-2);border:1px solid var(--line);
+        border-radius:999px;padding:5px 12px;color:var(--ink);font:inherit;font-size:11px;font-weight:600;cursor:pointer">🎤 Talk to Gemini</button>
+      <span style="margin-left:auto;font-size:10px;color:var(--ink-3);text-transform:none;letter-spacing:0">separate AI — knows nothing about your data</span></p>
     <div id="gem-log" style="display:flex;flex-direction:column;gap:8px;max-height:340px;overflow-y:auto;margin-bottom:10px"></div>
     <form id="gem-form" style="display:flex;gap:8px">
       <input id="gem-input" type="text" placeholder="Ask Gemini anything…" autocomplete="off"
@@ -457,6 +460,77 @@ document.getElementById('gem-form').addEventListener('submit', async e => {
     gemHistory.pop();
   }
   btn.disabled = false; btn.textContent = 'Send';
+});
+
+// Talk to Gemini (8 Aug): live native speech. Mic → 16kHz PCM over our
+// WebSocket → Google's Live API → Gemini's own voice back at 24kHz.
+// Barge-in: an 'interrupted' frame bins the playback queue instantly.
+let gemLive = null;
+document.getElementById('gem-talk').addEventListener('click', async () => {
+  const btn = document.getElementById('gem-talk');
+  if (gemLive) { gemLive.stop(); return; }
+  btn.textContent = 'Connecting…';
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true}});
+    const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host
+      + 'DATA_URL'.replace(/\/data$/, '/gemini-live');
+    const ws = new WebSocket(wsUrl);
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = ctx.createMediaStreamSource(stream);
+    const proc = ctx.createScriptProcessor(4096, 1, 1);
+    let playCtx = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 24000});
+    let nextAt = 0, sources = [];
+
+    proc.onaudioprocess = e => {
+      if (ws.readyState !== 1) return;
+      const inp = e.inputBuffer.getChannelData(0);
+      const ratio = ctx.sampleRate / 16000;
+      const out = new Int16Array(Math.floor(inp.length / ratio));
+      for (let i = 0; i < out.length; i++) {
+        const s = Math.max(-1, Math.min(1, inp[Math.floor(i * ratio)]));
+        out[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      }
+      let bin = '';
+      const bytes = new Uint8Array(out.buffer);
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      ws.send(JSON.stringify({audio: btoa(bin)}));
+    };
+
+    const playChunk = b64 => {
+      const raw = atob(b64);
+      const pcm = new Int16Array(new Uint8Array([...raw].map(c => c.charCodeAt(0))).buffer);
+      const buf = playCtx.createBuffer(1, pcm.length, 24000);
+      const ch = buf.getChannelData(0);
+      for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 0x8000;
+      const s = playCtx.createBufferSource();
+      s.buffer = buf; s.connect(playCtx.destination);
+      const at = Math.max(playCtx.currentTime, nextAt);
+      s.start(at); nextAt = at + buf.duration;
+      sources.push(s);
+      if (sources.length > 200) sources.splice(0, 100);
+    };
+
+    ws.onmessage = ev => {
+      const m = JSON.parse(ev.data);
+      if (m.error) { alert(m.error); gemLive.stop(); return; }
+      if (m.ready) { btn.textContent = '🔴 Live — tap to end'; src.connect(proc); proc.connect(ctx.destination); }
+      if (m.interrupted) { sources.forEach(s => { try { s.stop(); } catch (e) {} }); sources = []; nextAt = 0; }
+      if (m.audio) playChunk(m.audio);
+    };
+    ws.onclose = () => { if (gemLive) gemLive.stop(); };
+
+    gemLive = {stop: () => {
+      gemLive = null;
+      try { ws.close(); } catch (e) {}
+      try { proc.disconnect(); src.disconnect(); } catch (e) {}
+      stream.getTracks().forEach(t => t.stop());
+      try { ctx.close(); playCtx.close(); } catch (e) {}
+      btn.textContent = '🎤 Talk to Gemini';
+    }};
+  } catch (e) {
+    btn.textContent = '🎤 Talk to Gemini';
+    alert('Could not start the voice session — check the mic permission and try again.');
+  }
 });
 </script>
 </body>

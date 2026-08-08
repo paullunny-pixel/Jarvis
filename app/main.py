@@ -620,6 +620,60 @@ async def cockpit_gemini(secret: str, request: Request) -> dict:
         return {"error": "Gemini didn't answer that one — try again in a moment."}
 
 
+@app.websocket("/cockpit/{secret}/gemini-live")
+async def cockpit_gemini_live(websocket: WebSocket, secret: str):
+    """Talk to Gemini (8 Aug): live native speech for the cockpit's second
+    AI. Browser mic audio in, Gemini's own voice out, bridged server-side so
+    the API key never reaches the browser. Same lock as every cockpit
+    surface — secret path AND the session cookie, checked at the handshake."""
+    import json as _json
+
+    from app.cockpit import auth as cockpit_auth
+    from app.voice.gemini_live import LIVE_WS_URL, GeminiLiveBridge
+
+    router: JarvisRouter = websocket.app.state.router
+    if not hmac.compare_digest(secret, router.settings.effective_cockpit_secret):
+        await websocket.close(code=4403)
+        return
+    state = await cockpit_auth.gate(
+        router.store, websocket.cookies.get(cockpit_auth.COOKIE_NAME, "")
+    )
+    if state != "ok":
+        await websocket.close(code=4401)
+        return
+    await websocket.accept()
+    if not router.settings.google_ai_api_key:
+        await websocket.send_text(_json.dumps({"error": (
+            "Gemini isn't wired up yet — a GOOGLE_AI_API_KEY needs to land "
+            "in Render's Environment tab first."
+        )}))
+        await websocket.close()
+        return
+    try:
+        import websockets as _ws
+
+        google = await _ws.connect(
+            f"{LIVE_WS_URL}?key={router.settings.google_ai_api_key}",
+            max_size=2 ** 22,
+        )
+    except Exception:
+        logger.exception("Gemini Live socket failed")
+        await websocket.send_text(_json.dumps({"error": (
+            "Couldn't reach Gemini Live — try again in a moment."
+        )}))
+        await websocket.close()
+        return
+    try:
+        await GeminiLiveBridge(websocket, google).run(router.settings.gemini_live_model)
+    except Exception:
+        logger.exception("Gemini Live bridge ended with an error")
+    finally:
+        try:
+            await websocket.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 @app.post("/cockpit/{secret}/voice-url")
 async def cockpit_voice_url(secret: str, request: Request) -> dict:
     """Mint a short-lived live-session URL for the cockpit's Talk button."""

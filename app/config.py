@@ -152,6 +152,10 @@ class Settings(BaseSettings):
     # GOOGLE_AI_API_KEY as the War Room's Seat C; only the model string is
     # its own (env-tunable so new Gemini releases need no code change).
     gemini_model: str = "gemini-flash-latest"
+    # Talk to Gemini (8 Aug): the box's voice — Google's Live API, native
+    # speech both ways. Env-tunable so new voice models (3.1 etc.) are a
+    # Render change, not a code change.
+    gemini_live_model: str = "gemini-2.5-flash-preview-native-audio-dialog"
 
     # --- Zoom meetings, Layer A (6 Aug): Server-to-Server OAuth app on
     # Paul's Zoom account (scopes meeting:write, user:read). All three set →
